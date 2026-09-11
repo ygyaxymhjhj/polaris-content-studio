@@ -46,13 +46,20 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
           assetType = "professional_insight";
           content = [title, label.context, all, label.caution, label.question, cta].join("\n\n");
           break;
-        case "threads":
+        case "threads": {
+          assetType = "discussion_thread";
+          const opening = title;
+          const body = all;
+          content = [opening, body, label.caution, cta].join("\n\n");
+          meta = { opening, body };
+          break;
+        }
         case "x": {
-          assetType = platform === "x" ? "thread" : "discussion_thread";
+          assetType = "short_post";
           // Preserve exact statements even when over budget; flag rather than silently truncate facts.
-          const posts = [title, ...texts, [label.caution, cta].join("\n")].map((text, i, list) => `${i + 1}/${list.length} ${text}`);
-          content = posts.join("\n\n");
-          meta = platform === "x" ? { posts } : { replies: posts.slice(1) };
+          const post = [title, texts[0], cta].join("\n\n");
+          content = post;
+          meta = { post };
           break;
         }
         case "instagram": {
@@ -71,13 +78,14 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
           break;
         }
         case "short_video": {
-          assetType = variant ? "60_second_script" : "30_second_script";
-          const times = variant ? ["0–3s", "3–15s", "15–35s", "35–52s", "52–60s"] : ["0–3s", "3–10s", "10–22s", "22–30s"];
-          const narration = variant ? [title, texts[0], texts.slice(1).join("\n") || label.unknown, label.caution, cta] : [title, texts[0], texts[1] || label.caution, cta];
+          assetType = "video_script";
+          const times = ["0–3s", "3–15s", "15–35s", "35–52s", "52–60s"];
+          const narration = [title, texts[0], texts.slice(1).join("\n") || label.unknown, label.caution, cta];
           const shots = times.map((time, i) => ({ time, narration: narration[i], onScreen: i === 0 ? title : i === times.length - 1 ? config.cta : label.context, visual: label.visual }));
-          const caption = [title, label.caution, cta].join("\n\n");
+          // The caption stays a single sentence, as required by the platform voice rules.
+          const caption = title;
           content = shots.map(s => `${s.time}\n${l("Narration", "口播", "Lời đọc")}: ${s.narration}\n${l("On-screen text", "屏幕文字", "Chữ trên màn hình")}: ${s.onScreen}\n${s.visual}`).join("\n\n") + `\n\n${label.caption}\n${caption}`;
-          meta = { duration: variant ? "60s" : "30s", shots, caption, timingNote: l("Suggested timings; read aloud and shorten before recording.", "时间为制作建议，录制前请试读并精简。", "Thời lượng gợi ý; đọc thử và rút gọn trước khi quay.") };
+          meta = { duration: "40-70s", shots, caption, timingNote: l("Suggested timings; read aloud and shorten before recording.", "时间为制作建议，录制前请试读并精简。", "Thời lượng gợi ý; đọc thử và rút gọn trước khi quay.") };
           break;
         }
         case "community":
