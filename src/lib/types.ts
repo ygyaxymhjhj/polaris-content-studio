@@ -62,11 +62,55 @@ export interface ContentAsset {
   status: AssetStatus;
   meta?: Record<string, unknown>;
   updatedAt: string;
+  /** Adopted AI revisions, newest last. The UI keeps this capped at MAX_REVISIONS. */
+  revisions?: RewriteRecord[];
 }
 
 export interface GenerateResponse {
   assets: ContentAsset[];
   usedFallback: boolean;
+}
+
+export const MAX_REVISIONS = 3;
+/** Rewrite turns are advisory context, not a transcript: the draft itself carries every adopted change. */
+export const MAX_TURNS = 40;
+
+/** One turn of the rewrite conversation. Assistant turns carry a short change summary, not the draft. */
+export interface RewriteMessage {
+  role: "user" | "assistant";
+  text: string;
+  at: string;
+}
+
+/** Snapshot taken before an AI revision is adopted, so the change can be reverted. */
+export interface RewriteSnapshot {
+  title: string;
+  content: string;
+  cta?: string;
+  meta?: Record<string, unknown>;
+  factIds: string[];
+}
+
+export interface RewriteRecord {
+  at: string;
+  instruction: string;
+  before: RewriteSnapshot;
+}
+
+export interface RewriteCandidate {
+  asset: ContentAsset;
+  issues: string[];
+  changeSummary: string;
+}
+
+export interface RewriteResponse {
+  candidates: RewriteCandidate[];
+  /** Turns dropped from the prompt because they did not fit the model's context window. */
+  droppedTurns: number;
+  /** Options the model returned that failed validation; only set when no candidate survived. */
+  rejected?: number;
+  /** Why no candidate survived, when the provider call itself failed. */
+  reason?: string;
 }
 
 export const PLATFORM_META: Record<Platform, { label: string; short: string; accent: string; icon: string }> = {

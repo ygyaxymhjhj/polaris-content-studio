@@ -15,6 +15,7 @@ import {
   FileText,
   Filter,
   Hash,
+  History,
   Layers3,
   LayoutDashboard,
   Link2,
@@ -25,16 +26,19 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   Settings2,
   ShieldCheck,
   Sparkles,
+  TriangleAlert,
   Video,
+  Wand2,
   X,
   Zap
 } from "lucide-react";
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocaleContext, translate, UiLanguage, useTranslation } from "@/lib/i18n";
 import JSZip from "jszip";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
@@ -42,9 +46,15 @@ import {
   ContentAsset,
   DEFAULT_PLATFORMS,
   FactItem,
+  MAX_REVISIONS,
+  MAX_TURNS,
   PLATFORM_META,
   Platform,
   ProjectConfig,
+  RewriteCandidate,
+  RewriteMessage,
+  RewriteRecord,
+  RewriteSnapshot,
   SourceAnalysis
 } from "@/lib/types";
 
@@ -63,6 +73,13 @@ const platformGroups: { label: string; platforms: Platform[] }[] = [
   { label: "Web & social", platforms: ["website", "facebook", "threads", "linkedin", "x", "instagram"] },
   { label: "App & video", platforms: ["short_video", "community", "push", "kol_live", "faq"] }
 ];
+
+/**
+ * Channels are independent, so each one is its own request in a small pool and lands in the grid
+ * the moment it arrives. Kept moderate rather than unbounded: a burst of eleven requests to one
+ * provider lost four channels to network errors in testing.
+ */
+const PACK_CONCURRENCY = 6;
 
 const initialConfig: ProjectConfig = {
   name: "",
@@ -133,13 +150,45 @@ export default function ContentStudio() {
   const [loading, setLoading] = useState<"parse" | "fetch" | "analyze" | "generate" | "export" | null>(null);
   const [toast, setToast] = useState("");
   const [usedFallback, setUsedFallback] = useState(false);
+  const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
+  const [instruction, setInstruction] = useState("");
+  const [optionCount, setOptionCount] = useState(2);
+  const [candidates, setCandidates] = useState<RewriteCandidate[]>([]);
+  const [pendingInstruction, setPendingInstruction] = useState("");
+  const [droppedTurns, setDroppedTurns] = useState(0);
+  const [rewriting, setRewriting] = useState(false);
+  const [rewriteError, setRewriteError] = useState("");
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  // Conversations are kept per asset so reopening the drawer continues where the editor left off.
+  const [threads, setThreads] = useState<Record<string, RewriteMessage[]>>({});
+  const threadOnOpen = useRef<RewriteMessage[]>([]);
+  const columnsAnchor = useRef<HTMLDivElement | null>(null);
+
+  const activeThread = selectedAsset ? threads[selectedAsset.id] || [] : [];
+  const presets = [
+    ...(selectedAsset?.riskFlags.length ? ["Fix the flagged issues"] : []),
+    "Try a different opening",
+    "Make it more conversational",
+    "Focus on one angle",
+    "Strengthen the CTA",
+    "Shorten it",
+    "Keep every number and date"
+  ];
+
+  // A candidate is previewed by projecting it into the draft column, so the text under review is
+  // read in the real editor instead of a nested scroll box.
+  const previewCandidate = previewIndex !== null ? candidates[previewIndex] || null : null;
+  const viewAsset = previewCandidate?.asset ?? selectedAsset;
+  const viewRiskFlags = previewCandidate ? [...new Set([...previewCandidate.asset.riskFlags, ...previewCandidate.issues])] : selectedAsset?.riskFlags ?? [];
 
   const verifiedCount = analysis?.facts.filter((fact) => fact.verified).length || 0;
   const approvedCount = assets.filter((asset) => asset.status === "approved").length;
-  const filteredAssets = useMemo(
-    () => assetFilter === "all" ? assets : assets.filter((asset) => asset.platform === assetFilter),
-    [assetFilter, assets]
-  );
+  const filteredAssets = useMemo(() => {
+    const list = assetFilter === "all" ? assets : assets.filter((asset) => asset.platform === assetFilter);
+    // Channels arrive out of order, so sort back into the canonical channel order to stop the grid
+    // reshuffling while a pack is still filling in.
+    return [...list].sort((a, b) => DEFAULT_PLATFORMS.indexOf(a.platform) - DEFAULT_PLATFORMS.indexOf(b.platform) || a.id.localeCompare(b.id));
+  }, [assetFilter, assets]);
 
   function notify(message: string) {
     setToast(message);
@@ -159,6 +208,7 @@ export default function ContentStudio() {
   function clearDerivedContent() {
     setAnalysis(null);
     setAssets([]);
+    setPendingPlatforms([]);
     setSelectedAsset(null);
     setAssetFilter("all");
     setUsedFallback(false);
@@ -240,14 +290,7 @@ export default function ContentStudio() {
       if (!analysisResponse.ok) throw new Error("Demo analysis failed");
       const confirmed = { ...sourceAnalysis, facts: sourceAnalysis.facts.map((fact) => ({ ...fact, verified: true })) };
       setAnalysis(confirmed);
-      setLoading("generate");
-      const generationResponse = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: demoConfig, analysis: confirmed, platforms: selectedPlatforms }) });
-      const result = await generationResponse.json();
-      if (!generationResponse.ok) throw new Error(result.error || "Demo generation failed");
-      setAssets(result.assets || []);
-      setUsedFallback(Boolean(result.usedFallback));
-      setView("assets");
-      notify("Demo content pack ready to inspect.");
+      await generatePack(demoConfig, confirmed, selectedPlatforms, "Demo content pack ready to inspect.");
     } catch (error) {
       notify(error instanceof Error ? error.message : t("Demo failed"));
     } finally {
@@ -283,26 +326,53 @@ export default function ContentStudio() {
     setAnalysis((current) => current ? { ...current, facts: current.facts.map((fact) => fact.id === id ? { ...fact, ...patch } : fact) } : current);
   }
 
-  async function generateContent(analysisToUse: SourceAnalysis = analysis as SourceAnalysis) {
-    if (!analysisToUse) return;
-    setLoading("generate");
-    try {
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config, analysis: analysisToUse, platforms: selectedPlatforms })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Generation failed");
-      setAssets(data.assets || []);
-      setUsedFallback(Boolean(data.usedFallback));
-      setView("assets");
-      notify(data.usedFallback ? t("Draft pack generated with local templates. Add an AI key for model generation.") : t("Content pack generated and ready for review."));
-    } catch (error) {
-      notify(error instanceof Error ? error.message : t("Generation failed"));
-    } finally {
-      setLoading(null);
+  /**
+   * Channels are independent, so each one is its own request in a small pool. The grid opens
+   * straight away and fills in as results land, so the first drafts are readable in seconds instead
+   * of after the slowest channel has finished.
+   */
+  async function generatePack(configToUse: ProjectConfig, analysisToUse: SourceAnalysis, platforms: Platform[], doneMessage: string) {
+    if (!platforms.length) {
+      notify("Select at least one channel first.");
+      return;
     }
+    setLoading("generate");
+    setAssets([]);
+    setUsedFallback(false);
+    setPendingPlatforms(platforms);
+    setView("assets");
+    const queue = [...platforms];
+    let failed = 0;
+    async function worker() {
+      // `let` in a for-head gives every iteration its own binding. A while-loop variable would be
+      // read back after the loop had already moved on, because React runs the updater below long
+      // after this turn finished — which left the first wave stuck as "generating" forever.
+      for (let channel = queue.shift(); channel; channel = queue.shift()) {
+        try {
+          const response = await fetch("/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config: configToUse, analysis: analysisToUse, platforms: [channel] })
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Generation failed");
+          setAssets((current) => [...current, ...(data.assets || [])]);
+          setUsedFallback((current) => current || Boolean(data.usedFallback));
+        } catch {
+          failed += 1;
+        } finally {
+          setPendingPlatforms((current) => current.filter((item) => item !== channel));
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PACK_CONCURRENCY, queue.length) }, worker));
+    setLoading(null);
+    notify(failed ? `${failed} ${t("channels could not be generated.")}` : doneMessage);
+  }
+
+  function generateContent(analysisToUse: SourceAnalysis = analysis as SourceAnalysis) {
+    if (!analysisToUse) return;
+    return generatePack(config, analysisToUse, selectedPlatforms, "Content pack generated and ready for review.");
   }
 
   async function approveFactsAndGenerate() {
@@ -312,6 +382,136 @@ export default function ContentStudio() {
     await generateContent(confirmed);
   }
 
+  function clearCandidates() {
+    setCandidates([]);
+    setPreviewIndex(null);
+    setRewriteError("");
+  }
+
+  function openAsset(asset: ContentAsset) {
+    setSelectedAsset(asset);
+    setDeliveryDraft(JSON.stringify(asset.meta || {}, null, 2));
+    setInstruction("");
+    clearCandidates();
+    setDroppedTurns(0);
+    setPendingInstruction("");
+    threadOnOpen.current = threads[asset.id] ? [...threads[asset.id]] : [];
+  }
+
+  // Closing without saving rolls the conversation back too: the thread must never claim a change
+  // the draft did not keep.
+  const closeDrawer = useCallback(() => {
+    const id = selectedAsset?.id;
+    setSelectedAsset(null);
+    clearCandidates();
+    setInstruction("");
+    if (!id) return;
+    setThreads((current) => {
+      const next = { ...current };
+      if (threadOnOpen.current.length) next[id] = threadOnOpen.current;
+      else delete next[id];
+      return next;
+    });
+  }, [selectedAsset]);
+
+  useEffect(() => {
+    if (!selectedAsset) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeDrawer();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedAsset, closeDrawer]);
+
+  // The answer lands in the draft column, so bring the columns into view rather than the option
+  // cards at the bottom of a possibly long thread.
+  useEffect(() => {
+    if (candidates.length) columnsAnchor.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [candidates]);
+
+  async function requestRewrite() {
+    if (!selectedAsset || !analysis) return;
+    const text = instruction.trim();
+    if (!text) { notify("Type what you want changed."); return; }
+    setRewriting(true);
+    clearCandidates();
+    try {
+      const response = await fetch("/api/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config, analysis, asset: selectedAsset, turns: activeThread, instruction: text, count: optionCount })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Rewrite failed");
+      setCandidates(data.candidates || []);
+      // Open on the first option so the revision is visible in the draft column right away.
+      setPreviewIndex(data.candidates?.length ? 0 : null);
+      setDroppedTurns(Number(data.droppedTurns) || 0);
+      setPendingInstruction(text);
+    } catch (error) {
+      // Surface the failure in the panel, not only in a toast that can be missed.
+      const message = error instanceof Error ? error.message : t("Rewrite failed");
+      setRewriteError(message);
+      notify(message);
+    } finally {
+      setRewriting(false);
+    }
+  }
+
+  function adoptCandidate(candidate: RewriteCandidate) {
+    if (!selectedAsset) return;
+    const at = new Date().toISOString();
+    const record: RewriteRecord = {
+      at,
+      instruction: pendingInstruction || candidate.changeSummary,
+      before: { title: selectedAsset.title, content: selectedAsset.content, cta: selectedAsset.cta, meta: selectedAsset.meta, factIds: selectedAsset.factIds }
+    };
+    // Delivery notes merge rather than replace, so a revision that returns no meta keeps the brief.
+    const meta = { ...selectedAsset.meta, ...candidate.asset.meta };
+    setSelectedAsset({
+      ...selectedAsset,
+      title: candidate.asset.title,
+      content: candidate.asset.content,
+      cta: candidate.asset.cta,
+      meta,
+      factIds: candidate.asset.factIds,
+      riskFlags: [...new Set([...candidate.asset.riskFlags, ...candidate.issues])],
+      status: "needs_review",
+      updatedAt: at,
+      revisions: [...(selectedAsset.revisions || []), record].slice(-MAX_REVISIONS)
+    });
+    setDeliveryDraft(JSON.stringify(meta, null, 2));
+    setThreads((current) => ({
+      ...current,
+      [selectedAsset.id]: [
+        ...(current[selectedAsset.id] || []),
+        { role: "user" as const, text: record.instruction, at },
+        { role: "assistant" as const, text: candidate.changeSummary, at }
+      ].slice(-MAX_TURNS)
+    }));
+    clearCandidates();
+    notify("Option applied. Review it, then save the asset.");
+  }
+
+  function revertRevision(index: number) {
+    if (!selectedAsset?.revisions) return;
+    const snapshot: RewriteSnapshot = selectedAsset.revisions[index].before;
+    const meta = snapshot.meta || {};
+    setSelectedAsset({
+      ...selectedAsset,
+      title: snapshot.title,
+      content: snapshot.content,
+      cta: snapshot.cta,
+      meta,
+      factIds: snapshot.factIds,
+      status: "needs_review",
+      updatedAt: new Date().toISOString(),
+      revisions: selectedAsset.revisions.slice(0, index)
+    });
+    setDeliveryDraft(JSON.stringify(meta, null, 2));
+    notify("Reverted to the state before that revision.");
+  }
+
   function saveAsset() {
     if (!selectedAsset) return;
     let meta: Record<string, unknown>;
@@ -319,8 +519,24 @@ export default function ContentStudio() {
       meta = JSON.parse(deliveryDraft);
       if (!meta || typeof meta !== "object" || Array.isArray(meta)) throw new Error("Invalid notes");
     } catch { notify(t("Delivery notes must be a valid JSON object.")); return; }
-    setAssets((current) => current.map((asset) => asset.id === selectedAsset.id ? { ...selectedAsset, meta, status: "needs_review", updatedAt: new Date().toISOString() } : asset));
+    const draft = selectedAsset;
+    // Merge the drawer's fields onto whatever the asset looks like now: a pack regenerated while
+    // the editor was open must not be clobbered by a stale copy.
+    setAssets((current) => current.map((asset) => asset.id === draft.id ? {
+      ...asset,
+      title: draft.title,
+      content: draft.content,
+      cta: draft.cta,
+      deepLink: draft.deepLink,
+      factIds: draft.factIds,
+      riskFlags: draft.riskFlags,
+      revisions: draft.revisions,
+      meta,
+      status: "needs_review",
+      updatedAt: new Date().toISOString()
+    } : asset));
     setSelectedAsset(null);
+    clearCandidates();
     notify("Asset changes saved.");
   }
 
@@ -459,30 +675,93 @@ export default function ContentStudio() {
             <FactsView analysis={analysis} sourceText={sourceText} updateFact={updateFact} onGenerate={approveFactsAndGenerate} loading={loading} />
           )}
           {view === "assets" && (
-            <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={(asset) => { setSelectedAsset(asset); setDeliveryDraft(JSON.stringify(asset.meta || {}, null, 2)); }} onApprove={approveAsset} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} />
+            <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onApprove={approveAsset} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} />
           )}
           {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} loading={loading} />}
           {view === "settings" && <SettingsView />}
         </div>
       </main>
 
-      {selectedAsset && (
-        <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedAsset(null); }}>
+      {selectedAsset && viewAsset && (
+        <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDrawer(); }}>
           <aside className="asset-drawer">
             <div className="drawer-header">
               <div><span className="eyebrow">{t("EDIT ASSET")}</span><h2>{t(PLATFORM_META[selectedAsset.platform].label)}</h2></div>
-              <button className="icon-button" onClick={() => setSelectedAsset(null)}><X size={18} /></button>
+              <button className="icon-button" aria-label={t("Close editor")} onClick={closeDrawer}><X size={18} /></button>
             </div>
             <div className="drawer-meta"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[selectedAsset.platform].accent } as React.CSSProperties}>{platformIcon(selectedAsset.platform)} {labelForAsset(selectedAsset, t)}</span><span className={`status-badge ${selectedAsset.status}`}>{t(selectedAsset.status.replace("_", " "))}</span></div>
-            <label className="field-label">{t("Title / internal name")}<input value={selectedAsset.title} onChange={(event) => updateSelectedAsset("title", event.target.value)} /></label>
-            <label className="field-label">{t("Content")}<textarea className="drawer-textarea" value={selectedAsset.content} onChange={(event) => updateSelectedAsset("content", event.target.value)} /></label>
-            <label className="field-label">{t("CTA")}<input value={selectedAsset.cta || ""} onChange={(event) => updateSelectedAsset("cta", event.target.value)} /></label>
-            {selectedAsset.deepLink !== undefined && <label className="field-label">{t("Deep link")}<input value={selectedAsset.deepLink || ""} onChange={(event) => updateSelectedAsset("deepLink", event.target.value)} /></label>}
-            <div className="drawer-section"><div className="field-label">{t("Source references")}</div><div className="reference-list">{selectedAsset.factIds.length ? selectedAsset.factIds.map((id) => <span key={id} className="fact-reference"><ShieldCheck size={13} /> {id}</span>) : <span className="muted">{t("No references attached")}</span>}</div></div>
-            {selectedAsset.meta && <div className="drawer-section"><div className="field-label">{t("Delivery notes")}</div><div className="delivery-notes">{Object.entries(selectedAsset.meta).map(([key, value]) => <div key={key}><span>{key.replace(/([A-Z])/g, " $1")}</span><strong>{metaValue(value)}</strong></div>)}</div></div>}
-            <label className="field-label">{t("Edit delivery notes (JSON)")}<textarea className="drawer-textarea" value={deliveryDraft} onChange={event => setDeliveryDraft(event.target.value)} /></label>
-            {!!selectedAsset.riskFlags.length && <div className="info-banner"><div><strong>{t("Review before publishing")}</strong><ul>{selectedAsset.riskFlags.map((flag, index) => <li key={index}>{flag}</li>)}</ul></div></div>}
-            <div className="drawer-footer"><button className="secondary-button" onClick={() => setSelectedAsset(null)}>{t("Cancel")}</button><button className="primary-button" onClick={saveAsset}><Check size={16} /> {t("Save changes")}</button></div>
+
+            <div className="drawer-columns" ref={columnsAnchor}>
+              <div className="drawer-col">
+                <div className="col-head">
+                  {candidates.length
+                    ? <div className="preview-tabs"><button className={previewIndex === null ? "active" : ""} onClick={() => setPreviewIndex(null)}>{t("Draft")}</button>{candidates.map((_, index) => <button key={index} className={previewIndex === index ? "active" : ""} onClick={() => setPreviewIndex(index)}>{t("Option")} {index + 1}</button>)}</div>
+                    : <span className="eyebrow">{t("Draft")}</span>}
+                  <span className="col-hint">{viewAsset.content.length.toLocaleString()} {t("characters")}</span>
+                </div>
+                {previewCandidate && <div className="preview-banner">
+                  <strong>{t("Preview (not saved)")}</strong>
+                  <p>{previewCandidate.changeSummary}</p>
+                  <div className="preview-banner-actions"><button className="text-button" onClick={clearCandidates}>{t("Discard")}</button><button className="small-button" onClick={() => adoptCandidate(previewCandidate)}><Check size={14} /> {t("Use this option")}</button></div>
+                </div>}
+                <label className="field-label">{t("Title / internal name")}<input value={viewAsset.title} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("title", event.target.value)} /></label>
+                <label className="field-label">{t("Content")}<textarea className="drawer-textarea" value={viewAsset.content} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("content", event.target.value)} /></label>
+                <label className="field-label">{t("CTA")}<input value={viewAsset.cta || ""} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("cta", event.target.value)} /></label>
+                {viewAsset.deepLink !== undefined && <label className="field-label">{t("Deep link")}<input value={viewAsset.deepLink || ""} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("deepLink", event.target.value)} /></label>}
+                <div className="drawer-section"><div className="field-label">{t("Source references")}</div><div className="reference-list">{viewAsset.factIds.length ? viewAsset.factIds.map((id) => <span key={id} className="fact-reference"><ShieldCheck size={13} /> {id}</span>) : <span className="muted">{t("No references attached")}</span>}</div></div>
+                {viewAsset.meta && <div className="drawer-section"><div className="field-label">{t("Delivery notes")}</div><div className="delivery-notes">{Object.entries(viewAsset.meta).map(([key, value]) => <div key={key}><span>{key.replace(/([A-Z])/g, " $1")}</span><strong>{metaValue(value)}</strong></div>)}</div></div>}
+                <label className="field-label">{t("Edit delivery notes (JSON)")}<textarea className="drawer-textarea" value={previewCandidate ? JSON.stringify({ ...selectedAsset.meta, ...previewCandidate.asset.meta }, null, 2) : deliveryDraft} disabled={!!previewCandidate} onChange={event => setDeliveryDraft(event.target.value)} /></label>
+                {!!viewRiskFlags.length && <div className="info-banner"><div><strong>{t("Review before publishing")}</strong><ul>{viewRiskFlags.map((flag, index) => <li key={index}>{flag}</li>)}</ul></div></div>}
+              </div>
+
+              <div className="drawer-col rewrite-col">
+                <div className="col-head"><span className="eyebrow">{t("AI REWRITE")}</span><span className="col-hint">{t("Grounded in confirmed facts")}</span></div>
+
+                {!!rewriteError && <div className="rewrite-error"><TriangleAlert size={15} /><div><strong>{t("The rewrite did not run")}</strong><p>{rewriteError}</p><button className="text-button" onClick={requestRewrite}>{t("Try again")}</button></div></div>}
+
+                {!!activeThread.length && <div className="rewrite-thread">{activeThread.map((turn, index) => <div className={`thread-turn ${turn.role}`} key={`${turn.at}-${index}`}><span className="thread-role">{turn.role === "user" ? t("You") : "AI"}</span><p>{turn.text}</p></div>)}</div>}
+                {rewriting
+                  ? <div className="thread-thinking"><Loader2 className="spin" size={14} /> {t("Revising…")}</div>
+                  : !activeThread.length && !candidates.length && <div className="thread-empty"><strong>{t("Ask for a specific change.")}</strong>{t("The AI edits the draft in place and keeps every other sentence as it stands. Only confirmed facts can be used.")}</div>}
+
+                <div className="preset-row">{presets.map((preset) => <button key={preset} className="preset-chip" onClick={() => setInstruction(t(preset))}>{t(preset)}</button>)}</div>
+                <label className="field-label">{t("What should change?")}<textarea className="rewrite-input" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder={t("e.g. Cut the first sentence and keep every number and date.")} /></label>
+                <div className="composer-actions">
+                  <label className="option-count">{t("Options")}<select aria-label={t("Options")} value={optionCount} onChange={(event) => setOptionCount(Number(event.target.value))}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></label>
+                  <button className="primary-button" onClick={requestRewrite} disabled={rewriting || !instruction.trim()}>{rewriting ? <><Loader2 className="spin" size={15} /> {t("Revising…")}</> : <><Wand2 size={15} /> {t("Generate options")}</>}</button>
+                </div>
+                {droppedTurns > 0 && <div className="thread-note"><History size={12} /> {t("Older turns were dropped to fit the model's context window.")}</div>}
+
+                {!!candidates.length && <div className="candidate-section">
+                  <div className="col-head"><span className="eyebrow">{t("OPTIONS TO REVIEW")}</span><button className="text-button" onClick={clearCandidates}>{t("Discard")}</button></div>
+                  {candidates.map((candidate, index) => {
+                    const delta = candidate.asset.content.length - selectedAsset.content.length;
+                    return <div className={`candidate-card ${previewIndex === index ? "active" : ""}`} key={`${candidate.asset.id}-${index}`}>
+                      <span className="candidate-label">{t("Option")} {index + 1}</span>
+                      <p className="candidate-summary">{candidate.changeSummary}</p>
+                      <div className="candidate-metrics">
+                        <span className="metric-chip">{candidate.asset.content.length.toLocaleString()} {t("characters")}{delta !== 0 && ` (${delta > 0 ? "+" : "−"}${Math.abs(delta).toLocaleString()})`}</span>
+                        <span className={`metric-chip ${candidate.issues.length ? "warn" : "ok"}`}>{candidate.issues.length ? `${candidate.issues.length} ${t("quality issues")}` : t("No quality issues")}</span>
+                        <span className="metric-chip">{candidate.asset.factIds.length} {t("source refs")}</span>
+                      </div>
+                      {!!candidate.issues.length && <div className="candidate-issues"><strong><TriangleAlert size={12} /> {t("Still needs a look")}</strong><ul>{candidate.issues.map((issue, issueIndex) => <li key={issueIndex}>{issue}</li>)}</ul></div>}
+                      <div className="candidate-actions"><button className="preview-button" onClick={() => setPreviewIndex(index)}>{t("Preview")}</button><button className="small-button" onClick={() => adoptCandidate(candidate)}><Check size={14} /> {t("Use this option")}</button></div>
+                    </div>;
+                  })}
+                </div>}
+
+                {!!selectedAsset.revisions?.length && <div className="revision-section">
+                  <div className="col-head"><span className="eyebrow">{t("REVISION HISTORY")}</span><span className="col-hint">{selectedAsset.revisions.length} / {MAX_REVISIONS}</span></div>
+                  {selectedAsset.revisions.map((record, index) => <div className="revision-row" key={`${record.at}-${index}`}>
+                    <span className="revision-index">{index + 1}</span>
+                    <span className="revision-copy"><strong>{record.instruction}</strong><small>{new Date(record.at).toLocaleString()}</small></span>
+                    <button className="revert-button" onClick={() => revertRevision(index)}><RotateCcw size={12} /> {t("Undo")}</button>
+                  </div>)}
+                </div>}
+              </div>
+            </div>
+
+            <div className="drawer-footer"><button className="secondary-button" onClick={closeDrawer}>{t("Cancel")}</button><button className="primary-button" onClick={saveAsset}><Check size={16} /> {t("Save changes")}</button></div>
           </aside>
         </div>
       )}
@@ -653,15 +932,18 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
   );
 }
 
-function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onApprove, onGenerate, onExport, loading, usedFallback }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset) => void; onApprove: (id: string) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean }) {
+function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onApprove, onGenerate, onExport, loading, usedFallback, pendingPlatforms, targetCount }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset) => void; onApprove: (id: string) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean; pendingPlatforms: Platform[]; targetCount: number }) {
   const t = useTranslation();
   const counts = assets.reduce<Record<string, number>>((result, asset) => { result[asset.platform] = (result[asset.platform] || 0) + 1; return result; }, {});
+  const pendingForView = pendingPlatforms.filter((platform) => filter === "all" || platform === filter);
+  const generating = pendingPlatforms.length > 0;
   return (
     <>
-      <div className="page-heading compact-heading assets-heading"><div><div className="eyebrow">{t("STEP 02 / DISTRIBUTION PACK")}</div><h1>{t("Your content")} <em>{t("orbit.")}</em></h1><p>{t("One source, multiple native formats. Review each asset before your team takes it live.")}</p></div><div className="heading-actions"><button className="secondary-button" onClick={onGenerate} disabled={loading === "generate"}><RefreshCw size={15} /> {t("Regenerate")}</button><button className="primary-button" onClick={onExport}><Download size={15} /> {t("Export pack")}</button></div></div>
-      {usedFallback && <div className="info-banner"><Sparkles size={16} /><span><strong>{t("Pack completed with safe local templates.")}</strong> {t("The model was unavailable or returned fewer formats than requested, so missing assets were filled locally. All assets remain editable and require review.")}</span></div>}
+      <div className="page-heading compact-heading assets-heading"><div><div className="eyebrow">{t("STEP 02 / DISTRIBUTION PACK")}</div><h1>{t("Your content")} <em>{t("orbit.")}</em></h1><p>{t("One source, multiple native formats. Review each asset before your team takes it live.")}</p></div><div className="heading-actions"><button className="secondary-button" onClick={onGenerate} disabled={loading === "generate"}>{loading === "generate" ? <><Loader2 className="spin" size={15} /> {t("Generating…")}</> : <><RefreshCw size={15} /> {t("Regenerate")}</>}</button><button className="primary-button" onClick={onExport}><Download size={15} /> {t("Export pack")}</button></div></div>
+      {generating && <div className="info-banner generating-banner"><Loader2 className="spin" size={16} /><span><strong>{t("Generating…")}</strong> {pendingPlatforms.length} / {targetCount} {t("channels remaining")}</span></div>}
+      {usedFallback && !generating && <div className="info-banner"><Sparkles size={16} /><span><strong>{t("Pack completed with safe local templates.")}</strong> {t("The model was unavailable or returned fewer formats than requested, so missing assets were filled locally. All assets remain editable and require review.")}</span></div>}
       <div className="asset-toolbar"><div className="asset-tabs"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>{t("All assets")} <span>{assets.length}</span></button>{Object.entries(counts).map(([platform, count]) => <button key={platform} className={filter === platform ? "active" : ""} onClick={() => setFilter(platform as Platform)}>{t(PLATFORM_META[platform as Platform].short)} <span>{count}</span></button>)}</div><button className="filter-button"><Filter size={15} /> {t("Needs review")} <ChevronDown size={14} /></button></div>
-      {filteredAssets.length ? <div className="assets-grid">{filteredAssets.map((asset) => { const meta = PLATFORM_META[asset.platform]; return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><button className="card-more"><MoreHorizontal size={17} /></button></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div><span className="asset-type-label">{labelForAsset(asset, t)} · {t(asset.generationMode === "local" ? "Local starter draft" : asset.generationMode === "ai" ? "AI draft" : "Draft")}{asset.riskFlags.length > 0 && ` · ${t("Needs review")}: ${asset.riskFlags.length}`}</span><p className="asset-preview">{asset.content}</p><p className="config-source-note">{t("Preview only — open editor for full copy and production notes.")}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions"><button className="edit-button" onClick={() => onOpen(asset)}>{t("Open editor")} <ArrowRight size={14} /></button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>; })}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
+      {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => { const meta = PLATFORM_META[asset.platform]; return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><button className="card-more"><MoreHorizontal size={17} /></button></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div><span className="asset-type-label">{labelForAsset(asset, t)} · {t(asset.generationMode === "local" ? "Local starter draft" : asset.generationMode === "ai" ? "AI draft" : "Draft")}{asset.riskFlags.length > 0 && ` · ${t("Needs review")}: ${asset.riskFlags.length}`}</span><p className="asset-preview">{asset.content}</p><p className="config-source-note">{t("Preview only — open editor for full copy and production notes.")}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions"><button className="edit-button" onClick={() => onOpen(asset)}>{t("Open editor")} <ArrowRight size={14} /></button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>; })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );
 }
