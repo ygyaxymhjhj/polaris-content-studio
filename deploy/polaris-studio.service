@@ -1,0 +1,25 @@
+[Unit]
+Description=Polaris Content Studio (LAN test)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polaris-studio
+Group=polaris-studio
+WorkingDirectory=/opt/polaris-content-studio/app
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=ARTICLE_CRAWLER_LOCAL_BROWSER=false
+ExecStart=/usr/local/bin/node node_modules/next/dist/bin/next start --hostname 192.168.220.109 --port 13300
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/polaris-content-studio/app/.next
+
+[Install]
+WantedBy=multi-user.target
