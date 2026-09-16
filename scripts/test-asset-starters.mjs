@@ -9,7 +9,7 @@ const temp = await fs.mkdtemp(path.join(os.tmpdir(), "polaris-assets-"));
 const originalFetch = globalThis.fetch;
 const originalKey = process.env.AI_API_KEY;
 try {
-  for (const file of ["types", "asset-specs", "context-budget", "social-guidelines", "starter-assets", "ai"]) {
+  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "starter-assets", "ai"]) {
     const source = await fs.readFile(`src/lib/${file}.ts`, "utf8");
     const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
     await fs.writeFile(path.join(temp, `${file}.js`), outputText);
@@ -17,7 +17,8 @@ try {
   const require = createRequire(import.meta.url);
   const { starterAssets } = require(path.join(temp, 'starter-assets.js'));
   const { generateWithAI, rewriteAsset } = require(path.join(temp, 'ai.js'));
-  const { ASSET_SPECS } = require(path.join(temp, 'asset-specs.js'));
+  const { ASSET_SPECS, assetQualityIssues } = require(path.join(temp, 'asset-specs.js'));
+  const { detectSourceLanguage, dominantSourceLanguage, alignSourceConfig } = require(path.join(temp, 'source-config.js'));
   const { contextWindowFor, estimateTokens } = require(path.join(temp, 'context-budget.js'));
   const platforms = Object.keys(ASSET_SPECS);
   const config = { name: 'Test', title: 'Source update', category: '', language: 'en', audience: 'Readers', cta: 'Read more', sourceUrl: 'https://example.com/news', websiteUrl: '', tone: '', publishDate: '' };
@@ -60,7 +61,7 @@ try {
   assert(result.assets.filter(a => a.platform === 'push').every(a => a.generationMode === 'local'));
   assert(result.usedFallback);
 
-  // Platform voice rules follow the copy language, and no channel overrides it.
+  // "Prompt Social.md" fixes LinkedIn to English; every other channel follows the project language.
   const requests = [];
   globalThis.fetch = async (_url, options) => {
     const request = JSON.parse(options.body);
@@ -72,18 +73,111 @@ try {
   const promptFor = platform => requests.find(request => request.messages[1].content.includes(`for ${platform} ONLY`));
   const facebookPrompt = promptFor('facebook');
   const linkedinPrompt = promptFor('linkedin');
-  // Every channel writes in config.language; no channel overrides it.
-  for (const platform of ['facebook', 'linkedin', 'website']) {
+  // Channels without a fixed language keep writing in config.language.
+  for (const platform of ['facebook', 'website']) {
     const prompt = promptFor(platform).messages[1].content;
     assert.equal(/must use language (\w+)/.exec(prompt)[1], 'vi', `${platform} writes in config.language`);
     assert(prompt.includes('"language":"vi"'), `${platform} project context matches config.language`);
   }
   assert(facebookPrompt.messages[0].content.includes('Không biến mọi caption thành quảng cáo'), 'Vietnamese global rules go into the system prompt');
   assert(facebookPrompt.messages[1].content.includes('Mỗi caption đều phải có icon/emoji'), 'Vietnamese platform rules follow the project language');
-  assert(linkedinPrompt.messages[1].content.includes('Nội dung phải được viết bằng ngôn ngữ đầu ra'), 'LinkedIn voice rules follow the project language');
-  assert(!linkedinPrompt.messages[1].content.includes('100% bằng tiếng Anh'), 'No channel forces a language other than config.language');
-  assert(!linkedinPrompt.messages[0].content.includes('Write natural, readable English'), 'LinkedIn receives Vietnamese global rules like every other channel');
+  // LinkedIn publishes in English whatever the brief language, so every part of its prompt has to
+  // agree: the instruction, the global principles, the voice rules and the project context.
+  assert.equal(/must use language (\w+)/.exec(linkedinPrompt.messages[1].content)[1], 'en', 'LinkedIn writes in English even when the brief is Vietnamese');
+  assert(linkedinPrompt.messages[1].content.includes('"language":"en"'), 'LinkedIn project context reports the resolved language');
+  assert(linkedinPrompt.messages[1].content.includes('Write 100% of the copy in English'), 'LinkedIn gets the English-only platform rules');
+  assert(linkedinPrompt.messages[1].content.includes('never translate a draft sentence by sentence'), 'LinkedIn is told to write English directly, not to translate');
+  assert(linkedinPrompt.messages[0].content.includes('Write natural, readable English'), 'LinkedIn global rules match the output language');
+  assert(!linkedinPrompt.messages[0].content.includes('Viết tiếng Việt tự nhiên'), 'No Vietnamese writing principles reach the LinkedIn prompt');
+  assert(!linkedinPrompt.messages[1].content.includes('ngôn ngữ đầu ra đã cấu hình'), 'The rule that made LinkedIn follow config.language is gone');
   assert(!promptFor('website').messages[1].content.includes('PLATFORM VOICE RULES'), 'Platforms without voice rules keep the format brief only');
+  // The editor's actual first step: importing Vietnamese text decides the project language, and that
+  // decision must not reach the LinkedIn prompt. Everything above set language explicitly, so without
+  // this the imported-project case — the one that was reported — would never be exercised.
+  const emptyConfig = { name: '', title: '', category: '', language: 'en', audience: '', cta: '', websiteUrl: '', sourceUrl: '', tone: '', publishDate: '' };
+  const imported = alignSourceConfig(emptyConfig, { text: 'Giá vàng giao ngay tăng 1,4% sau khi Fed công bố giữ nguyên lãi suất.', sourceUrl: 'https://example.com/gold' }, new Set());
+  assert.equal(imported.language, 'vi', 'Importing Vietnamese source text decides the project language');
+  requests.length = 0;
+  await generateWithAI(imported, analysis, ['linkedin', 'facebook']);
+  assert.equal(/must use language (\w+)/.exec(promptFor('linkedin').messages[1].content)[1], 'en', 'An imported Vietnamese article still gets an English LinkedIn prompt');
+  assert.equal(/must use language (\w+)/.exec(promptFor('facebook').messages[1].content)[1], 'vi', 'The same import keeps the other channels in the imported language');
+
+  // The offline template quotes source text verbatim and cannot translate it, so a LinkedIn draft
+  // built from Vietnamese text is framed in English and carries an explicit warning instead of
+  // pretending to be publishable English copy.
+  const vietnameseFacts = facts.map((fact, index) => ({ ...fact, text: `Chi tiết ${index + 1}: thông báo nêu rõ người đọc có thể xem lại thông tin đã công bố và các giới hạn kèm theo.` }));
+  const vietnameseAnalysis = { ...analysis, facts: vietnameseFacts };
+  const offlineLinkedin = starterAssets({ ...config, language: 'vi' }, vietnameseAnalysis, ['linkedin']).assets[0];
+  assert(offlineLinkedin.content.includes('What the source says'), 'The offline LinkedIn frame is English, not the project language');
+  assert.equal(offlineLinkedin.content.includes('Thông tin từ bài viết'), false, 'No Vietnamese frame reaches a LinkedIn offline draft');
+  assert(offlineLinkedin.riskFlags.some(flag => flag.includes('cannot translate')), 'The offline LinkedIn draft warns that its quoted source is not English');
+  assert(offlineLinkedin.content.includes('Chi tiết 1'), 'Quoted source text is still copied verbatim, as the offline template documents');
+  const offlineFacebook = starterAssets({ ...config, language: 'vi' }, vietnameseAnalysis, ['facebook']).assets[0];
+  assert(offlineFacebook.content.includes('Thông tin từ bài viết'), 'Channels without a fixed language keep the project language offline');
+  // The warning follows the text, not the channel policy: choosing English for a Vietnamese article
+  // still leaves excerpt text that has to be rewritten, and matching channel and project language
+  // must not silence that.
+  const englishProjectLinkedin = starterAssets({ ...config, language: 'en' }, vietnameseAnalysis, ['linkedin']).assets[0];
+  assert(englishProjectLinkedin.riskFlags.some(flag => flag.includes('cannot translate')), 'A Vietnamese excerpt is warned about even when the project language is English');
+  const englishProjectEnglishFacts = starterAssets({ ...config, language: 'en' }, analysis, ['linkedin']).assets[0];
+  assert(!englishProjectEnglishFacts.riskFlags.some(flag => flag.includes('cannot translate')), 'English source text under an English project raises no language warning');
+  // A Vietnamese title or CTA inside an English draft has to be caught on its own: measuring it
+  // together with the quoted text dilutes it away and the draft looks ready to publish.
+  const vietnameseCta = starterAssets({ ...config, language: 'vi', cta: 'Đọc toàn bộ bài viết' }, analysis, ['linkedin']).assets[0];
+  assert(vietnameseCta.riskFlags.some(flag => flag.includes('the call to action')), 'A Vietnamese CTA is named even when the quoted facts are English');
+  const vietnameseTitle = starterAssets({ ...config, language: 'en', title: 'Giá vàng tăng sau quyết định của Fed' }, analysis, ['linkedin']).assets[0];
+  assert(vietnameseTitle.riskFlags.some(flag => flag.includes('the title')), 'A Vietnamese title is named even when the quoted facts are English');
+  assert(vietnameseTitle.riskFlags.every(flag => !flag.includes('the quoted facts')), 'Only the fields that actually mismatched are named');
+  // The wording separates a channel that fixes its language from a project setting, which was the
+  // whole point of the LinkedIn fix: Facebook publishes in Vietnamese because the project says so.
+  assert(offlineLinkedin.riskFlags.some(flag => flag.includes('LinkedIn publishes in en only')), 'A fixed channel is described by its own publishing rule');
+  const offlineFacebookEnglishSource = starterAssets({ ...config, language: 'vi' }, analysis, ['facebook']).assets[0];
+  const facebookLanguageFlag = offlineFacebookEnglishSource.riskFlags.find(flag => flag.includes('cannot translate'));
+  assert(facebookLanguageFlag && facebookLanguageFlag.includes('The project output language is vi'), 'Other channels are described by the project setting, not as a publishing rule');
+
+  // Language detection: the import path stays signal-based, the draft path weighs the whole text.
+  assert.equal(detectSourceLanguage({ text: 'Giá vàng tăng sau quyết định lãi suất.' }), 'vi', 'Vietnamese imports are detected');
+  assert.equal(detectSourceLanguage({ text: '金价在美联储决定后上涨。' }), 'zh', 'Chinese imports are detected');
+  assert.equal(detectSourceLanguage({ text: 'Gold prices rose after the Fed decision.' }), 'en', 'English imports are detected');
+  assert.equal(detectSourceLanguage({ text: 'Gold prices rose.', sourceUrl: 'https://example.com/vi/news' }), 'vi', 'A Vietnamese URL path still decides the import language');
+  assert.equal(dominantSourceLanguage('Chi tiết 1: thông báo nêu rõ người đọc có thể xem lại thông tin đã công bố và các giới hạn kèm theo.'), 'vi');
+  assert.equal(dominantSourceLanguage('金价在美联储决定后上涨，市场关注后续政策指引。'), 'zh');
+  assert.equal(dominantSourceLanguage('Gold prices rose 1.4% to $2,418 per ounce after the Fed held rates steady.'), 'en');
+  assert.equal(dominantSourceLanguage('Nguyễn Văn A, a strategist at Ngân hàng Nhà nước, said the Fed decision changes how retail platforms publish fees and withdrawal terms.'), 'en', 'A quotation or a name does not make an English draft Vietnamese');
+  assert.equal(dominantSourceLanguage('金价上涨，Nguyễn Văn A 表示市场关注美联储的决定。'), 'zh', 'A Vietnamese name does not flip a Chinese draft to Vietnamese');
+  // Import-chain behaviours that outdate nothing here but were never pinned: alignSourceConfig is what
+  // writes config.language, and the detector reads the title as well as the body.
+  assert.equal(alignSourceConfig(emptyConfig, { text: '金价在美联储决定后上涨。' }, new Set()).language, 'zh', 'Importing Chinese source text decides the project language');
+  assert.equal(alignSourceConfig(emptyConfig, { text: 'Gold prices rose after the Fed decision.' }, new Set()).language, 'en', 'Importing English source text keeps the project in English');
+  assert.equal(alignSourceConfig({ ...emptyConfig, language: 'en' }, { text: 'Giá vàng tăng.' }, new Set(['language'])).language, 'en', 'A language the editor chose survives the next import');
+  assert.equal(alignSourceConfig(emptyConfig, { text: 'Giá vàng tăng.' }, new Set()).cta, 'Đọc toàn bộ bài viết', 'The imported project gets defaults in its own language');
+  assert.equal(detectSourceLanguage({ title: 'Giá vàng tăng', text: 'Gold prices rose after the Fed decision.' }), 'vi', 'A Vietnamese title alone classifies an import as Vietnamese, as the detector reads the title too');
+
+  // The online path reports the same language mismatch the offline path warns about, and the
+  // generation retry reuses the issue, so a provider that ignores the channel cannot pass silently.
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const platform = request.messages[1].content.match(/for (\w+) ONLY/)[1];
+    const assets = starterAssets(config, analysis, [platform]).assets.map(asset => platform === 'linkedin'
+      ? { ...asset, content: 'Giá vàng giao ngay tăng 1,4% lên 2.418 USD/ounce sau khi Fed công bố giữ nguyên lãi suất, và thị trường phản ứng ngay sau cuộc họp báo kéo dài ba mươi phút.' }
+      : asset);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ assets }) } }] });
+  };
+  const ignored = await generateWithAI({ ...config, language: 'vi' }, analysis, ['linkedin']);
+  const refused = ignored.assets.find(asset => asset.platform === 'linkedin');
+  assert(refused.riskFlags.some(flag => flag.includes('publishes in en')), 'A LinkedIn draft that came back in Vietnamese is reported, not accepted silently');
+  assert(refused.generationMode === 'ai', 'The flagged draft is the provider reply, not a substituted local template');
+  // Assert on the language issue itself: these fixtures are far below the LinkedIn length minimum,
+  // so a bare length check would fail for an unrelated reason and point at the wrong code.
+  assert(!assetQualityIssues({ ...refused, content: 'Gold prices rose after the Fed held rates steady, and the market reacted within minutes of the briefing.' }, 'vi').some(issue => issue.includes('publishes in')), 'English LinkedIn copy passes the language check');
+  assert(!assetQualityIssues({ ...refused, content: 'Gold prices rose after the Fed held rates steady.' }, 'en').some(issue => issue.includes('publishes in')), 'The check does not fire when the channel follows the project language');
+  // Matching channel and project language must not hide the mismatch either: an English project that
+  // still receives Vietnamese LinkedIn copy is exactly the reported symptom.
+  const englishProjectReply = await generateWithAI({ ...config, language: 'en' }, analysis, ['linkedin']);
+  assert(englishProjectReply.assets[0].riskFlags.some(flag => flag.includes('publishes in en')), 'Vietnamese copy is reported even when the project language is already English');
+  // The gate is for the channel whose language the project cannot change. A draft from before a
+  // language switch must not start flagging every asset on channels that follow config.language.
+  assert(!assetQualityIssues({ ...refused, platform: 'facebook', content: 'Giá vàng giao ngay tăng 1,4% sau khi Fed công bố giữ nguyên lãi suất, và thị trường phản ứng ngay sau cuộc họp báo.' }, 'en').some(issue => issue.includes('publishes in')), 'Channels that follow the project language are not language-flagged');
 
   // Context budget: model windows, a conservative estimate, and the environment override.
   assert.equal(contextWindowFor('google/gemini-3.8-flash'), 1048576, 'Known model families are looked up');
@@ -151,7 +245,49 @@ try {
   assert(flagged.candidates[0].issues.length > 0, 'Content issues still ride along for the reviewer to judge');
   delete process.env.AI_MAX_CONTEXT;
 
-  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback, config.language-driven voice rules, model-aware context trimming and grounded single-asset rewriting. No paid API requests.');
+  // A draft saved before the channel language was fixed is still in the brief language. REWRITE_SYSTEM
+  // forbids touching sentences the request does not mention, so the conversion has to be spelled out
+  // or the model silently translates the whole post without the editor asking for it.
+  rewriteRequests.length = 0;
+  globalThis.fetch = async (_url, options) => {
+    rewriteRequests.push(JSON.parse(options.body));
+    const converted = { ...baseAsset, platform: 'linkedin', content: longCopy, changeSummary: 'Converted the draft to English' };
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ candidates: [converted] }) } }] });
+  };
+  const vietnameseDraft = { ...baseAsset, platform: 'linkedin', content: 'Cơ quan quản lý đã nêu rõ nghĩa vụ công bố thông tin cho các nền tảng phục vụ nhà đầu tư cá nhân, bao gồm phí giao dịch, khớp lệnh và điều kiện rút tiền.' };
+  await rewriteAsset({ ...config, language: 'vi' }, analysis, vietnameseDraft, [], 'ngắn hơn một chút', 1);
+  const linkedinRewrite = rewriteRequests[0].messages[1].content;
+  assert.equal(/must use language (\w+)/.exec(linkedinRewrite)[1], 'en', 'A LinkedIn revision writes in English even when the draft and brief are Vietnamese');
+  assert(linkedinRewrite.includes('"language":"en"'), 'The LinkedIn revision reports the resolved language in its project context');
+  assert(linkedinRewrite.includes('The current draft is written in vi'), 'The revision names the draft language it detected');
+  assert(linkedinRewrite.includes('convert the whole draft to en'), 'Converting the draft is an explicit instruction, not a silent translation');
+  assert(rewriteRequests[0].messages[0].content.includes('Write natural, readable English'), 'LinkedIn revision principles match the output language');
+  // The detector answers "is there any signal", so an English draft that merely names Vietnamese
+  // people or institutions must not be read as a Vietnamese draft and rewritten end to end.
+  rewriteRequests.length = 0;
+  const englishWithVietnameseNames = 'Nguyễn Văn A, a strategist at Ngân hàng Nhà nước, said the new disclosure duty changes how retail platforms in Việt Nam publish fees, order execution and withdrawal terms.';
+  await rewriteAsset({ ...config, language: 'vi' }, analysis, { ...baseAsset, platform: 'linkedin', content: englishWithVietnameseNames }, [], 'ngắn hơn một chút', 1);
+  const namedRewrite = rewriteRequests[0].messages[1].content;
+  assert.equal(/must use language (\w+)/.exec(namedRewrite)[1], 'en');
+  assert(!namedRewrite.includes('The current draft is written in'), 'An English draft naming Vietnamese entities is not treated as a foreign draft');
+  assert(!namedRewrite.includes('convert the whole draft to'), 'No whole-draft conversion is requested for a draft already in the channel language');
+  // Every channel has to produce copy in the language the prompt asks for, so a draft in another
+  // language is converted explicitly rather than left alone while the prompt demands the other one.
+  rewriteRequests.length = 0;
+  await rewriteAsset({ ...config, language: 'vi' }, analysis, baseAsset, [], 'ngắn hơn một chút', 1);
+  assert(rewriteRequests[0].messages[1].content.includes('convert the whole draft to vi'), 'A mismatch on any channel is converted explicitly instead of leaving the prompt self-contradictory');
+  // A mismatch can also come from a project language the editor changed after the draft was written,
+  // so the draft language is read from the text rather than inferred from the channel policy.
+  rewriteRequests.length = 0;
+  await rewriteAsset({ ...config, language: 'en' }, analysis, vietnameseDraft, [], 'shorten it', 1);
+  const englishProjectRewrite = rewriteRequests[0].messages[1].content;
+  assert(englishProjectRewrite.includes('convert the whole draft to en'), 'An English project still converts a Vietnamese LinkedIn draft');
+  assert.equal(/must use language (\w+)/.exec(englishProjectRewrite)[1], 'en');
+  rewriteRequests.length = 0;
+  await rewriteAsset({ ...config, language: 'vi' }, analysis, { ...baseAsset, content: 'Giá vàng giao ngay tăng 1,4% sau khi Fed công bố giữ nguyên lãi suất, và thị trường phản ứng ngay sau cuộc họp báo kéo dài ba mươi phút.' }, [], 'ngắn hơn một chút', 1);
+  assert(!rewriteRequests[0].messages[1].content.includes('convert the whole draft to'), 'A draft already in the requested language is left alone');
+
+  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming and grounded single-asset rewriting. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

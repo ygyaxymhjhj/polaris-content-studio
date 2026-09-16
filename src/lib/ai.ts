@@ -1,7 +1,8 @@
 import { starterAssets } from "./starter-assets";
 import { ASSET_SPECS, assetQualityIssues } from "./asset-specs";
 import { estimateTokens, planConversation } from "./context-budget";
-import { GLOBAL_GUIDELINES, PLATFORM_GUIDELINES } from "./social-guidelines";
+import { GLOBAL_GUIDELINES, channelVoice } from "./social-guidelines";
+import { dominantSourceLanguage } from "./source-config";
 import { ContentAsset, FactItem, GenerateResponse, PLATFORM_META, Platform, ProjectConfig, RewriteCandidate, RewriteMessage, RewriteResponse, SourceAnalysis } from "./types";
 
 const now = () => new Date().toISOString();
@@ -180,7 +181,7 @@ function completeAssetPack(assets: ContentAsset[], config: ProjectConfig, analys
     }
   });
 
-  return { assets: completed.map(asset => ({ ...asset, riskFlags: [...new Set([...asset.riskFlags, ...assetQualityIssues(asset)])] })), usedFallback };
+  return { assets: completed.map(asset => ({ ...asset, riskFlags: [...new Set([...asset.riskFlags, ...assetQualityIssues(asset, config.language)])] })), usedFallback };
 }
 
 export async function generateWithAI(config: ProjectConfig, analysis: SourceAnalysis, platforms: Platform[]): Promise<GenerateResponse> {
@@ -189,18 +190,22 @@ export async function generateWithAI(config: ProjectConfig, analysis: SourceAnal
   if (!reviewed.facts.length) return { assets: [], usedFallback: false };
   if (!process.env.AI_API_KEY) return completeAssetPack([], config, reviewed, requested);
   const assets: ContentAsset[] = [];
-  const language = config.language;
+  const configured = config.language;
   async function generatePlatform(platform: Platform) {
     const spec = ASSET_SPECS[platform];
-    // Every channel writes in config.language, and the voice rules are injected in that same
-    // language so the instructions can never contradict the requested output language.
-    const guidelines = PLATFORM_GUIDELINES[platform]?.[language];
+    // The channel decides the output language: most channels follow the project language, while
+    // "Prompt Social.md" fixes LinkedIn to English whatever language the brief arrived in. The
+    // voice rules are injected in that same language, so nothing in the prompt can contradict it.
+    const { language, guidelines } = channelVoice(platform, configured);
+    // PROJECT carries the brief language, so a fixed channel gets the resolved value instead: the
+    // prompt must agree with itself, and the channel rules explain the brief's own language.
+    const project = language === configured ? config : { ...config, language };
     const system = `${PRODUCTION_EDITOR_SYSTEM}\n\nWRITING PRINCIPLES:\n${GLOBAL_GUIDELINES[language]}`;
-    const prompt = `Write ${spec.count} complete starter assets for ${platform} ONLY. Return {assets:[...]}. Each asset requires platform, assetType, title (internal label), content (complete final copy/script, not a summary or outline), factIds (exact IDs used), riskFlags, status=needs_review, cta, meta. All copy AND delivery notes must use language ${language}. Include cta within publishable copy naturally. Use only the configured real URL; if missing, omit links and flag that a destination needs review. No placeholder links. Do not put production instructions inside social post bodies. For multisection formats include every publishable section in content and mirror structured details in meta. Do not pad or repeat facts to meet length targets; if source is sparse, produce a shorter honest draft and flag missing context.\nFORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\nPROJECT:\n${JSON.stringify(config)}\nFACT PACK:\n${factText(reviewed.facts)}`;
+    const prompt = `Write ${spec.count} complete starter assets for ${platform} ONLY. Return {assets:[...]}. Each asset requires platform, assetType, title (internal label), content (complete final copy/script, not a summary or outline), factIds (exact IDs used), riskFlags, status=needs_review, cta, meta. All copy AND delivery notes must use language ${language}. Include cta within publishable copy naturally. Use only the configured real URL; if missing, omit links and flag that a destination needs review. No placeholder links. Do not put production instructions inside social post bodies. For multisection formats include every publishable section in content and mirror structured details in meta. Do not pad or repeat facts to meet length targets; if source is sparse, produce a shorter honest draft and flag missing context.\nFORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\nPROJECT:\n${JSON.stringify(project)}\nFACT PACK:\n${factText(reviewed.facts)}`;
     let best: ContentAsset[] = [];
     const issuesFor = (items: ContentAsset[]) => [
       ...(items.length === spec.count ? [] : [`Expected ${spec.count} assets; received ${items.length}`]),
-      ...items.flatMap(asset => [...assetQualityIssues(asset), ...(!asset.factIds.length ? ["Missing fact IDs"] : [])])
+      ...items.flatMap(asset => [...assetQualityIssues(asset, configured), ...(!asset.factIds.length ? ["Missing fact IDs"] : [])])
     ];
     for (let attempt = 0; attempt < 2; attempt++) {
       // A failed attempt leaves nothing to revise, so the retry re-asks from scratch.
@@ -253,14 +258,26 @@ export async function rewriteAsset(
   const reviewed = { ...analysis, facts: analysis.facts.filter(fact => fact.verified && fact.usableOnSocial) };
   if (!reviewed.facts.length || !process.env.AI_API_KEY) return { candidates: [], droppedTurns: 0 };
 
-  const language = config.language;
+  const configured = config.language;
   const spec = ASSET_SPECS[asset.platform];
-  const guidelines = PLATFORM_GUIDELINES[asset.platform]?.[language];
+  // Same channel policy as generation: a fixed channel keeps its own output language even when
+  // the project, and the editor's instruction, are written in another one.
+  const { language, guidelines } = channelVoice(asset.platform, configured);
+  const project = language === configured ? config : { ...config, language };
+  const briefLanguageNote = language === configured ? "" : ` The brief and the revision request are written in ${configured}; follow them, but write the copy in ${language}.`;
+  // A draft can be in a different language than the copy requires: the project language may have
+  // been changed after the draft was written, or the editor pasted it from somewhere else. The prompt
+  // already demands ${language}, and REWRITE_SYSTEM forbids touching sentences the request does not
+  // mention, so the conversion has to be an explicit instruction rather than a silent translation.
+  // The check reads the draft itself, never the channel policy, because the mismatch is a property of
+  // the text and not of the channel it is meant for.
+  const draftLanguage = dominantSourceLanguage(asset.content);
+  const draftLanguageNote = draftLanguage === language ? "" : ` The current draft is written in ${draftLanguage}, which is not the language ${asset.platform} publishes in: convert the whole draft to ${language} as part of this revision and state that in changeSummary.`;
   const system = `${PRODUCTION_EDITOR_SYSTEM}\n\n${REWRITE_SYSTEM}\n\nWRITING PRINCIPLES:\n${GLOBAL_GUIDELINES[language]}`;
   // The platform has to be part of the draft: normalisation drops every candidate that does not
   // echo it, so omitting it silently rejects the whole reply.
   const draft = JSON.stringify({ platform: asset.platform, assetType: asset.assetType, title: asset.title, content: asset.content, cta: asset.cta, meta: asset.meta, factIds: asset.factIds, riskFlags: asset.riskFlags }, null, 2);
-  const constraints = `FORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\n\nPROJECT:\n${JSON.stringify(config)}\n\nFACT PACK:\n${factText(reviewed.facts)}`;
+  const constraints = `FORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\n\nPROJECT:\n${JSON.stringify(project)}\n\nFACT PACK:\n${factText(reviewed.facts)}`;
 
   // Reasoning models derive their thinking budget from max_tokens, so a cap meant to bound the
   // reply starves it instead: measured on gemini-3.8-flash, the model spends ~96% of whatever it
@@ -281,7 +298,7 @@ export async function rewriteAsset(
     ? `\n(${plan.droppedTurns} older turn(s) were dropped to fit the context window. The CURRENT DRAFT is authoritative.)`
     : "";
 
-  const prompt = `Revise the CURRENT DRAFT. Return {candidates:[...]} with ${count} genuinely different options. Every candidate must carry platform="${asset.platform}" and assetType="${asset.assetType}" exactly as given, plus title, content (complete final copy, never a summary), cta, meta, factIds, riskFlags and changeSummary. Keep every sentence the REVISION REQUEST does not touch exactly as it stands, and stay inside the format limits below. All copy AND delivery notes must use language ${language}; write changeSummary in that language too.\n\nCURRENT DRAFT:\n${draft}\n\nCONVERSATION SO FAR:\n${transcript}${droppedNote}\n\nREVISION REQUEST:\n${instruction}\n\nCONSTRAINTS:\n${constraints}`;
+  const prompt = `Revise the CURRENT DRAFT. Return {candidates:[...]} with ${count} genuinely different options. Every candidate must carry platform="${asset.platform}" and assetType="${asset.assetType}" exactly as given, plus title, content (complete final copy, never a summary), cta, meta, factIds, riskFlags and changeSummary. Keep every sentence the REVISION REQUEST does not touch exactly as it stands, and stay inside the format limits below. All copy AND delivery notes must use language ${language}; write changeSummary in that language too.${briefLanguageNote}${draftLanguageNote}\n\nCURRENT DRAFT:\n${draft}\n\nCONVERSATION SO FAR:\n${transcript}${droppedNote}\n\nREVISION REQUEST:\n${instruction}\n\nCONSTRAINTS:\n${constraints}`;
 
   const candidatesFrom = (raw: unknown): RewriteCandidate[] => (Array.isArray(raw) ? raw : [])
     .flatMap((item, index) => {
@@ -294,7 +311,7 @@ export async function rewriteAsset(
       const summary = (item as { changeSummary?: unknown }).changeSummary;
       return [{
         asset: revision,
-        issues: assetQualityIssues(revision),
+        issues: assetQualityIssues(revision, configured),
         changeSummary: typeof summary === "string" && summary.trim() ? summary.trim() : `Revision ${index + 1}`
       } satisfies RewriteCandidate];
     })

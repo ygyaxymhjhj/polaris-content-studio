@@ -7,16 +7,53 @@ export interface ImportedSource {
   canonical?: string;
 }
 
+/**
+ * Vietnamese letters, split by how much they prove on their own. The distinctive set is enough to
+ * identify a language from one occurrence, so the import detector uses only that (a shared mark in
+ * café or Bogotá proves nothing). Weighing whole words cannot be fooled that way, so the draft
+ * detector also counts the shared tone marks — otherwise Giá, vàng, báo and phút read as English.
+ */
+const VIETNAMESE_MARKS = "ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ";
+const SHARED_TONE_MARKS = "áàãéèíìóòõúùý";
+const CJK_MARKS = "[\\u3400-\\u9fff]";
+const VIETNAMESE_MARK = new RegExp(`[${VIETNAMESE_MARKS}]`, "i");
+const VIETNAMESE_LETTER = new RegExp(`[${VIETNAMESE_MARKS}${SHARED_TONE_MARKS}]`, "i");
+const CJK_MARK = new RegExp(CJK_MARKS, "u");
+const CJK_MARKS_ALL = new RegExp(CJK_MARKS, "gu");
+
 export function detectSourceLanguage(source: ImportedSource): ProjectConfig["language"] {
   const text = `${source.title || ""}\n${source.text.slice(0, 4000)}`;
-  if (/[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i.test(text)) return "vi";
-  if (/[\u3400-\u9fff]/u.test(text)) return "zh";
+  if (VIETNAMESE_MARK.test(text)) return "vi";
+  if (CJK_MARK.test(text)) return "zh";
   try {
     const path = new URL(source.sourceUrl || source.canonical || "").pathname;
     if (/^\/vi\//i.test(path)) return "vi";
     if (/^\/(zh|zh-cn|zh-tw|cn)\//i.test(path)) return "zh";
   } catch { /* Text imports do not have a URL. */ }
   return "en";
+}
+
+/** Share of a text's letters or words that one script must own to count as its language. */
+const DOMINANT_CHAR_SHARE = 0.2;
+const DOMINANT_WORD_SHARE = 0.5;
+
+/**
+ * Whether a finished draft is *written* in a non-English language rather than merely quoting one.
+ * detectSourceLanguage answers "is there any signal", which is right for an imported article and
+ * wrong for a draft: acting on a single accented name replaces every sentence of a good post.
+ */
+export function dominantSourceLanguage(text: string): ProjectConfig["language"] {
+  const letters = (text.match(/\p{L}/gu) || []).length;
+  // Chinese first: every CJK character is also a letter, so a Chinese draft naming a Vietnamese
+  // entity would otherwise be weighed as Vietnamese and reported in the wrong language.
+  if (letters && (text.match(CJK_MARKS_ALL) || []).length / letters >= DOMINANT_CHAR_SHARE) return "zh";
+  // Vietnamese is weighed per word rather than per letter. Almost every Vietnamese word carries a
+  // diacritic, while an English draft quoting a Vietnamese name accents only a few of its words, so
+  // the two sit far apart (measured: roughly 0.7 against 0.2) even in a short draft. Counting single
+  // letters instead leaves a real Vietnamese body near 0.15, which no threshold can separate.
+  const words = text.match(/\p{L}+/gu) || [];
+  const marked = words.filter(word => VIETNAMESE_LETTER.test(word)).length;
+  return words.length && marked / words.length >= DOMINANT_WORD_SHARE ? "vi" : "en";
 }
 
 function categoryFor(text: string): string {

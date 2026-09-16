@@ -1,16 +1,30 @@
 import type { Platform, ProjectConfig } from "./types";
 
-type Language = ProjectConfig["language"];
+export type Language = ProjectConfig["language"];
+
+export interface ChannelVoice {
+  /** Language the published copy must be written in. */
+  language: Language;
+  /** Voice rules injected into the prompt, already written in that language. */
+  guidelines?: string;
+  /** True when the channel publishes in one language whatever the project language says. */
+  fixed: boolean;
+}
 
 /**
- * Platform voice rules transcribed from "Prompt Social.md" at the repository root.
- * That document is the source of truth: when it changes, update this file too.
- *
- * Selection rule: inject the version matching config.language, so the rules never
- * contradict the requested output language. No channel overrides the output language.
- * website and faq have no section in the document and keep their ASSET_SPECS brief unchanged.
+ * Voice for one channel: the language its copy is published in, plus the rules for writing it.
+ * The two travel together on purpose. "Prompt Social.md" fixes some channels to a single
+ * language — LinkedIn publishes in English only — and a channel must never be asked for copy in
+ * a language it does not publish, nor handed rules written for a different one. Callers that need
+ * to know whether the project language was overridden ask this function rather than re-deriving
+ * the rule from a comparison, so the channel policy stays in one place.
  */
+export function channelVoice(platform: Platform, configured: Language): ChannelVoice {
+  if (platform === "linkedin") return { language: "en", guidelines: LINKEDIN_GUIDELINES, fixed: true };
+  return { language: configured, guidelines: PLATFORM_GUIDELINES[platform]?.[configured], fixed: false };
+}
 
+/** Writing principles for every channel, kept in the language the copy is written in. */
 export const GLOBAL_GUIDELINES: Record<Language, string> = {
   vi: [
     "- Viết tiếng Việt tự nhiên, dễ đọc, đúng ngữ cảnh; không lạm dụng từ Hán–Việt, khẩu hiệu sáo rỗng hoặc văn phong quá trang trọng.",
@@ -53,6 +67,30 @@ export const GLOBAL_GUIDELINES: Record<Language, string> = {
   ].join("\n")
 };
 
+/**
+ * LinkedIn is an English-only channel, so its rules exist once, in English, and are never
+ * localized: the brief, the article and the project fields may arrive in Vietnamese or Chinese,
+ * but the published copy is English. Transcribed from the LinkedIn section of "Prompt Social.md",
+ * which states the copy must be written 100% in English.
+ */
+const LINKEDIN_GUIDELINES = [
+  "LinkedIn is an English-only channel, reaching an international audience interested in finance, forex, gold, trading, fintech, business and related topics. The article, the brief and the project fields are editorial input and may be written in another language; the published copy is English.",
+  "- Write 100% of the copy in English.",
+  "- Write the English directly from the source facts; never translate a draft sentence by sentence or word by word.",
+  "- Do not carry over phrasing, structures or wordplay that only work in another language and read awkwardly in English.",
+  "- Wording must be natural, clear, professional and suited to an international setting.",
+  "- Industry terms (finance, forex, gold, trading, fintech, regulation) are fine, but a general reader must still follow the content.",
+  "- Project fields such as title, audience and cta are editorial context: express them in natural English instead of copying them verbatim in another language.",
+  "- Do not write like a press release or stiff corporate copy.",
+  "- Avoid empty phrases such as “In today's rapidly changing world”, “We are thrilled to announce” or “This marks a new era…” unless truly necessary.",
+  "- Delivery notes and meta values are English as well. A revision request may arrive in another language: follow it, but answer in English."
+].join("\n");
+
+/**
+ * Platform voice rules transcribed from "Prompt Social.md" at the repository root. That document is
+ * the source of truth: when it changes, update this file too. website and faq have no section in the
+ * document and keep their ASSET_SPECS brief unchanged.
+ */
 export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, string>>> = {
   facebook: {
     vi: [
@@ -101,35 +139,6 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- The opening sentence must be engaging and tell readers immediately what the post is about.",
       "- The body keeps only the essential information — short, clear and continuous.",
       "- Every caption needs an icon/emoji chosen from the article content."
-    ].join("\n")
-  },
-  linkedin: {
-    vi: [
-      "LinkedIn hướng đến nhóm người dùng quốc tế và đối tượng quan tâm đến tài chính, forex, vàng, trading, fintech, business và các chủ đề liên quan. Nội dung phải được viết bằng ngôn ngữ đầu ra đã cấu hình, không dịch máy móc từ ngôn ngữ nguồn.",
-      "- Câu chữ phải tự nhiên, rõ ràng, chuyên nghiệp và phù hợp với môi trường quốc tế.",
-      "- Không dịch từng câu theo kiểu word-by-word.",
-      "- Không giữ nguyên cách diễn đạt, cấu trúc hoặc lối chơi chữ chỉ phù hợp với ngôn ngữ nguồn nếu khi chuyển ngữ sẽ trở nên gượng gạo.",
-      "- Có thể sử dụng thuật ngữ chuyên ngành về tài chính, forex, vàng, trading, fintech, regulation… nhưng phải đảm bảo người đọc phổ thông vẫn hiểu được.",
-      "- Không viết theo kiểu thông cáo báo chí hoặc corporate content quá cứng.",
-      "- Không sử dụng những câu sáo rỗng như “In today's rapidly changing world”, “We are thrilled to announce”, “This marks a new era…” nếu không thực sự cần thiết."
-    ].join("\n"),
-    zh: [
-      "LinkedIn 面向国际用户，以及关注金融、外汇、黄金、交易、金融科技、商业及相关主题的受众。内容必须使用配置的输出语言撰写，不要从原文机械直译。",
-      "- 措辞要自然、清晰、专业，符合国际环境。",
-      "- 不要逐句、逐词翻译。",
-      "- 如果某种表达、结构或双关只适合原文语言、转换后会显得生硬，就不要保留。",
-      "- 可以使用金融、外汇、黄金、交易、金融科技、监管等专业术语，但要保证普通读者也能看懂。",
-      "- 不要写成新闻通稿或过于僵硬的 corporate 文案。",
-      "- 非必要不要使用 “In today's rapidly changing world”、“We are thrilled to announce”、“This marks a new era…” 之类的空话。"
-    ].join("\n"),
-    en: [
-      "LinkedIn reaches an international audience interested in finance, forex, gold, trading, fintech, business and related topics. Write in the configured output language; do not translate mechanically from the source.",
-      "- Wording must be natural, clear, professional and suited to an international setting.",
-      "- Do not translate sentence by sentence or word by word.",
-      "- Do not carry over phrasing, structures or wordplay that only work in the source language and read awkwardly after translation.",
-      "- Industry terms (finance, forex, gold, trading, fintech, regulation) are fine, but a general reader must still follow the content.",
-      "- Do not write like a press release or stiff corporate copy.",
-      "- Avoid empty phrases such as “In today's rapidly changing world”, “We are thrilled to announce” or “This marks a new era…” unless truly necessary."
     ].join("\n")
   },
   x: {

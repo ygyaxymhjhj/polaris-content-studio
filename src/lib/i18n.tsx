@@ -89,6 +89,7 @@ const messages: Record<string, [string, string]> = {
   "Article title": ["文章标题", "Tiêu đề bài viết"],
   "Category": ["分类", "Danh mục"],
   "Language": ["生成内容语言", "Ngôn ngữ nội dung đầu ra"],
+  "LinkedIn is always English": ["LinkedIn 固定英文", "LinkedIn luôn dùng tiếng Anh"],
   "Gold": ["黄金", "Vàng"], "Forex": ["外汇", "Ngoại hối"], "Broker": ["交易商", "Nhà môi giới"],
   "Scam alert": ["诈骗警示", "Cảnh báo lừa đảo"], "Point Mall": ["积分商城", "Cửa hàng điểm thưởng"],
   "Vietnamese": ["越南语", "Tiếng Việt"], "Chinese": ["中文", "Tiếng Trung"], "English": ["英语", "Tiếng Anh"],

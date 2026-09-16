@@ -1,30 +1,53 @@
 import { ASSET_SPECS } from "./asset-specs";
+import { channelVoice } from "./social-guidelines";
+import { dominantSourceLanguage } from "./source-config";
+import { PLATFORM_META } from "./types";
 import type { ContentAsset, GenerateResponse, Platform, ProjectConfig, SourceAnalysis } from "./types";
 
 /** Offline drafts use exact reviewed source text; they cannot translate or add facts. */
 export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, platforms: Platform[]): GenerateResponse {
   const facts = analysis.facts.filter(f => f.verified && f.usableOnSocial);
-  const l = (en: string, zh: string, vi: string) => config.language === "zh" ? zh : config.language === "vi" ? vi : en;
-  const label = {
-    context: l("What the source says", "原文信息", "Thông tin từ bài viết"),
-    details: l("Key details", "关键细节", "Chi tiết chính"),
-    limits: l("Scope and limitations", "信息范围与限制", "Phạm vi và giới hạn"),
-    caution: l("These points reflect the source article, not independent verification or investment advice. Please check the original context.", "以上内容依据原文整理，并非独立核实结果或投资建议，请结合原文语境阅读。", "Các thông tin này được tổng hợp từ bài viết, không phải kết quả xác minh độc lập hay lời khuyên đầu tư. Vui lòng đọc trong ngữ cảnh gốc."),
-    question: l("Which detail would you like us to explain further?", "你希望进一步了解哪一项细节？", "Bạn muốn tìm hiểu thêm chi tiết nào?"),
-    unknown: l("The reviewed source does not provide further details.", "已审核来源未提供更多细节。", "Nguồn đã duyệt không cung cấp thêm chi tiết."),
-    title: l("Title", "标题", "Tiêu đề"), body: l("Body", "正文", "Nội dung"), caption: l("Posting caption", "发布配文", "Chú thích bài đăng"),
-    visual: l("Suggested production: neutral editorial fact cards. No fabricated screenshots, testimony or performance charts.", "制作建议：中性的编辑事实卡片，不制作虚假截图、证言或收益图。", "Gợi ý sản xuất: thẻ thông tin trung lập. Không dựng ảnh chụp, lời chứng hay biểu đồ lợi nhuận giả."),
-    fallback: l("Local starter draft: source excerpts remain in their original language. Review completeness, language and attribution before publication.", "本地初稿：事实摘录保留原文语言。发布前请检查完整性、语言和归因。", "Bản nháp cục bộ: trích đoạn giữ nguyên ngôn ngữ nguồn. Kiểm tra độ đầy đủ, ngôn ngữ và quy thuộc trước khi đăng.")
-  };
   const url = config.websiteUrl || config.sourceUrl;
-  const cta = [config.cta || l("Read the full article", "阅读完整文章", "Đọc toàn bộ bài viết"), url].filter(Boolean).join("\n");
   const title = config.title;
   const texts = facts.map(f => f.text);
   const all = texts.join("\n\n");
-  const options = [label.context, label.details, label.limits, l("Another question (comment below)", "其他问题（请留言）", "Câu hỏi khác (bình luận bên dưới)")];
   const assets: ContentAsset[] = [];
   if (!facts.length) return { assets, usedFallback: true };
   for (const platform of platforms) {
+    // "Prompt Social.md" fixes some channels to a single output language, so everything written
+    // around the quoted source text uses the language this channel actually publishes in.
+    const { language, fixed } = channelVoice(platform, config.language);
+    const l = (en: string, zh: string, vi: string) => language === "zh" ? zh : language === "vi" ? vi : en;
+    const label = {
+      context: l("What the source says", "原文信息", "Thông tin từ bài viết"),
+      details: l("Key details", "关键细节", "Chi tiết chính"),
+      limits: l("Scope and limitations", "信息范围与限制", "Phạm vi và giới hạn"),
+      caution: l("These points reflect the source article, not independent verification or investment advice. Please check the original context.", "以上内容依据原文整理，并非独立核实结果或投资建议，请结合原文语境阅读。", "Các thông tin này được tổng hợp từ bài viết, không phải kết quả xác minh độc lập hay lời khuyên đầu tư. Vui lòng đọc trong ngữ cảnh gốc."),
+      question: l("Which detail would you like us to explain further?", "你希望进一步了解哪一项细节？", "Bạn muốn tìm hiểu thêm chi tiết nào?"),
+      unknown: l("The reviewed source does not provide further details.", "已审核来源未提供更多细节。", "Nguồn đã duyệt không cung cấp thêm chi tiết."),
+      title: l("Title", "标题", "Tiêu đề"), body: l("Body", "正文", "Nội dung"), caption: l("Posting caption", "发布配文", "Chú thích bài đăng"),
+      visual: l("Suggested production: neutral editorial fact cards. No fabricated screenshots, testimony or performance charts.", "制作建议：中性的编辑事实卡片，不制作虚假截图、证言或收益图。", "Gợi ý sản xuất: thẻ thông tin trung lập. Không dựng ảnh chụp, lời chứng hay biểu đồ lợi nhuận giả."),
+      fallback: l("Local starter draft: source excerpts remain in their original language. Review completeness, language and attribution before publication.", "本地初稿：事实摘录保留原文语言。发布前请检查完整性、语言和归因。", "Bản nháp cục bộ: trích đoạn giữ nguyên ngôn ngữ nguồn. Kiểm tra độ đầy đủ, ngôn ngữ và quy thuộc trước khi đăng.")
+    };
+    const cta = [config.cta || l("Read the full article", "阅读完整文章", "Đọc toàn bộ bài viết"), url].filter(Boolean).join("\n");
+    const options = [label.context, label.details, label.limits, l("Another question (comment below)", "其他问题（请留言）", "Câu hỏi khác (bình luận bên dưới)")];
+    // This template copies reviewed source text verbatim and cannot translate it, so anything left in
+    // another language has to be named. The quoted text and the short fields are tested separately: a
+    // Vietnamese title or CTA inside an otherwise English draft would be diluted away by a single
+    // measurement over the whole draft, and the draft would look ready to publish.
+    const sourceLanguage = dominantSourceLanguage(all);
+    const mismatched = [
+      sourceLanguage !== language ? `the quoted facts (${sourceLanguage})` : "",
+      title && dominantSourceLanguage(title) !== language ? "the title" : "",
+      config.cta && dominantSourceLanguage(config.cta) !== language ? "the call to action" : ""
+    ].filter(Boolean);
+    // Only a fixed channel has a publishing rule of its own; everywhere else this is the project
+    // setting, and calling it a platform rule would misstate why the copy has to change.
+    const languageRule = fixed ? `${PLATFORM_META[platform].label} publishes in ${language} only` : `The project output language is ${language}`;
+    const mismatchedList = mismatched.length > 1 ? `${mismatched.slice(0, -1).join(", ")} and ${mismatched.at(-1)}` : mismatched[0] || "";
+    const languageWarning = mismatchedList
+      ? `${languageRule}. The offline template cannot translate, so ${mismatchedList} must be rewritten in ${language} before publishing.`
+      : "";
     for (let variant = 0; variant < ASSET_SPECS[platform].count; variant++) {
       const ordered = variant === 1 ? [...texts].reverse() : texts;
       const blocks = ordered.join("\n\n");
@@ -129,7 +152,7 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
           break;
         }
       }
-      assets.push({ id: `local-${platform}-${variant + 1}`, platform, assetType, title: `${title} · ${variant + 1}`, variant: String.fromCharCode(65 + variant), content, cta: config.cta, ...(url && platform === "push" ? { deepLink: url } : {}), factIds: facts.map(f => f.id), riskFlags: [label.fallback], status: "needs_review", updatedAt: new Date().toISOString(), meta, generationMode: "local" });
+      assets.push({ id: `local-${platform}-${variant + 1}`, platform, assetType, title: `${title} · ${variant + 1}`, variant: String.fromCharCode(65 + variant), content, cta: config.cta, ...(url && platform === "push" ? { deepLink: url } : {}), factIds: facts.map(f => f.id), riskFlags: [label.fallback, ...(languageWarning ? [languageWarning] : [])], status: "needs_review", updatedAt: new Date().toISOString(), meta, generationMode: "local" });
     }
   }
   return { assets, usedFallback: true };

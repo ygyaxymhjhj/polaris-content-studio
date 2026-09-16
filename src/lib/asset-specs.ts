@@ -1,10 +1,13 @@
-import type { ContentAsset, Platform } from "./types";
+import { channelVoice } from "./social-guidelines";
+import { dominantSourceLanguage } from "./source-config";
+import { PLATFORM_META } from "./types";
+import type { ContentAsset, Platform, ProjectConfig } from "./types";
 
 export const ASSET_SPECS: Record<Platform, { count: number; brief: string; minLength: number; notes: string[] }> = {
   website: { count: 1, minLength: 500, notes: ["seoTitle", "metaDescription", "slug"], brief: "One complete website article, not just an SEO summary. Write a headline, lead, 3-5 meaningful sections with H2 headings, source-backed details, a concise conclusion and CTA. Target 500-800 English/Vietnamese words or 800-1200 Chinese characters only if evidence supports it. meta: seoTitle, metaDescription, slug, keyTerms. Do not copy a source date into publication date." },
   facebook: { count: 2, minLength: 350, notes: ["visualBrief", "imageText", "firstComment"], brief: "Two independently publishable Facebook posts: A news/explainer angle, B a reader-question angle. Each content must include an engaging factual opening, context, 2-4 concrete sourced details, a cautious takeaway and a natural question or CTA. Use 4-7 readable paragraphs, optional short bullets and 0-3 relevant hashtags. Target 150-250 English/Vietnamese words or 250-450 Chinese characters when source supports it. Do not output an outline, a teaser only, or instructions such as 'explain why it matters'. Include the real destination URL if provided; otherwise omit the link. meta: visualBrief (production direction, not evidence), imageText (short factual on-image headline), firstComment (optional publishable follow-up). Do NOT put visual directions into content." },
   threads: { count: 1, minLength: 120, notes: ["opening", "body"], brief: "One complete Threads post made of exactly two parts: 1 opening sentence + 1 main body paragraph. The opening sentence must be engaging and say immediately what the post is about; the body keeps only the most essential information and reads short, clear and continuous. Keep the whole post within 500 characters. meta.opening and meta.body hold the two parts exactly as published. Do not output numbered replies and do not invent audience opinions." },
-  linkedin: { count: 1, minLength: 450, notes: ["visualBrief"], brief: "One professional post with a factual opening, context, 2-3 evidence-led points, implications explicitly framed as interpretation, and a closing question/CTA. 5-7 readable paragraphs; target 200-350 English/Vietnamese words or 400-650 Chinese characters if supported. Avoid fake personal experience and generic business filler. meta.visualBrief describes an optional editorial graphic." },
+  linkedin: { count: 1, minLength: 450, notes: ["visualBrief"], brief: "One professional post in English with a factual opening, context, 2-3 evidence-led points, implications explicitly framed as interpretation, and a closing question/CTA. 5-7 readable paragraphs; target 200-350 English words if supported. Avoid fake personal experience and generic business filler. meta.visualBrief describes an optional editorial graphic." },
   x: { count: 1, minLength: 120, notes: ["post"], brief: "One single X post in fast-news style, <=280 characters including any link (conservative raw count). Lead with the most important information; keep sentences short and information-dense. If the real article link is included, the post alone must still tell readers what the news is. meta.post holds the exact publishable text. Do not write a multi-post thread." },
   instagram: { count: 1, minLength: 350, notes: ["slides", "caption", "visualBrief"], brief: "One 6-slide carousel. content must contain final copy for each numbered slide plus a separately labeled publishable caption and CTA. Slides: hook, context, fact 1, fact 2 or limitation, what remains uncertain, recap/CTA. Keep slide copy short; no invented advice when source has no recommendations. meta.slides: six objects with title, body, visualDirection; meta.caption, slideCount=6, visualBrief. Visuals must not imply fabricated documentary evidence." },
   short_video: { count: 1, minLength: 300, notes: ["duration", "shots", "caption"], brief: "One complete video script for a vertical 40-70 second video. content includes timed segments, exact spoken narration, on-screen text and shot direction, then a posting caption. Choose the segment breakdown from the article's own content; do not force a fixed structure onto every video. Budget realistic speech length in the requested language. Never use 'explain this' instead of actual narration; if the story needs more time to be told properly, keep the script longer rather than cutting context. meta.duration must state the target runtime (for example 40-70s or 60s); meta.shots is an array of time/narration/onScreen/visual; meta.caption is a single sentence. Only suggest illustrative graphics, not fake testimony or screenshots." },
@@ -14,7 +17,7 @@ export const ASSET_SPECS: Record<Platform, { count: number; brief: string; minLe
   faq: { count: 1, minLength: 300, notes: ["questions"], brief: "One FAQ with 5-8 complete question-and-answer pairs specific to the source. Each answer must actually answer the question using available facts; if unknown, state that the source does not specify. Include all Q&A in content and meta.questions as question/answer objects. Do not repeat 'read the article' as every answer. Finish with source CTA." }
 };
 
-export function assetQualityIssues(asset: ContentAsset): string[] {
+export function assetQualityIssues(asset: ContentAsset, configured?: ProjectConfig["language"]): string[] {
   const spec = ASSET_SPECS[asset.platform];
   const issues: string[] = [];
   if (asset.content.length < spec.minLength) issues.push("Draft may be too brief for this format; check source coverage");
@@ -29,5 +32,15 @@ export function assetQualityIssues(asset: ContentAsset): string[] {
     if (Number.isFinite(seconds) && (seconds < 40 || seconds > 70)) issues.push("Short video should target a 40-70 second runtime");
   }
   if (asset.platform === "push" && (String(asset.meta?.pushTitle || "").length > 40 || String(asset.meta?.pushBody || "").length > 100)) issues.push("Push copy exceeds the starter character budget");
+  // A channel with one fixed output language cannot be corrected by changing the project language, so
+  // copy that came back in another one is reported: generation retries on these issues, and the editor
+  // sees the mismatch when the model insists. Channels that follow config.language are left alone,
+  // because a draft written before a language change is not a defect worth flagging on every asset.
+  // Offline drafts are skipped too: the template cannot translate at all and reports that itself.
+  const voice = configured && asset.generationMode !== "local" ? channelVoice(asset.platform, configured) : undefined;
+  if (voice?.fixed) {
+    const detected = dominantSourceLanguage(asset.content);
+    if (detected !== voice.language) issues.push(`${PLATFORM_META[asset.platform].label} publishes in ${voice.language}; this draft reads as ${detected}. Rewrite it in ${voice.language} before publishing`);
+  }
   return issues;
 }
