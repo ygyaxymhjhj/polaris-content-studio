@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Polaris Article Import",
+  "version": "0.1.0",
+  "description": "Preview the article you opened and send it to your Polaris workspace. No cookies or login data are collected.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://192.168.220.109/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "action": { "default_popup": "popup.html", "default_title": "Import article to Polaris" },
+  "content_scripts": [{
+    "matches": ["http://192.168.220.109/*", "http://localhost/*", "http://127.0.0.1/*"],
+    "js": ["bridge.js"],
+    "run_at": "document_idle"
+  }]
+}

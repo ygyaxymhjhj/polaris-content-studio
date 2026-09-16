@@ -41,6 +41,9 @@ import {
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocaleContext, translate, UiLanguage, useTranslation } from "@/lib/i18n";
 import JSZip from "jszip";
+import fixedArticle from "@/data/test-article.json";
+import { validateBrowserArticle } from "@/lib/browser-import";
+import { normalizeAnalysis } from "@/lib/normalize-analysis";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import {
   ContentAsset,
@@ -58,13 +61,14 @@ import {
   SourceAnalysis
 } from "@/lib/types";
 
-const sampleArticle = `The financial regulator has announced a new framework for gold trading platforms. The framework will take effect on 1 July 2025 and introduces clearer disclosure requirements for brokers serving retail traders. Platforms will need to explain fees, order execution and withdrawal conditions in a more visible way. The regulator said the changes are designed to improve transparency and help users compare platforms more confidently. Brokers and traders should review the official requirements before making operational changes. The full framework and implementation notes are available from the regulator's public notice.`;
+// Frozen public article snapshot for repeatable editorial tests; never fetched on page load.
+const sampleArticle = fixedArticle.text;
 
 type View = "workspace" | "facts" | "assets" | "export" | "settings";
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "workspace", label: "Workspace", icon: LayoutDashboard },
-  { id: "facts", label: "Source & facts", icon: ClipboardCheck },
+  { id: "facts", label: "Source references", icon: ClipboardCheck },
   { id: "assets", label: "Content assets", icon: Layers3 },
   { id: "export", label: "Export center", icon: Download }
 ];
@@ -136,11 +140,14 @@ export default function ContentStudio() {
   }
   const t = (text: string) => translate(uiLanguage, text);
   const [view, setView] = useState<View>("workspace");
-  const [config, setConfig] = useState<ProjectConfig>(initialConfig);
+  const [config, setConfig] = useState<ProjectConfig>(() => alignSourceConfig(initialConfig, fixedArticle, new Set()));
   const editedConfig = useRef(new Set<keyof ProjectConfig>());
-  const importedSource = useRef<ImportedSource | null>(null);
-  const [sourceText, setSourceText] = useState("");
-  const [sourceName, setSourceName] = useState("");
+  const importedSource = useRef<ImportedSource | null>(fixedArticle);
+  const [sourceText, setSourceText] = useState(fixedArticle.text);
+  const [sourceName, setSourceName] = useState("wikifx-202609079764964517.snapshot.json");
+  const [sourcePending, setSourcePending] = useState(false);
+  const [sourceError, setSourceError] = useState("");
+  const [browserArticle, setBrowserArticle] = useState<ImportedSource | null>(null);
   const [analysis, setAnalysis] = useState<SourceAnalysis | null>(null);
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(DEFAULT_PLATFORMS);
@@ -163,6 +170,26 @@ export default function ContentStudio() {
   const [threads, setThreads] = useState<Record<string, RewriteMessage[]>>({});
   const threadOnOpen = useRef<RewriteMessage[]>([]);
   const columnsAnchor = useRef<HTMLDivElement | null>(null);
+  const rewriteSequence = useRef(0);
+  const packSequence = useRef(0);
+
+  useEffect(() => {
+    document.documentElement.dataset.polarisArticleImport = "v1";
+    function receiveArticle(event: MessageEvent) {
+      if (event.source !== window || event.origin !== window.location.origin || event.data?.type !== "POLARIS_BROWSER_ARTICLE" || event.data.version !== 1) return;
+      const requestId = event.data.requestId;
+      if (typeof requestId !== "string" || requestId.length > 100) return;
+      const article = validateBrowserArticle(event.data.article);
+      const accepted = Boolean(article && !browserArticle && loading === null && !selectedAsset);
+      if (accepted) setBrowserArticle(article);
+      window.postMessage({ type: "POLARIS_ARTICLE_ACK", requestId, ok: accepted }, window.location.origin);
+    }
+    window.addEventListener("message", receiveArticle);
+    return () => {
+      delete document.documentElement.dataset.polarisArticleImport;
+      window.removeEventListener("message", receiveArticle);
+    };
+  }, [browserArticle, loading, selectedAsset]);
 
   const activeThread = selectedAsset ? threads[selectedAsset.id] || [] : [];
   const presets = [
@@ -181,7 +208,6 @@ export default function ContentStudio() {
   const viewAsset = previewCandidate?.asset ?? selectedAsset;
   const viewRiskFlags = previewCandidate ? [...new Set([...previewCandidate.asset.riskFlags, ...previewCandidate.issues])] : selectedAsset?.riskFlags ?? [];
 
-  const verifiedCount = analysis?.facts.filter((fact) => fact.verified).length || 0;
   const approvedCount = assets.filter((asset) => asset.status === "approved").length;
   const filteredAssets = useMemo(() => {
     const list = assetFilter === "all" ? assets : assets.filter((asset) => asset.platform === assetFilter);
@@ -196,26 +222,39 @@ export default function ContentStudio() {
   }
 
   function updateConfig(field: keyof ProjectConfig, value: string) {
+    if (field === "sourceUrl") {
+      setSourcePending(value.trim() !== (importedSource.current?.sourceUrl || ""));
+      setSourceError("");
+      clearDerivedContent();
+    }
     editedConfig.current.add(field);
     setConfig((current) => {
       const next = { ...current, [field]: value };
-      return field === "language" && importedSource.current
+      return (field === "language" || field === "category") && importedSource.current
         ? alignSourceConfig(next, importedSource.current, editedConfig.current)
         : next;
     });
   }
 
   function clearDerivedContent() {
+    packSequence.current += 1;
+    rewriteSequence.current += 1;
+    setRewriting(false);
+    setThreads({});
+    clearCandidates();
     setAnalysis(null);
     setAssets([]);
     setPendingPlatforms([]);
     setSelectedAsset(null);
     setAssetFilter("all");
     setUsedFallback(false);
+    setLoading(null);
   }
 
   function importSource(source: ImportedSource, filename: string) {
     importedSource.current = source;
+    setSourcePending(false);
+    setSourceError("");
     setSourceText(source.text);
     setSourceName(filename);
     setConfig((current) => alignSourceConfig(current, source, editedConfig.current));
@@ -225,10 +264,24 @@ export default function ContentStudio() {
   function editSourceText(text: string) {
     const source = { text };
     importedSource.current = source;
+    setSourcePending(false);
+    setSourceError("");
     setSourceText(text);
     setSourceName("");
     setConfig((current) => alignSourceConfig(current, source, editedConfig.current));
     clearDerivedContent();
+  }
+
+  function downloadSource() {
+    const source = importedSource.current;
+    if (!source?.text) return;
+    const payload = { ...source, characterCount: source.text.length, exportedAt: new Date().toISOString() };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "polaris-article.json";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>) {
@@ -251,7 +304,7 @@ export default function ContentStudio() {
   }
 
   function loadSample() {
-    importSource({ text: sampleArticle, title: "New Gold Regulation: What Traders Need to Know" }, "sample-gold-regulation.txt");
+    importSource(fixedArticle, "wikifx-202609079764964517.snapshot.json");
     notify("Sample article loaded.");
   }
 
@@ -261,34 +314,34 @@ export default function ContentStudio() {
       return;
     }
     setLoading("fetch");
+    setSourcePending(true);
+    setSourceError("");
     try {
-      let response = await fetch("/api/fetch-article", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: config.sourceUrl }) });
-      let data = await response.json();
-      if (!response.ok && ["ANTI_BOT_VERIFICATION", "ARTICLE_CONTENT_INCOMPLETE"].includes(data.code)) {
-        notify("This page needs human verification. Opening the browser crawler…");
-        response = await fetch("/api/crawl-article", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: config.sourceUrl }) });
-        data = await response.json();
-      }
-      if (!response.ok) throw new Error(data.error || "Unable to fetch article");
+      const response = await fetch("/api/fetch-article", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: config.sourceUrl }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.code === "SOURCE_ACCESS_DENIED" ? "The website denied server access. Paste the article or import JSON exported from your local tool. The previous article is still displayed." : data.error || "Unable to fetch article");
       importSource({ ...data, sourceUrl: data.sourceUrl || config.sourceUrl }, data.title ? `${data.title}.url` : config.sourceUrl);
       notify(`${(data.characterCount || data.text?.length || 0).toLocaleString()} ${t("characters imported")}`);
     } catch (error) {
-      notify(error instanceof Error ? error.message : t("Unable to fetch article"));
+      const message = error instanceof Error ? error.message : "Unable to fetch article";
+      setSourceError(message);
+      notify(t(message));
     } finally {
       setLoading(null);
     }
   }
 
   async function runDemo() {
-    const demoSource = { text: sampleArticle, title: "New Gold Regulation: What Traders Need to Know" };
+    const demoSource = fixedArticle;
     const demoConfig = alignSourceConfig(config, demoSource, editedConfig.current);
-    importSource(demoSource, "sample-gold-regulation.txt");
+    importSource(demoSource, "wikifx-202609079764964517.snapshot.json");
     setLoading("analyze");
     try {
       const analysisResponse = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ article: sampleArticle, title: demoConfig.title }) });
-      const sourceAnalysis = await analysisResponse.json() as SourceAnalysis;
-      if (!analysisResponse.ok) throw new Error("Demo analysis failed");
-      const confirmed = { ...sourceAnalysis, facts: sourceAnalysis.facts.map((fact) => ({ ...fact, verified: true })) };
+      const rawAnalysis = await analysisResponse.json();
+      if (!analysisResponse.ok) throw new Error(rawAnalysis.error || "Demo analysis failed");
+      const sourceAnalysis = normalizeAnalysis(rawAnalysis, sampleArticle, demoConfig.title);
+      const confirmed = { ...sourceAnalysis, facts: sourceAnalysis.facts.map((fact) => ({ ...fact, verified: fact.usableOnSocial })) };
       setAnalysis(confirmed);
       await generatePack(demoConfig, confirmed, selectedPlatforms, "Demo content pack ready to inspect.");
     } catch (error) {
@@ -299,10 +352,14 @@ export default function ContentStudio() {
   }
 
   async function analyzeArticle() {
+    if (sourcePending) { notify(t("The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")); return; }
     if (!sourceText.trim()) {
       notify("Add an article first. You can paste text or import a DOCX.");
       return;
     }
+    if (loading) return;
+    if (!selectedPlatforms.length) { notify(t("Select at least one channel first.")); return; }
+    const run = ++packSequence.current;
     setLoading("analyze");
     try {
       const response = await fetch("/api/analyze", {
@@ -311,14 +368,20 @@ export default function ContentStudio() {
         body: JSON.stringify({ article: sourceText, title: config.title })
       });
       const data = await response.json();
+      if (run !== packSequence.current) return;
       if (!response.ok) throw new Error(data.error || "Analysis failed");
-      setAnalysis(data);
-      setView("facts");
-      notify("Source mapped. Confirm the facts before content generation.");
+      const mapped = normalizeAnalysis(data, sourceText, config.title);
+      // The team has reviewed the article. This is source authorization, not an
+      // assertion that the model's individual extractions were manually reviewed.
+      // Unmatched excerpts remain excluded by normalizeAnalysis.
+      const authorized: SourceAnalysis = { ...mapped, sourceReviewBasis: "team-reviewed-article", facts: mapped.facts.map(fact => ({ ...fact, verified: fact.usableOnSocial })) };
+      if (!authorized.facts.some(fact => fact.verified)) throw new Error(t("No source-backed facts were extracted. Please retry; your article is preserved."));
+      setAnalysis(authorized);
+      await generatePack(config, authorized, selectedPlatforms, "Content pack generated and ready for review.");
     } catch (error) {
-      notify(error instanceof Error ? error.message : t("Analysis failed"));
+      if (run === packSequence.current) notify(error instanceof Error ? error.message : t("Analysis failed"));
     } finally {
-      setLoading(null);
+      if (run === packSequence.current) setLoading(null);
     }
   }
 
@@ -336,6 +399,12 @@ export default function ContentStudio() {
       notify("Select at least one channel first.");
       return;
     }
+    const run = ++packSequence.current;
+    rewriteSequence.current += 1;
+    setSelectedAsset(null);
+    setRewriting(false);
+    setThreads({});
+    clearCandidates();
     setLoading("generate");
     setAssets([]);
     setUsedFallback(false);
@@ -348,6 +417,7 @@ export default function ContentStudio() {
       // read back after the loop had already moved on, because React runs the updater below long
       // after this turn finished — which left the first wave stuck as "generating" forever.
       for (let channel = queue.shift(); channel; channel = queue.shift()) {
+        if (run !== packSequence.current) return;
         try {
           const response = await fetch("/api/generate", {
             method: "POST",
@@ -356,30 +426,35 @@ export default function ContentStudio() {
           });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Generation failed");
+          if (run !== packSequence.current) return;
           setAssets((current) => [...current, ...(data.assets || [])]);
           setUsedFallback((current) => current || Boolean(data.usedFallback));
         } catch {
           failed += 1;
         } finally {
-          setPendingPlatforms((current) => current.filter((item) => item !== channel));
+          if (run === packSequence.current) setPendingPlatforms((current) => current.filter((item) => item !== channel));
         }
       }
     }
     await Promise.all(Array.from({ length: Math.min(PACK_CONCURRENCY, queue.length) }, worker));
+    if (run !== packSequence.current) return;
     setLoading(null);
     notify(failed ? `${failed} ${t("channels could not be generated.")}` : doneMessage);
   }
 
   function generateContent(analysisToUse: SourceAnalysis = analysis as SourceAnalysis) {
+    if (sourcePending) { notify(t("The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")); return; }
     if (!analysisToUse) return;
     return generatePack(config, analysisToUse, selectedPlatforms, "Content pack generated and ready for review.");
   }
 
   async function approveFactsAndGenerate() {
     if (!analysis) return;
-    const confirmed = { ...analysis, facts: analysis.facts.map((fact) => ({ ...fact, verified: true })) };
-    setAnalysis(confirmed);
-    await generateContent(confirmed);
+    if (!analysis.facts.some(fact => fact.verified && fact.usableOnSocial)) {
+      notify(t("Select and confirm at least one usable fact first."));
+      return;
+    }
+    await generateContent(analysis);
   }
 
   function clearCandidates() {
@@ -389,6 +464,8 @@ export default function ContentStudio() {
   }
 
   function openAsset(asset: ContentAsset) {
+    rewriteSequence.current += 1;
+    setRewriting(false);
     setSelectedAsset(asset);
     setDeliveryDraft(JSON.stringify(asset.meta || {}, null, 2));
     setInstruction("");
@@ -401,6 +478,8 @@ export default function ContentStudio() {
   // Closing without saving rolls the conversation back too: the thread must never claim a change
   // the draft did not keep.
   const closeDrawer = useCallback(() => {
+    rewriteSequence.current += 1;
+    setRewriting(false);
     const id = selectedAsset?.id;
     setSelectedAsset(null);
     clearCandidates();
@@ -433,28 +512,38 @@ export default function ContentStudio() {
     if (!selectedAsset || !analysis) return;
     const text = instruction.trim();
     if (!text) { notify("Type what you want changed."); return; }
+    let meta: Record<string, unknown>;
+    try {
+      meta = JSON.parse(deliveryDraft);
+      if (!meta || typeof meta !== "object" || Array.isArray(meta)) throw new Error("Invalid notes");
+    } catch { notify(t("Delivery notes must be a valid JSON object.")); return; }
+    const draft = { ...selectedAsset, meta };
+    setSelectedAsset(draft);
+    const run = ++rewriteSequence.current;
     setRewriting(true);
     clearCandidates();
     try {
       const response = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config, analysis, asset: selectedAsset, turns: activeThread, instruction: text, count: optionCount })
+        body: JSON.stringify({ config, analysis, asset: draft, turns: activeThread, instruction: text, count: optionCount })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Rewrite failed");
+      if (run !== rewriteSequence.current) return;
       setCandidates(data.candidates || []);
       // Open on the first option so the revision is visible in the draft column right away.
       setPreviewIndex(data.candidates?.length ? 0 : null);
       setDroppedTurns(Number(data.droppedTurns) || 0);
       setPendingInstruction(text);
     } catch (error) {
+      if (run !== rewriteSequence.current) return;
       // Surface the failure in the panel, not only in a toast that can be missed.
       const message = error instanceof Error ? error.message : t("Rewrite failed");
       setRewriteError(message);
       notify(message);
     } finally {
-      setRewriting(false);
+      if (run === rewriteSequence.current) setRewriting(false);
     }
   }
 
@@ -519,6 +608,8 @@ export default function ContentStudio() {
       meta = JSON.parse(deliveryDraft);
       if (!meta || typeof meta !== "object" || Array.isArray(meta)) throw new Error("Invalid notes");
     } catch { notify(t("Delivery notes must be a valid JSON object.")); return; }
+    rewriteSequence.current += 1;
+    setRewriting(false);
     const draft = selectedAsset;
     // Merge the drawer's fields onto whatever the asset looks like now: a pack regenerated while
     // the editor was open must not be clobbered by a stale copy.
@@ -618,7 +709,7 @@ export default function ContentStudio() {
             <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => goTo(id)}>
               <Icon size={17} strokeWidth={view === id ? 2.3 : 1.8} />
               <span>{t(label)}</span>
-              {id === "facts" && analysis && <span className="nav-count">{verifiedCount}/{analysis.facts.length}</span>}
+              {id === "facts" && analysis && <span className="nav-count">{analysis.facts.length}</span>}
               {id === "assets" && assets.length > 0 && <span className="nav-count">{assets.length}</span>}
             </button>
           ))}
@@ -652,6 +743,13 @@ export default function ContentStudio() {
         </header>
 
         <div className="content-wrap">
+          {view === "workspace" && <>
+            {(sourceError || sourcePending) && <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>}
+            <a className="secondary-button" href="/downloads/polaris-article-import.zip" download><Download size={15} /> {t("Download browser extension")}</a>
+            <p className="config-source-note">{t("Install once, open the article in your own browser, preview and send it here. No server fetch required.")}</p>
+            <button className="secondary-button" onClick={downloadSource} disabled={!sourceText.trim() || sourcePending}><Download size={15} /> {t("Export article JSON")}</button>
+            <p className="config-source-note">{t("Export after a successful local fetch, then upload this JSON on the deployed site. This exports the source article, not generated assets.")}</p>
+          </>}
           {view === "workspace" && (
             <WorkspaceView
               config={config}
@@ -681,6 +779,21 @@ export default function ContentStudio() {
           {view === "settings" && <SettingsView />}
         </div>
       </main>
+
+      {browserArticle && <div className="drawer-backdrop">
+        <aside className="asset-drawer" role="dialog" aria-modal="true" aria-label={t("Article from your browser")}>
+          <h2>{t("Article from your browser")}</h2>
+          <p>{t("Confirm to replace the current source and clear its facts and assets. Nothing changes until you confirm.")}</p>
+          <h3>{browserArticle.title}</h3>
+          <p style={{ overflowWrap: "anywhere" }}>{browserArticle.sourceUrl}</p>
+          <p>{browserArticle.text.length.toLocaleString()} {t("characters")}</p>
+          <textarea aria-label={t("Article preview")} className="drawer-textarea" style={{ width: "100%" }} readOnly value={browserArticle.text} />
+          <div className="drawer-footer">
+            <button className="secondary-button" onClick={() => setBrowserArticle(null)}>{t("Cancel")}</button>
+            <button className="primary-button" disabled={loading !== null} onClick={() => { importSource(browserArticle, "browser-import.json"); setBrowserArticle(null); setView("workspace"); notify(t("Article imported. Review the source before generating.")); }}>{t("Confirm article import")}</button>
+          </div>
+        </aside>
+      </div>}
 
       {selectedAsset && viewAsset && (
         <div className="drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDrawer(); }}>
@@ -805,8 +918,9 @@ function WorkspaceView({
         <div className="metric-card"><div className="metric-icon purple"><BarChart3 size={17} /></div><div><strong>1</strong><span>{t("review gate")}</span></div></div>
       </div>
 
+      <div className="info-banner">{t("Test mode: the saved WikiFX article is preloaded on page load. No fetch needed; review facts before generating. You can still replace the source.")}</div>
       <section className="panel source-panel">
-        <div className="section-heading"><div><span className="step-number">01</span><div className="heading-copy"><h2>{t("Bring in your source")}</h2><p>{t("This article remains the single source of truth for every output.")}</p></div></div><div className="heading-links"><button className="text-button" onClick={loadSample}><Sparkles size={15} /> {t("Load sample")}</button><button className="text-button demo-link" onClick={runDemo} disabled={loading !== null}><Play size={14} fill="currentColor" /> {t("Preview full demo")}</button></div></div>
+        <div className="section-heading"><div><span className="step-number">01</span><div className="heading-copy"><h2>{t("Bring in your source")}</h2><p>{t("This article remains the single source of truth for every output.")}</p></div></div><div className="heading-links"><button className="text-button" onClick={loadSample}><Sparkles size={15} /> {t("Restore test article")}</button><button className="text-button demo-link" onClick={runDemo} disabled={loading !== null}><Play size={14} fill="currentColor" /> {t("Preview full demo")}</button></div></div>
         <div className="url-import">
           <div className="url-import-icon"><Link2 size={17} /></div>
           <div className="url-import-body"><div className="url-import-label"><strong>{t("Fetch from an article URL")}</strong><span>{t("Best for public HTML pages")}</span></div><div className="url-input-row"><input value={config.sourceUrl} onChange={(event) => updateConfig("sourceUrl", event.target.value)} placeholder="https://example.com/your-article" /><button className="secondary-button" onClick={fetchArticle} disabled={loading === "fetch"}>{loading === "fetch" ? <><Loader2 className="spin" size={15} /> {t("Fetching…")}</> : <><Link2 size={15} /> {t("Fetch article")}</>}</button></div></div>
@@ -829,7 +943,7 @@ function WorkspaceView({
             <div className="input-grid">
               <label className="field-label">{t("Project name")}<input value={config.name} onChange={(event) => updateConfig("name", event.target.value)} placeholder={t("e.g. Gold regulation launch")} /></label>
               <label className="field-label">{t("Article title")}<input value={config.title} onChange={(event) => updateConfig("title", event.target.value)} placeholder={t("Working headline")} /></label>
-              <label className="field-label">{t("Category")}<select aria-label={t("Category")} value={config.category} onChange={(event) => updateConfig("category", event.target.value)}><option value="">{t("Select category")}</option><option value="Gold">{t("Gold")}</option><option value="Forex">{t("Forex")}</option><option value="Broker">{t("Broker")}</option><option value="Scam alert">{t("Scam alert")}</option><option value="KOL LIVE">{t("KOL LIVE")}</option><option value="Point Mall">{t("Point Mall")}</option></select></label>
+              <label className="field-label">{t("Category")}<select aria-label={t("Category")} value={config.category} onChange={(event) => updateConfig("category", event.target.value)}><option value="">{t("Select category")}</option><option value="Market news">{t("Market news")}</option><option value="Commodities">{t("Commodities")}</option><option value="Gold">{t("Gold")}</option><option value="Forex">{t("Forex")}</option><option value="Broker">{t("Broker")}</option><option value="Scam alert">{t("Scam alert")}</option><option value="KOL LIVE">{t("KOL LIVE")}</option><option value="Point Mall">{t("Point Mall")}</option></select></label>
               <label className="field-label">{t("Language")}<select aria-label={t("Language")} value={config.language} onChange={(event) => updateConfig("language", event.target.value as ProjectConfig["language"])}><option value="en">{t("English")}</option><option value="vi">{t("Vietnamese")}</option><option value="zh">{t("Chinese")}</option></select></label>
               <label className="field-label full-field">{t("Target audience")}<input value={config.audience} onChange={(event) => updateConfig("audience", event.target.value)} placeholder={t("Who should care about this?")} /></label>
               <label className="field-label full-field">{t("Primary CTA")}<input value={config.cta} onChange={(event) => updateConfig("cta", event.target.value)} placeholder={t("Read the full breakdown")} /></label>
@@ -844,8 +958,8 @@ function WorkspaceView({
         <div className="platform-selection">
           {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-group-label">{t(group.label)}</div><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} className={`platform-option ${selected ? t("selected") : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
         </div>
-        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> {t("Human approval is required before export")}</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading === "analyze"}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Mapping source…")}</> : <><Sparkles size={17} /> {t("Analyze source")} <ArrowRight size={16} /></>}</button></div>
-        {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View existing source analysis")} <ArrowRight size={14} /></button>}
+        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> {t("Your source is already reviewed. Review generated drafts before export.")}</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
+        {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
       </section>
     </>
   );
@@ -853,44 +967,51 @@ function WorkspaceView({
 
 function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { analysis: SourceAnalysis; sourceText: string; updateFact: (id: string, patch: Partial<FactItem>) => void; onGenerate: () => void; loading: string | null }) {
   const t = useTranslation();
-  const confirmed = analysis.facts.filter((fact) => fact.verified).length;
-  const progress = (confirmed / Math.max(analysis.facts.length, 1)) * 100;
+  const [scope, setScope] = useState("all");
+  const [limit, setLimit] = useState(10);
+  const rank = { high: 0, medium: 1, low: 2 };
+  const filtered = analysis.facts.filter(fact => scope === "all" || (scope === "pending" ? !fact.verified : fact.riskLevel === "high"));
+  const ordered = [...filtered].sort((a, b) => rank[a.riskLevel] - rank[b.riskLevel]);
+  const displayed = ordered.slice(0, limit);
+  const usableConfirmed = analysis.facts.filter(fact => fact.verified && fact.usableOnSocial).length;
 
   return (
     <>
       <div className="page-heading compact-heading">
         <div>
           <div className="eyebrow">{t("STEP 01 / SOURCE CONTROL")}</div>
-          <h1>{t("Confirm the")} <em>{t("source truth.")}</em></h1>
-          <p>{t("Every generated sentence is grounded in this map. Confirm what is safe to publish before moving on.")}</p>
+          <h1>{t("Source references")}</h1>
+          <p>{t("Extracted from your team's reviewed article. These are optional reference controls, not a second mandatory fact review. Check the generated copy against the source before approving it.")}</p>
         </div>
         <div className="fact-progress">
-          <div className="progress-number">{confirmed}<span>/{analysis.facts.length}</span></div>
-          <div>
-            <strong>{t("facts confirmed")}</strong>
-            <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>
-          </div>
+          <div className="progress-number">{usableConfirmed}</div>
+          <div><strong>{t("Confirmed for generation")}</strong></div>
         </div>
       </div>
 
       <div className="facts-layout">
         <div className="facts-main">
           <div className="summary-card">
-            <div className="summary-top"><span className="eyebrow">{t("AI SOURCE BRIEF")}</span><span className="confidence-pill"><span className="status-dot" /> {t("High confidence")}</span></div>
+            <div className="summary-top"><span className="eyebrow">{t("AI SOURCE BRIEF")}</span><span className="confidence-pill"><span className="status-dot" /> {t("Needs review")}</span></div>
             <h2>{analysis.summaryShort}</h2>
             <p>{analysis.summaryLong}</p>
             <div className="keyword-row">{Array.from(new Set(analysis.keyTerms)).slice(0, 8).map((term) => <span key={term}><Hash size={12} />{term}</span>)}</div>
           </div>
 
           <div className="facts-list-header">
-            <div><h2>{t("Key facts")}</h2><span>{analysis.facts.length} {t("extracted from")} {sourceText.length.toLocaleString()} {t("source characters")}</span></div>
-            <button className="small-button" onClick={() => analysis.facts.forEach((fact) => updateFact(fact.id, { verified: true }))}><Check size={14} /> {t("Confirm all")}</button>
+            <div><h2>{t("Source candidates")}</h2><span>{analysis.facts.length} {t("extracted from")} {sourceText.length.toLocaleString()} {t("source characters")}</span></div>
+            <button className="small-button" disabled={!displayed.length} onClick={() => displayed.forEach((fact) => updateFact(fact.id, { verified: true }))}><Check size={14} /> {t("Confirm displayed facts")}</button>
           </div>
 
+          <p className="config-source-note">{t("Matching source excerpts are enabled from your reviewed article. You may adjust the references here and regenerate; existing drafts do not change automatically.")}</p>
+          <label className="field-label">{t("Review scope")}<select value={scope} onChange={event => { setScope(event.target.value); setLimit(10); }}>
+            <option value="all">{t("All candidates")}</option><option value="pending">{t("Unconfirmed only")}</option><option value="high">{t("High attention")}</option>
+          </select></label>
+          <p className="config-source-note">{displayed.length} / {filtered.length} · {usableConfirmed} {t("Confirmed for generation")}</p>
           <div className="facts-list">
-            {analysis.facts.map((fact) => (
+            {displayed.map((fact) => (
               <div className={`fact-row ${fact.verified ? "verified" : ""}`} key={fact.id}>
-                <button className={`fact-checkbox ${fact.verified ? "checked" : ""}`} onClick={() => updateFact(fact.id, { verified: !fact.verified })}>
+                <button aria-label={`${t("Confirm fact")} ${fact.id}`} aria-pressed={fact.verified} className={`fact-checkbox ${fact.verified ? "checked" : ""}`} onClick={() => updateFact(fact.id, { verified: !fact.verified })}>
                   {fact.verified && <Check size={14} />}
                 </button>
                 <div className="fact-content">
@@ -900,13 +1021,18 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
                     <span className={`risk-label ${fact.riskLevel}`}>{fact.riskLevel === "low" ? t("Low risk") : fact.riskLevel === "medium" ? t("Review") : t("High attention")}</span>
                     <span className="fact-location">{fact.sourceLocation}</span>
                   </div>
-                  <input className="fact-input" value={fact.text} onChange={(event) => updateFact(fact.id, { text: event.target.value })} />
+                  <p className="fact-compact-text">{fact.text}</p>
+                  <details className="fact-details"><summary>{t("View source and edit")}</summary>
+                  <input className="fact-input" value={fact.text} onChange={(event) => updateFact(fact.id, { text: event.target.value, verified: false })} />
                   <div className="source-excerpt"><BookOpen size={13} /><span>“{fact.sourceExcerpt}”</span></div>
                   <label className="social-toggle"><input type="checkbox" checked={fact.usableOnSocial} onChange={(event) => updateFact(fact.id, { usableOnSocial: event.target.checked })} /><span className="toggle-ui" /> {t("Usable in social outputs")}</label>
+                  </details>
                 </div>
               </div>
             ))}
           </div>
+          {displayed.length < filtered.length && <button className="secondary-button" onClick={() => setLimit(current => current + 10)}>{t("Show 10 more")}</button>}
+          {!displayed.length && <p className="config-source-note">{t("No facts match this filter.")}</p>}
         </div>
 
         <aside className="facts-aside">
@@ -921,9 +1047,9 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
           <div className="aside-card next-card">
             <span className="eyebrow">{t("NEXT STEP")}</span>
             <h3>{t("Build the distribution pack")}</h3>
-            <p>{t("Generate tailored content for every selected channel.")}</p>
-            <button className="primary-button full" onClick={onGenerate} disabled={loading === "generate"}>
-              {loading === "generate" ? <><Loader2 className="spin" size={16} /> {t("Generating pack…")}</> : <><Sparkles size={16} /> {t("Approve & generate")} <ArrowRight size={15} /></>}
+            <p>{usableConfirmed} {t("Confirmed for generation")}. {t("Only confirmed facts enabled for social will be used.")}</p>
+            <button className="primary-button full" onClick={onGenerate} disabled={loading === "generate" || !usableConfirmed}>
+              {loading === "generate" ? <><Loader2 className="spin" size={16} /> {t("Generating pack…")}</> : <><Sparkles size={16} /> {t("Generate confirmed facts")} <ArrowRight size={15} /></>}
             </button>
           </div>
         </aside>

@@ -26,6 +26,8 @@ export interface FactItem {
 }
 
 export interface SourceAnalysis {
+  /** Source was reviewed by the team; extracted fact rows were not individually reviewed. */
+  sourceReviewBasis?: "team-reviewed-article";
   summaryShort: string;
   summaryLong: string;
   keyTerms: string[];

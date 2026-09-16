@@ -8,7 +8,8 @@ try {
   page.on('console', message => { if (message.type() === 'error' && message.text().includes('same key')) duplicateKeyErrors.push(message.text()); });
   let article = { title: "Tin tức thị trường Forex ngày 07/09/2026", text: "Thị trường ngoại hối hôm nay. Độc giả cần đọc thông tin đầy đủ.", sourceUrl: "https://example.com/vi/newsdetail/a.html" };
   await page.route("**/api/fetch-article", route => route.fulfill({ json: article }));
-  await page.route("**/api/analyze", route => route.fulfill({ json: { summaryShort: "Test", summaryLong: "Test summary", keyTerms: ['Forex', 'Forex'], riskFlags: ['high', 'high'], facts: [{ id: "F001", text: "Test fact", type: "claim", riskLevel: "low", sourceExcerpt: "Test", sourceLocation: "p1", verified: false, usableOnSocial: true }] } }));
+  await page.route("**/api/analyze", route => route.fulfill({ json: { summaryShort: "Test", summaryLong: "Test summary", keyTerms: ['Forex', 'Forex'], riskFlags: ['high', 'high'], facts: [{ id: "F001", text: "Test fact", type: "claim", riskLevel: "low", sourceExcerpt: "Thị trường ngoại hối hôm nay.", sourceLocation: "p1", verified: false, usableOnSocial: true }] } }));
+  await page.route('**/api/generate', route => route.fulfill({ json: { assets: [], usedFallback: false } }));
   await page.goto(process.env.TEST_BASE_URL || "http://localhost:3000");
   await page.locator('.locale-switcher select').selectOption("en");
   const field = name => page.getByLabel(name, { exact: true });
@@ -22,8 +23,10 @@ try {
   assert.equal(await field('Category').inputValue(), 'Forex');
   assert.equal(await field('Language').inputValue(), 'vi');
   assert.equal(await field('Primary CTA').inputValue(), 'Đọc toàn bộ bài viết');
-  await page.getByRole('button', { name: 'Analyze source', exact: true }).click();
-  await page.getByRole('button', { name: 'Confirm all', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Generate social drafts', exact: true }).click();
+  await page.getByRole('button', { name: 'Regenerate', exact: true }).waitFor();
+  await page.locator('.nav-item').filter({ hasText: 'Source references' }).click();
+  await page.getByRole('button', { name: 'Confirm displayed facts', exact: true }).waitFor();
   assert.equal(await page.locator('.risk-card li').count(), 1);
   assert.equal(await page.locator('.keyword-row > span').count(), 1);
   assert.deepEqual(duplicateKeyErrors, []);

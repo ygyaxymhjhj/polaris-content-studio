@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><title>Polaris Article Import</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<header><strong>Polaris · Article Import</strong><select id="language" aria-label="Language"><option value="zh">中文</option><option value="vi">Tiếng Việt</option><option value="en">English</option></select></header>
+<p id="intro"></p>
+<button id="extract"></button>
+<p id="status" role="status"></p>
+<section id="preview" hidden>
+<label><span id="titleLabel"></span><input id="title" maxlength="500"></label>
+<p id="url"></p>
+<label><span id="bodyLabel"></span><textarea id="body"></textarea></label>
+<p id="count"></p>
+<label><span id="targetLabel"></span><select id="target"><option value="http://192.168.220.109:13300/">LAN · 192.168.220.109:13300</option><option value="http://localhost:3002/">Local · localhost:3002</option><option value="http://localhost:3000/">Local · localhost:3000</option></select></label>
+<p id="privacy"></p>
+<button id="send"></button>
+</section>
+<script src="extract.js"></script><script src="popup.js"></script>
+</body></html>

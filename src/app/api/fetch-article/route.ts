@@ -2,6 +2,10 @@ import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
 import { isIP } from "node:net";
 import { NextResponse } from "next/server";
+import { collectArticle, CollectionError } from "@/lib/article-collector";
+
+export const runtime = "nodejs";
+export const maxDuration = 180;
 
 const MAX_ARTICLE_CHARS = 120_000;
 
@@ -86,6 +90,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as { url?: string };
     const rawUrl = String(body.url || "").trim();
+    // Opt-in rollout: keep the existing local workflow until the target site passes server acceptance.
+    if (process.env.ARTICLE_COLLECTOR_V2 === "true") return NextResponse.json(await collectArticle(rawUrl));
     let url: URL;
     try {
       url = new URL(rawUrl);
@@ -96,6 +102,11 @@ export async function POST(request: Request) {
     if (url.username || url.password || isPrivateHost(url)) return NextResponse.json({ error: "This URL is not allowed" }, { status: 400 });
 
     const { response, url: finalUrl } = await fetchPublicPage(url);
+    if (response.status === 401 || response.status === 403) return NextResponse.json({
+      error: "The source website denied access from this server. Open the article normally and paste its text, or import article JSON exported from a working local instance. The previous article has not been replaced.",
+      code: "SOURCE_ACCESS_DENIED",
+      upstreamStatus: response.status
+    }, { status: 424 });
     if (!response.ok) return NextResponse.json({ error: `The page returned HTTP ${response.status}` }, { status: 502 });
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) return NextResponse.json({ error: "This URL does not contain an HTML article" }, { status: 415 });
@@ -108,6 +119,7 @@ export async function POST(request: Request) {
     if (article.text.length < (isNewsDetail ? 300 : 80)) return NextResponse.json({ error: "Could not find enough article text on this page. Try the browser crawler or paste the article instead.", code: "ARTICLE_CONTENT_INCOMPLETE" }, { status: 422 });
     return NextResponse.json({ ...article, sourceUrl: finalUrl.toString() });
   } catch (error) {
+    if (error instanceof CollectionError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     const message = error instanceof Error && error.name === "TimeoutError" ? "The page took too long to respond" : error instanceof Error ? error.message : "Could not fetch article";
     return NextResponse.json({ error: message }, { status: 500 });
   }
