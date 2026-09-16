@@ -4,11 +4,26 @@ import { dominantSourceLanguage } from "./source-config";
 import { PLATFORM_META } from "./types";
 import type { ContentAsset, GenerateResponse, Platform, ProjectConfig, SourceAnalysis } from "./types";
 
+/**
+ * Column-name prefixes found on finance news headlines — the same forms the import classifier
+ * recognises as market news. They belong to the source, not to the draft: opening a post with
+ * "财经快讯：" would read like the app runs its own news column. Longer labels come first so a
+ * multi-word name such as "Bản tin tài chính" is stripped whole instead of leaving "tài chính".
+ */
+const COLUMN_LABEL = /^(?:(?:财经|金融|市场)\s*(?:快讯|早报|晚报|日报|新闻|资讯|简讯)|財經(?:新聞|資訊|快訊)|金融市场综述|(?:bản tin|tin tức|điểm tin)\s*tài chính|bản tin|tin nhanh|điểm tin|financial news(?:\s+roundup|\s+digest)?|market roundup|daily digest|news flash)[：:\s|｜\-–—]*/iu;
+
+/** Headline without its source column label; a label-only title keeps its original wording. */
+function stripColumnLabel(value: string): string {
+  const stripped = value.replace(COLUMN_LABEL, "").trim();
+  return stripped || value;
+}
+
 /** Offline drafts use exact reviewed source text; they cannot translate or add facts. */
 export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, platforms: Platform[]): GenerateResponse {
   const facts = analysis.facts.filter(f => f.verified && f.usableOnSocial);
   const url = config.websiteUrl || config.sourceUrl;
-  const title = config.title;
+  const title = stripColumnLabel(config.title);
+  const rawTitle = config.title;
   const texts = facts.map(f => f.text);
   const all = texts.join("\n\n");
   const assets: ContentAsset[] = [];
@@ -63,7 +78,7 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
         case "website":
           assetType = "seo_package";
           content = `# ${title}\n\n## ${label.context}\n\n${texts[0]}\n\n## ${label.details}\n\n${texts.slice(1).join("\n\n") || label.unknown}\n\n## ${label.limits}\n\n${label.caution}\n\n${cta}`;
-          meta = { seoTitle: title, metaDescription: texts[0].slice(0, 160), slug: title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, ""), keyTerms: analysis.keyTerms };
+          meta = { seoTitle: rawTitle, metaDescription: texts[0].slice(0, 160), slug: title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, ""), keyTerms: analysis.keyTerms };
           break;
         case "linkedin":
           assetType = "professional_insight";

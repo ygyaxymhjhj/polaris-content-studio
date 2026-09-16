@@ -74,6 +74,8 @@ Không được hiểu “thuần tiếng Anh” là dịch nguyên caption ti�
 
 - Viết theo phong cách tin nhanh, đưa thông tin quan trọng nhất lên đầu\.
 
+- “Tin nhanh” chỉ là mô tả phong cách; không mở đầu bằng nhãn mục như “TIN NHANH” — vào thẳng thông tin\.
+
 - Câu chữ ngắn, trực diện, giàu thông tin, ưu tiên cách viết giống headline/news update\.
 
 - Dựa vào nội dung thực tế để chọn điểm nhấn: diễn biến, con số, phát biểu, nguyên nhân, tác động hoặc thông tin mới; không ép bài nào cũng phải có đủ các yếu tố này\.

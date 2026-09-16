@@ -101,6 +101,14 @@ try {
   await generateWithAI(imported, analysis, ['linkedin', 'facebook']);
   assert.equal(/must use language (\w+)/.exec(promptFor('linkedin').messages[1].content)[1], 'en', 'An imported Vietnamese article still gets an English LinkedIn prompt');
   assert.equal(/must use language (\w+)/.exec(promptFor('facebook').messages[1].content)[1], 'vi', 'The same import keeps the other channels in the imported language');
+  // Asking for a fast-news tone made models open Chinese posts with a 【快讯】 column header, so the
+  // X rules now say explicitly that the style name is not a label to print.
+  requests.length = 0;
+  await generateWithAI({ ...config, language: 'zh' }, analysis, ['x']);
+  assert(requests[0].messages[1].content.includes('不要把「快讯」「突发」这类栏目标签写进文案开头'), 'The Chinese X rules forbid printing the style label');
+  requests.length = 0;
+  await generateWithAI({ ...config, language: 'vi' }, analysis, ['x']);
+  assert(requests[0].messages[1].content.includes('không mở đầu bằng nhãn mục'), 'The Vietnamese X rules forbid printing the style label');
 
   // The offline template quotes source text verbatim and cannot translate it, so a LinkedIn draft
   // built from Vietnamese text is framed in English and carries an explicit warning instead of
@@ -114,6 +122,21 @@ try {
   assert(offlineLinkedin.content.includes('Chi tiết 1'), 'Quoted source text is still copied verbatim, as the offline template documents');
   const offlineFacebook = starterAssets({ ...config, language: 'vi' }, vietnameseAnalysis, ['facebook']).assets[0];
   assert(offlineFacebook.content.includes('Thông tin từ bài viết'), 'Channels without a fixed language keep the project language offline');
+  // The offline X draft used the source title verbatim, so a 财经快讯 column headline opened the post
+  // with the column's own name; the template now strips those labels and falls back to the title.
+  const columnTitled = starterAssets({ ...config, language: 'zh', title: '财经快讯：金价上涨' }, analysis, ['x']).assets[0];
+  assert.equal(columnTitled.content.startsWith('财经快讯'), false, 'The offline X draft strips the source column label');
+  assert(columnTitled.content.startsWith('金价上涨'), 'The offline X draft opens with the headline, not the column name');
+  const labelled = starterAssets({ ...config, language: 'zh', title: '快讯' }, analysis, ['x']).assets[0];
+  assert(labelled.content.startsWith('快讯\n'), 'A title that is only a column label keeps a usable opening');
+  // The strip happens once, before any channel template runs, so every offline channel benefits.
+  const columnFacebook = starterAssets({ ...config, language: 'zh', title: '财经快讯：金价上涨' }, analysis, ['facebook']).assets[0];
+  assert.equal(columnFacebook.content.startsWith('财经快讯'), false, 'Every offline channel strips the column label, not only X');
+  const columnVi = starterAssets({ ...config, language: 'vi', title: 'Bản tin tài chính：Vàng tăng' }, analysis, ['x']).assets[0];
+  assert(columnVi.content.startsWith('Vàng tăng'), 'A multi-word Vietnamese column label is stripped whole');
+  const columnWebsite = starterAssets({ ...config, language: 'zh', title: '财经快讯：金价上涨' }, analysis, ['website']).assets[0];
+  assert(!columnWebsite.content.startsWith('# 财经快讯'), 'The website draft heading drops the column label');
+  assert.equal(columnWebsite.meta.seoTitle, '财经快讯：金价上涨', 'The SEO title keeps the full source headline');
   // The warning follows the text, not the channel policy: choosing English for a Vietnamese article
   // still leaves excerpt text that has to be rewritten, and matching channel and project language
   // must not silence that.

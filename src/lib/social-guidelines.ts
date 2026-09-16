@@ -144,6 +144,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
   x: {
     vi: [
       "- Viết theo phong cách tin nhanh, đưa thông tin quan trọng nhất lên đầu.",
+      "- \"Tin nhanh\" chỉ là mô tả phong cách; không mở đầu bằng nhãn mục như \"TIN NHANH\" — vào thẳng thông tin.",
       "- Câu chữ ngắn, trực diện, giàu thông tin, ưu tiên cách viết giống headline/news update.",
       "- Dựa vào nội dung thực tế để chọn điểm nhấn: diễn biến, con số, phát biểu, nguyên nhân, tác động hoặc thông tin mới; không ép bài nào cũng phải có đủ các yếu tố này.",
       "- Ưu tiên tính thời điểm và thông tin mới, đặc biệt với nội dung tài chính và thị trường.",
@@ -153,6 +154,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
     ].join("\n"),
     zh: [
       "- 按快讯风格写，最重要的信息放最前。",
+      "- 「快讯」只是风格描述，不要把「快讯」「突发」这类栏目标签写进文案开头；直接以信息开头。",
       "- 句子短、直接、信息密度高，优先写成 headline / news update 的样子。",
       "- 依据实际内容选择重点：进展、数字、表态、原因、影响或新信息；不要强求每篇都齐备这些要素。",
       "- 优先时效性与新信息，金融和市场内容尤其如此。",
@@ -162,6 +164,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
     ].join("\n"),
     en: [
       "- Write in fast-news style; lead with the most important information.",
+      "- \"Fast-news\" describes the tone, not a label to print: never open with BREAKING, FLASH or similar prefixes — start with the information itself.",
       "- Short, direct, information-dense sentences — closer to a headline or news update.",
       "- Choose the emphasis from the actual content: a development, figure, statement, cause, impact or new detail; do not force every element into every post.",
       "- Prioritise timeliness and new information, especially for finance and market content.",
