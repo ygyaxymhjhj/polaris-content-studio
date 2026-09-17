@@ -1,0 +1,32 @@
+name: polaris-storage
+services:
+  mysql:
+    image: mysql:8.4@sha256:85b9bf2e29cf836ecb8c2a15a935d4ba0c606631dff1dd79531a11983c638f2a
+    container_name: polaris-mysql
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:13306:3306"
+    environment:
+      MYSQL_DATABASE: polaris_content_studio
+      MYSQL_USER: polaris_app
+      MYSQL_PASSWORD: ${POLARIS_MYSQL_PASSWORD:?Set a private password}
+      MYSQL_ROOT_PASSWORD: ${POLARIS_MYSQL_ROOT_PASSWORD:?Set a private root password}
+    volumes:
+      - polaris_mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/001-polaris.sql:ro
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-buffer-pool-size=256M", "--max-connections=40"]
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h127.0.0.1 -u\"$$MYSQL_USER\" -D\"$$MYSQL_DATABASE\" -Nse 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  polaris_mysql_data:

@@ -7,12 +7,13 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
   await page.goto(process.env.TEST_BASE_URL || "http://localhost:3000");
   const language = page.locator('.locale-switcher select');
   await language.selectOption("zh");
   await page.getByRole("button", { name: "生成社媒草稿", exact: true }).waitFor();
   await page.locator('.source-textarea').fill("测试来源：不得因切换界面语言而改变。");
-  const outputLanguage = page.locator('select').nth(2);
+  const outputLanguage = page.locator('.input-grid select').nth(1);
   await outputLanguage.selectOption("vi");
   await language.selectOption("vi");
   await page.getByRole("button", { name: "Tạo bản nháp mạng xã hội", exact: true }).waitFor();

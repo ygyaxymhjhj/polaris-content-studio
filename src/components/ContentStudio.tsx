@@ -44,6 +44,8 @@ import JSZip from "jszip";
 import fixedArticle from "@/data/test-article.json";
 import { validateBrowserArticle } from "@/lib/browser-import";
 import { normalizeAnalysis } from "@/lib/normalize-analysis";
+import ProjectStorage from "@/components/ProjectStorage";
+import type { ProjectSnapshot } from "@/lib/project-schema";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import {
   ContentAsset,
@@ -157,6 +159,7 @@ export default function ContentStudio() {
   const [loading, setLoading] = useState<"parse" | "fetch" | "analyze" | "generate" | "export" | null>(null);
   const [toast, setToast] = useState("");
   const [usedFallback, setUsedFallback] = useState(false);
+  const [generationRun, setGenerationRun] = useState("");
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
   const [instruction, setInstruction] = useState("");
   const [optionCount, setOptionCount] = useState(2);
@@ -215,6 +218,17 @@ export default function ContentStudio() {
     // reshuffling while a pack is still filling in.
     return [...list].sort((a, b) => DEFAULT_PLATFORMS.indexOf(a.platform) - DEFAULT_PLATFORMS.indexOf(b.platform) || a.id.localeCompare(b.id));
   }, [assetFilter, assets]);
+
+  function restoreProject(snapshot: ProjectSnapshot) {
+    clearDerivedContent();
+    importedSource.current = snapshot.importedSource;
+    editedConfig.current = new Set(snapshot.editedConfig);
+    setConfig(snapshot.config); setSourceText(snapshot.sourceText); setSourceName(snapshot.sourceName);
+    setSourcePending(snapshot.sourcePending); setSourceError(""); setBrowserArticle(null);
+    setAnalysis(snapshot.analysis); setAssets(snapshot.assets); setSelectedPlatforms(snapshot.selectedPlatforms);
+    setThreads(snapshot.threads); setUsedFallback(snapshot.usedFallback); setGenerationRun(snapshot.generationRun);
+    setView(snapshot.assets.length ? "assets" : "workspace");
+  }
 
   function notify(message: string) {
     setToast(message);
@@ -406,6 +420,7 @@ export default function ContentStudio() {
     setThreads({});
     clearCandidates();
     setLoading("generate");
+    setGenerationRun(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
     setAssets([]);
     setUsedFallback(false);
     setPendingPlatforms(platforms);
@@ -743,6 +758,7 @@ export default function ContentStudio() {
         </header>
 
         <div className="content-wrap">
+          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} />
           {view === "workspace" && <>
             {(sourceError || sourcePending) && <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>}
             <a className="secondary-button" href="/downloads/polaris-article-import.zip" download><Download size={15} /> {t("Download browser extension")}</a>

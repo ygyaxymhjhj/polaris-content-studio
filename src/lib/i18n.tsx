@@ -5,6 +5,15 @@ import { createContext, useContext } from "react";
 export type UiLanguage = "en" | "zh" | "vi";
 export const LocaleContext = createContext<UiLanguage>("en");
 const messages: Record<string, [string, string]> = {
+  "Project storage": ["项目存储", "Lưu trữ dự án"], "MySQL project history": ["项目保存与历史", "Lưu dự án và lịch sử"],
+  "Connecting storage…": ["正在连接数据库…", "Đang kết nối cơ sở dữ liệu…"], "Saved to MySQL": ["已保存到 MySQL", "Đã lưu vào MySQL"],
+  "Ready to save": ["数据库已连接", "Sẵn sàng lưu"], "Unsaved changes": ["有改动尚未保存", "Có thay đổi chưa lưu"], "Saving to MySQL…": ["正在保存到 MySQL…", "Đang lưu vào MySQL…"],
+  "Save failed — keep this page open": ["保存失败，请勿关闭页面", "Lưu thất bại — đừng đóng trang"], "Storage unavailable": ["数据库暂不可用", "Cơ sở dữ liệu chưa khả dụng"], "Database is not configured": ["尚未配置数据库", "Chưa cấu hình cơ sở dữ liệu"],
+  "Save now": ["立即保存", "Lưu ngay"], "Save as new project": ["另存为新项目", "Lưu thành dự án mới"], "Saved projects": ["已保存项目", "Dự án đã lưu"], "Choose a saved project": ["选择历史项目", "Chọn dự án đã lưu"], "Restore project": ["恢复项目", "Khôi phục dự án"], "Refresh history": ["刷新历史", "Làm mới lịch sử"],
+  "Discard unsaved changes and load this project?": ["放弃尚未保存的改动并恢复该项目？", "Bỏ thay đổi chưa lưu và mở dự án này?"],
+  "Projects are isolated by browser cookie, not a user login. Save editor changes before closing. Wait for Saved to MySQL before refreshing; running AI jobs do not resume automatically.": ["项目按浏览器 Cookie 隔离，暂非账号权限。编辑器内修改需先点击保存；刷新前请等待“已保存到 MySQL”。进行中的 AI 任务不会自动续跑。", "Dự án được tách theo cookie trình duyệt, chưa theo tài khoản. Hãy lưu thay đổi trong trình sửa và đợi trạng thái Đã lưu vào MySQL trước khi tải lại. Tác vụ AI đang chạy không tự tiếp tục."],
+  "Database unavailable. Keep this page open and retry saving.": ["数据库连接失败，请保留当前页面并重试保存。", "Không kết nối được cơ sở dữ liệu. Giữ trang mở và thử lưu lại."],
+  "Project changed in another tab. Reload it from history before saving.": ["该项目已在其他标签页更新，请从历史重新加载，或另存为新项目。", "Dự án đã thay đổi ở tab khác. Hãy tải lại từ lịch sử hoặc lưu thành dự án mới."],
   "Generate social drafts": ["生成社媒草稿", "Tạo bản nháp mạng xã hội"],
   "Your source is already reviewed. Review generated drafts before export.": ["基于团队已核对的文章生成，导出前仍需审核成稿。", "Tạo từ bài viết đã được nhóm kiểm chứng; duyệt bản nháp trước khi xuất."],
   "Preparing source references…": ["正在整理原文依据，随后自动生成…", "Đang chuẩn bị dẫn chứng, sau đó tự động tạo nội dung…"],

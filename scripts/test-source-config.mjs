@@ -10,6 +10,7 @@ try {
   await page.route("**/api/fetch-article", route => route.fulfill({ json: article }));
   await page.route("**/api/analyze", route => route.fulfill({ json: { summaryShort: "Test", summaryLong: "Test summary", keyTerms: ['Forex', 'Forex'], riskFlags: ['high', 'high'], facts: [{ id: "F001", text: "Test fact", type: "claim", riskLevel: "low", sourceExcerpt: "Thị trường ngoại hối hôm nay.", sourceLocation: "p1", verified: false, usableOnSocial: true }] } }));
   await page.route('**/api/generate', route => route.fulfill({ json: { assets: [], usedFallback: false } }));
+  await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
   await page.goto(process.env.TEST_BASE_URL || "http://localhost:3000");
   await page.locator('.locale-switcher select').selectOption("en");
   const field = name => page.getByLabel(name, { exact: true });

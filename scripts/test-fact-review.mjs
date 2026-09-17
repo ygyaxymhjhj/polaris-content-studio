@@ -8,6 +8,7 @@ try {
  page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/api/analyze',r=>r.fulfill({json:analysis}));
  await page.route('**/api/generate',async r=>{requests.push(r.request().postDataJSON());await r.fulfill({json:{assets:[],usedFallback:false}});});
+ await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
  await page.goto(process.env.TEST_BASE_URL || 'http://localhost:3002');
  await page.locator('.locale-switcher select').selectOption('en');
  await page.locator('.source-textarea').fill(source);
