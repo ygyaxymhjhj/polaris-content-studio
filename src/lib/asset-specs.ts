@@ -10,11 +10,30 @@ export const ASSET_SPECS: Record<Platform, { count: number; brief: string; minLe
   linkedin: { count: 1, minLength: 450, notes: ["visualBrief"], brief: "One professional post in English with a factual opening, context, 2-3 evidence-led points, implications explicitly framed as interpretation, and a closing question/CTA. 5-7 readable paragraphs; target 200-350 English words if supported. Avoid fake personal experience and generic business filler. meta.visualBrief describes an optional editorial graphic." },
   x: { count: 1, minLength: 120, notes: ["post"], brief: "One single X post in fast-news style, <=280 characters including any link (conservative raw count). Lead with the most important information; keep sentences short and information-dense. If the real article link is included, the post alone must still tell readers what the news is. meta.post holds the exact publishable text. Do not write a multi-post thread." },
   instagram: { count: 1, minLength: 350, notes: ["slides", "caption", "visualBrief"], brief: "One 6-slide carousel. content must contain final copy for each numbered slide plus a separately labeled publishable caption and CTA. Slides: hook, context, fact 1, fact 2 or limitation, what remains uncertain, recap/CTA. Keep slide copy short; no invented advice when source has no recommendations. meta.slides: six objects with title, body, visualDirection; meta.caption, slideCount=6, visualBrief. Visuals must not imply fabricated documentary evidence." },
-  short_video: { count: 1, minLength: 300, notes: ["duration", "shots", "caption"], brief: "One complete video script for a vertical 40-70 second video. content includes timed segments, exact spoken narration, on-screen text and shot direction, then a posting caption. Choose the segment breakdown from the article's own content; do not force a fixed structure onto every video. Budget realistic speech length in the requested language. Never use 'explain this' instead of actual narration; if the story needs more time to be told properly, keep the script longer rather than cutting context. meta.duration must state the target runtime (for example 40-70s or 60s); meta.shots is an array of time/narration/onScreen/visual; meta.caption is a single sentence. Only suggest illustrative graphics, not fake testimony or screenshots." },
+  short_video: { count: 1, minLength: 300, notes: ["duration", "caption"], brief: "One complete voiceover copy for a vertical 40-70 second video: the exact spoken text, written the way it is said, with no timestamps, on-screen text, emoji, hashtags or shot direction mixed in. Budget realistic speech length in the requested language and read the copy back silently so it flows naturally without stumbles or repeats. Take the story from the article's own content and do not force one structure onto every video; if it needs more time to be told properly, write longer rather than cutting context. meta.duration states the target runtime (for example 40-70s or 60s); meta.caption is a single posting caption. Never use 'explain this' instead of actual narration." },
   community: { count: 1, minLength: 220, notes: ["options", "pinnedReply"], brief: "One complete community post with title, factual context, an open question, 4 neutral poll choices, invitation to comment and a written moderator pinned reply. Include all publishable text in content. meta.options is four strings; meta.pinnedReply. Poll asks about information needs, not invented survey results or buy/sell recommendations." },
   push: { count: 3, minLength: 25, notes: ["pushTitle", "pushBody", "audience", "sendWindow", "frequency"], brief: "Three push variants: news-led, question-led, read-more-led. Each has an actual short title <=40 characters and body <=100 characters, localized and not sensational. content clearly labels title and body; meta.pushTitle and meta.pushBody contain exact copy. Include cta and deepLink only if real URL exists. meta.audience, sendWindow, frequency must be explicitly labeled proposed settings, not actual user analytics or scheduled sends. No automatic sending, false urgency, or placeholder URLs." },
   kol_live: { count: 1, minLength: 400, notes: ["segments", "promoCopy"], brief: "One usable 30-minute LIVE run-of-show with timed opening, source-backed explanation, 3 discussion questions with factual talking points, audience Q&A and closing CTA. Include written opening and closing, not just topic names. Unknown questions must be referred back for verification. Include a publishable promotional post in content and meta.promoCopy; meta.segments with time/topic/hostScript. Proposed running time is a production suggestion, not a source fact." },
   faq: { count: 1, minLength: 300, notes: ["questions"], brief: "One FAQ with 5-8 complete question-and-answer pairs specific to the source. Each answer must actually answer the question using available facts; if unknown, state that the source does not specify. Include all Q&A in content and meta.questions as question/answer objects. Do not repeat 'read the article' as every answer. Finish with source CTA." }
+};
+
+/**
+ * The one canonical asset type per platform, used by the AI normalisation and kept in sync with the
+ * offline template by the test suite. The model cannot know this taxonomy, so its guess is never
+ * trusted: without this, a voiceover copy got labelled "video script" again.
+ */
+export const ASSET_TYPES: Record<Platform, string> = {
+  website: "seo_package",
+  facebook: "short_post",
+  threads: "discussion_thread",
+  linkedin: "professional_insight",
+  x: "short_post",
+  instagram: "carousel",
+  short_video: "voiceover_copy",
+  community: "poll",
+  push: "push_notification",
+  kol_live: "live_outline",
+  faq: "faq_set"
 };
 
 export function assetQualityIssues(asset: ContentAsset, configured?: ProjectConfig["language"]): string[] {

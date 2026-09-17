@@ -63,6 +63,12 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
     const languageWarning = mismatchedList
       ? `${languageRule}. The offline template cannot translate, so ${mismatchedList} must be rewritten in ${language} before publishing.`
       : "";
+    // The offline template cannot oralize: short video narration is raw excerpts pasted in a fixed
+    // order, and the caption is the headline as-is, so the draft says so instead of passing as a
+    // finished voiceover copy.
+    const voiceoverNote = platform === "short_video"
+      ? l("Local starter draft: the narration is raw source excerpts in a fixed order, not spoken-style copy, and the caption is the headline as-is — oralize the script and rewrite the caption as one line with matching hashtags before publishing.", "本地初稿：口播为原文摘录按固定顺序直排、未做口语化改写，配文为原文标题——发布前请人工朗读润色，并将配文改写为一句带相关话题标签的话。", "Bản nháp cục bộ: lời đọc là trích đoạn nguyên văn xếp theo thứ tự cố định, chưa chuyển thành văn nói; caption là tiêu đề gốc — cần đọc lại, trau chuốt và viết caption một câu kèm hashtag trước khi đăng.")
+      : "";
     for (let variant = 0; variant < ASSET_SPECS[platform].count; variant++) {
       const ordered = variant === 1 ? [...texts].reverse() : texts;
       const blocks = ordered.join("\n\n");
@@ -116,14 +122,14 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
           break;
         }
         case "short_video": {
-          assetType = "video_script";
-          const times = ["0–3s", "3–15s", "15–35s", "35–52s", "52–60s"];
-          const narration = [title, texts[0], texts.slice(1).join("\n") || label.unknown, label.caution, cta];
-          const shots = times.map((time, i) => ({ time, narration: narration[i], onScreen: i === 0 ? title : i === times.length - 1 ? config.cta : label.context, visual: label.visual }));
+          assetType = "voiceover_copy";
+          // The deliverable is the spoken copy itself, not a production script: no timestamps,
+          // on-screen text or shot direction mixed in, as the platform voice rules require.
+          const narration = [title, texts[0], texts.slice(1).join("\n") || label.unknown, label.caution].join("\n\n");
           // The caption stays a single sentence, as required by the platform voice rules.
           const caption = title;
-          content = shots.map(s => `${s.time}\n${l("Narration", "口播", "Lời đọc")}: ${s.narration}\n${l("On-screen text", "屏幕文字", "Chữ trên màn hình")}: ${s.onScreen}\n${s.visual}`).join("\n\n") + `\n\n${label.caption}\n${caption}`;
-          meta = { duration: "40-70s", shots, caption, timingNote: l("Suggested timings; read aloud and shorten before recording.", "时间为制作建议，录制前请试读并精简。", "Thời lượng gợi ý; đọc thử và rút gọn trước khi quay.") };
+          content = narration;
+          meta = { duration: "40-70s", caption, timingNote: l("Suggested runtime; read aloud and shorten before recording.", "时长为制作建议，录制前请试读并精简。", "Thời lượng gợi ý; đọc thử và rút gọn trước khi quay.") };
           break;
         }
         case "community":
@@ -167,7 +173,7 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
           break;
         }
       }
-      assets.push({ id: `local-${platform}-${variant + 1}`, platform, assetType, title: `${title} · ${variant + 1}`, variant: String.fromCharCode(65 + variant), content, cta: config.cta, ...(url && platform === "push" ? { deepLink: url } : {}), factIds: facts.map(f => f.id), riskFlags: [label.fallback, ...(languageWarning ? [languageWarning] : [])], status: "needs_review", updatedAt: new Date().toISOString(), meta, generationMode: "local" });
+      assets.push({ id: `local-${platform}-${variant + 1}`, platform, assetType, title: `${title} · ${variant + 1}`, variant: String.fromCharCode(65 + variant), content, cta: config.cta, ...(url && platform === "push" ? { deepLink: url } : {}), factIds: facts.map(f => f.id), riskFlags: [label.fallback, ...(voiceoverNote ? [voiceoverNote] : []), ...(languageWarning ? [languageWarning] : [])], status: "needs_review", updatedAt: new Date().toISOString(), meta, generationMode: "local" });
     }
   }
   return { assets, usedFallback: true };

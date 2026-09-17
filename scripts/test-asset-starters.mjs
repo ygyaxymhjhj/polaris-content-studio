@@ -17,7 +17,7 @@ try {
   const require = createRequire(import.meta.url);
   const { starterAssets } = require(path.join(temp, 'starter-assets.js'));
   const { generateWithAI, rewriteAsset } = require(path.join(temp, 'ai.js'));
-  const { ASSET_SPECS, assetQualityIssues } = require(path.join(temp, 'asset-specs.js'));
+  const { ASSET_SPECS, ASSET_TYPES, assetQualityIssues } = require(path.join(temp, 'asset-specs.js'));
   const { detectSourceLanguage, dominantSourceLanguage, alignSourceConfig } = require(path.join(temp, 'source-config.js'));
   const { contextWindowFor, estimateTokens } = require(path.join(temp, 'context-budget.js'));
   const platforms = Object.keys(ASSET_SPECS);
@@ -34,12 +34,17 @@ try {
       assert(!asset.factIds.includes('EXCLUDED'));
       assert.equal(asset.generationMode, 'local');
       for (const key of ASSET_SPECS[asset.platform].notes) assert(key in asset.meta, `${asset.platform}: ${key}`);
+      assert.equal(asset.assetType, ASSET_TYPES[asset.platform], `${asset.platform}: offline template and canonical asset types stay in sync`);
     }
     const fb = result.assets.filter(a => a.platform === 'facebook');
     assert.notEqual(fb[0].content, fb[1].content);
     assert(fb[0].content.includes(config.sourceUrl));
     assert(!fb[0].content.includes(fb[0].meta.visualBrief));
     assert.deepEqual(result.assets.filter(a => a.platform === 'short_video').map(a => a.meta.duration), ['40-70s']);
+    const video = result.assets.filter(a => a.platform === 'short_video')[0];
+    assert(video.assetType === 'voiceover_copy' && video.content.includes('Source detail 1'), 'Short video delivers spoken copy, not a production script');
+    assert(!video.content.includes('0–3s') && !video.content.includes('Narration') && !video.content.includes('On-screen text'), 'No timestamps or shot scaffolding leak into the voiceover copy');
+    assert(video.riskFlags.some(flag => flag.includes('not spoken-style copy') || flag.includes('未做口语化') || flag.includes('chưa chuyển thành văn nói')), 'The offline voiceover draft says the narration is raw excerpts needing oralization');
   }
   process.env.AI_API_KEY = 'test-only';
   const calls = {};
@@ -91,6 +96,29 @@ try {
   assert(!linkedinPrompt.messages[0].content.includes('Viết tiếng Việt tự nhiên'), 'No Vietnamese writing principles reach the LinkedIn prompt');
   assert(!linkedinPrompt.messages[1].content.includes('ngôn ngữ đầu ra đã cấu hình'), 'The rule that made LinkedIn follow config.language is gone');
   assert(!promptFor('website').messages[1].content.includes('PLATFORM VOICE RULES'), 'Platforms without voice rules keep the format brief only');
+  // Models otherwise mislabel the channel ("tiktok" for short_video) and every reply is dropped, so
+  // the prompt pins the exact internal key, and the canonical asset type overrides any model guess.
+  assert(linkedinPrompt.messages[1].content.includes('platform="linkedin" exactly'), 'The prompt pins the exact platform key');
+  requests.length = 0;
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const platform = request.messages[1].content.match(/for (\w+) ONLY/)[1];
+    const mislabelled = { ...starterAssets(config, analysis, [platform]).assets[0], assetType: 'the_model_guessed_wrong' };
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: [mislabelled] }) } }] });
+  };
+  const typed = await generateWithAI(config, analysis, ['short_video', 'instagram']);
+  assert.equal(typed.assets.find(asset => asset.platform === 'short_video').assetType, 'voiceover_copy', 'The model cannot rename an internal asset type');
+  assert.equal(typed.assets.find(asset => asset.platform === 'instagram').assetType, 'carousel', 'Every platform keeps its canonical asset type');
+  requests.length = 0;
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const spoken = 'Spoken copy that lasts forty seconds of narration time and is long enough to pass the minimum length check without a retry. '.repeat(3);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: [{ platform: 'tiktok', content: spoken, meta: { duration: '40-70s', caption: 'One line #gold' }, factIds: ['F001'], title: 'T' }] }) } }] });
+  };
+  const aliased = await generateWithAI(config, analysis, ['short_video']);
+  assert.equal(aliased.assets.find(asset => asset.platform === 'short_video').assetType, 'voiceover_copy', 'A "tiktok" reply is accepted as short_video without a retry');
   // The editor's actual first step: importing Vietnamese text decides the project language, and that
   // decision must not reach the LinkedIn prompt. Everything above set language explicitly, so without
   // this the imported-project case — the one that was reported — would never be exercised.

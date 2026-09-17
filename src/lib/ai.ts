@@ -1,5 +1,5 @@
 import { starterAssets } from "./starter-assets";
-import { ASSET_SPECS, assetQualityIssues } from "./asset-specs";
+import { ASSET_SPECS, ASSET_TYPES, assetQualityIssues } from "./asset-specs";
 import { estimateTokens, planConversation } from "./context-budget";
 import { GLOBAL_GUIDELINES, channelVoice } from "./social-guidelines";
 import { dominantSourceLanguage } from "./source-config";
@@ -129,6 +129,9 @@ export function fallbackAssets(config: ProjectConfig, analysis: SourceAnalysis, 
   return starterAssets(config, analysis, platforms);
 }
 
+/** Channel display names models use instead of the internal keys; the internal key stays canonical. */
+const CHANNEL_ALIASES: Record<string, Platform> = { tiktok: "short_video", reels: "short_video", shorts: "short_video", twitter: "x" };
+
 function normalizeAiAssets(rawAssets: unknown, config: ProjectConfig, analysis: SourceAnalysis, platforms: Platform[]) {
   const validIds = new Set(analysis.facts.map((fact) => fact.id));
   const allowedPlatforms = new Set(platforms);
@@ -137,22 +140,27 @@ function normalizeAiAssets(rawAssets: unknown, config: ProjectConfig, analysis: 
   return rawAssets.flatMap((raw, index) => {
     if (!raw || typeof raw !== "object") return [];
     const source = raw as Partial<ContentAsset>;
-    if (typeof source.platform !== "string" || !allowedPlatforms.has(source.platform as Platform) || !PLATFORM_META[source.platform as Platform]) return [];
+    // Models slip in channel display names instead of the internal keys; accept the common ones so a
+    // "tiktok" reply does not get dropped and cost a retry round trip.
+    const platform = typeof source.platform === "string" ? CHANNEL_ALIASES[source.platform.toLowerCase()] ?? source.platform : "";
+    if (!allowedPlatforms.has(platform as Platform) || !PLATFORM_META[platform as Platform]) return [];
     const content = typeof source.content === "string" ? source.content.trim() : "";
     if (!content) return [];
     const factIds = Array.isArray(source.factIds) ? source.factIds.filter((id): id is string => typeof id === "string" && validIds.has(id)) : [];
     const resolvedFactIds = factIds;
     const riskFlags = Array.isArray(source.riskFlags) ? source.riskFlags.filter((flag): flag is string => typeof flag === "string") : [];
     if (!resolvedFactIds.length) riskFlags.push("No source reference returned; verify this asset before approval");
-    const defaultType = source.platform === "website" ? "seo_package" : source.platform === "short_video" ? "video_script" : `${source.platform}_content`;
+    const defaultType = ASSET_TYPES[platform as Platform];
     return [{
       ...source,
-      id: `ai-${source.platform}-${index + 1}`,
+      id: `ai-${platform}-${index + 1}`,
       generationMode: "ai" as const,
       meta: source.meta && typeof source.meta === "object" && !Array.isArray(source.meta) ? source.meta : {},
-      platform: source.platform as Platform,
-      assetType: typeof source.assetType === "string" && source.assetType ? source.assetType : defaultType,
-      title: typeof source.title === "string" && source.title ? source.title : `${PLATFORM_META[source.platform as Platform].label} draft`,
+      platform: platform as Platform,
+      // assetType is an internal taxonomy the model cannot know, so its guess is never trusted: a
+      // "video script" label must not reappear on what is now a voiceover copy.
+      assetType: defaultType,
+      title: typeof source.title === "string" && source.title ? source.title : `${PLATFORM_META[platform as Platform].label} draft`,
       content,
       factIds: resolvedFactIds,
       riskFlags,
@@ -201,7 +209,7 @@ export async function generateWithAI(config: ProjectConfig, analysis: SourceAnal
     // prompt must agree with itself, and the channel rules explain the brief's own language.
     const project = language === configured ? config : { ...config, language };
     const system = `${PRODUCTION_EDITOR_SYSTEM}\n\nWRITING PRINCIPLES:\n${GLOBAL_GUIDELINES[language]}`;
-    const prompt = `Write ${spec.count} complete starter assets for ${platform} ONLY. Return {assets:[...]}. Each asset requires platform, assetType, title (internal label), content (complete final copy/script, not a summary or outline), factIds (exact IDs used), riskFlags, status=needs_review, cta, meta. All copy AND delivery notes must use language ${language}. Include cta within publishable copy naturally. Use only the configured real URL; if missing, omit links and flag that a destination needs review. No placeholder links. Do not put production instructions inside social post bodies. For multisection formats include every publishable section in content and mirror structured details in meta. Do not pad or repeat facts to meet length targets; if source is sparse, produce a shorter honest draft and flag missing context.\nFORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\nPROJECT:\n${JSON.stringify(project)}\nFACT PACK:\n${factText(reviewed.facts)}`;
+    const prompt = `Write ${spec.count} complete starter assets for ${platform} ONLY. Return {assets:[...]}. Every asset must carry platform="${platform}" exactly — normalisation drops replies that mislabel the channel — plus assetType, title (internal label), content (complete final copy/script, not a summary or outline), factIds (exact IDs used), riskFlags, status=needs_review, cta, meta. All copy AND delivery notes must use language ${language}. Include cta within publishable copy naturally. Use only the configured real URL; if missing, omit links and flag that a destination needs review. No placeholder links. Do not put production instructions inside social post bodies. For multisection formats include every publishable section in content and mirror structured details in meta. Do not pad or repeat facts to meet length targets; if source is sparse, produce a shorter honest draft and flag missing context.\nFORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\nPROJECT:\n${JSON.stringify(project)}\nFACT PACK:\n${factText(reviewed.facts)}`;
     let best: ContentAsset[] = [];
     const issuesFor = (items: ContentAsset[]) => [
       ...(items.length === spec.count ? [] : [`Expected ${spec.count} assets; received ${items.length}`]),
