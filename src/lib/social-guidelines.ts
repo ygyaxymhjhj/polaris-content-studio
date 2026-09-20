@@ -34,7 +34,7 @@ export const GLOBAL_GUIDELINES: Record<Language, string> = {
     "- Không copy cùng một cách viết cho nhiều nền tảng; mỗi nền tảng phải có cách triển khai riêng.",
     "- Không lặp một công thức caption cho mọi bài; phải đọc nội dung và chọn góc triển khai phù hợp.",
     "- Mỗi caption chỉ tập trung vào một góc chính, không nhồi quá nhiều thông tin.",
-    "- Hook phải xuất phát từ nội dung thực tế, có thể dùng câu hỏi, con số, mâu thuẫn, lợi ích hoặc thông tin đáng chú ý.",
+    "- Mở đầu bằng chi tiết cụ thể nhất của bài: một con số, một sự tương phản, hoặc một tên gọi gắn với mốc mới. Không mở đầu bằng câu tổng quan kiểu \"thị trường tuần qua ghi nhận nhiều diễn biến\" hay câu hỏi chung chung \"các sàn đang làm gì?\" — loại mở đầu đó giết tương tác.",
     "- Icon/emoji phải dựa trên nội dung và ngữ cảnh của từng bài; chọn icon có ý nghĩa, không dùng máy móc hoặc lặp một bộ icon cho mọi caption.",
     "- Số lượng icon vừa phải, không chèn emoji vào mọi câu.",
     "- Với nội dung tài chính, phân biệt rõ thông tin, nhận định và dự báo; không dùng ngôn ngữ đảm bảo lợi nhuận hoặc khẳng định chắc chắn khi chưa có căn cứ."
@@ -47,7 +47,7 @@ export const GLOBAL_GUIDELINES: Record<Language, string> = {
     "- 不要在多平台之间复制同一种写法；每个平台都要有自己的展开方式。",
     "- 不要对所有文章重复同一套文案公式；必须先读内容再选择合适角度。",
     "- 每条文案只聚焦一个主要角度，不要塞入过多信息。",
-    "- Hook 必须来自真实内容，可以用提问、数字、矛盾点、利益点或值得关注的信息。",
+    "- 开头必须用文中最具体的细节：一个数字、一个反差，或一个名称加新纪录。不要用「本周市场录得多项进展」式的综述开头，也不要用「各家平台都在做什么？」式的泛泛提问——这类开头最消耗互动。",
     "- 图标/emoji 要依据每篇文章的内容与语境；选择有意义的图标，不要机械套用或对所有文案重复同一组。",
     "- 图标数量适中，不要每句都插 emoji。",
     "- 涉及金融内容时，明确区分信息、观点和预测；不要使用保证收益或缺乏依据的确定性表述。"
@@ -60,7 +60,7 @@ export const GLOBAL_GUIDELINES: Record<Language, string> = {
     "- Do not copy one writing approach across platforms; each platform needs its own treatment.",
     "- Do not repeat one caption formula for every article; read the content and choose a fitting angle.",
     "- Each caption focuses on one main angle; do not cram in too much information.",
-    "- The hook must come from the actual content — a question, a number, a tension, a benefit or a notable detail.",
+    "- Open with the single most concrete detail in the article: a number, a contrast, or a name tied to a milestone. Never open with a market-roundup sentence like \"the market saw several developments this week\" or a generic question like \"what are brokers doing?\" — that kind of opener kills engagement.",
     "- Icons/emoji must follow each article's content and context; pick meaningful ones, never a mechanical or repeated set.",
     "- Use icons sparingly; do not put emoji in every sentence.",
     "- For financial content, clearly separate information, opinion and forecast; never promise returns or assert certainty without evidence."
