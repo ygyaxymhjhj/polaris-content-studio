@@ -78,3 +78,32 @@ export function analysisChunks(article: string, limit = 2200): string[] {
   if (current) chunks.push(current);
   return chunks;
 }
+
+export interface ChunkFailure {
+  location: string;
+  reason: string;
+}
+
+/**
+ * Merge per-segment analyses into one source analysis. A segment that failed after every retry is
+ * a coverage hole, not a passed check: it is reported in riskFlags — the list the reviewer reads —
+ * so nobody publishes content about an unanalyzed part of the article believing it was verified.
+ * Only when every segment failed is there nothing to return, and that stays an error.
+ */
+export function mergeChunkAnalyses(results: SourceAnalysis[], failures: ChunkFailure[], article: string, title: string): SourceAnalysis {
+  if (!results.length) {
+    const reason = failures[0]?.reason || "unknown error";
+    throw new Error(`Analysis failed for all segments: ${reason}`);
+  }
+  return normalizeAnalysis({
+    summaryShort: results.map(result => result.summaryShort).join(" ").slice(0, 500),
+    summaryLong: results.map(result => result.summaryLong).join("\n\n"),
+    keyTerms: results.flatMap(result => result.keyTerms),
+    riskFlags: [
+      // Source-reference warnings are regenerated with the final stable IDs below.
+      ...results.flatMap(result => result.riskFlags).filter(flag => !/^F\d+: Source excerpt/.test(flag)),
+      ...failures.map(failure => `Segment ${failure.location} could not be analyzed (${failure.reason}). That part of the article is NOT covered by the facts below; re-run analysis before publishing anything based on it.`)
+    ],
+    facts: results.flatMap(result => result.facts)
+  }, article, title);
+}

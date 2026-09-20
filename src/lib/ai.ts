@@ -19,6 +19,18 @@ function cleanJson(value: string) {
 
 const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Bounded second chances for provider-side hiccups. A measured analyze run lost its last segment
+ * to an OpenRouter upstream error (HTTP 200, finishReason "error", the reply cut off mid-string)
+ * and the whole request turned into a 502, so fast transient failures now retry. Deterministic
+ * failures do not: auth and bad requests cannot succeed on a replay, malformed JSON with a normal
+ * finish reason is a model formatting problem that analyze handles by re-splitting the chunk, and
+ * a provider that already hung for two minutes would blow the caller's request budget on a retry.
+ */
+const UPSTREAM_RETRY_DELAYS_MS = [500, 1500];
+
 /**
  * Reasoning models decide how long to think, and left alone some think for tens of thousands of
  * tokens: measured on gemini-3.8-flash, a single rewrite spent 18k reasoning tokens and cost 100x
@@ -38,47 +50,77 @@ export async function askModel<T>(system: string, prompt: string, options: { max
   const baseUrl = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const model = process.env.AI_MODEL || "gpt-4o-mini";
   const startedAt = Date.now();
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    signal: AbortSignal.timeout(120000),
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      temperature: options.temperature ?? 0.35,
-      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
-      ...reasoningOptions(),
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt }
-      ]
-    })
+  const requestBody = JSON.stringify({
+    model,
+    temperature: options.temperature ?? 0.35,
+    ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+    ...reasoningOptions(),
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt }
+    ]
   });
-
-  if (!response.ok) throw new Error(`AI provider returned ${response.status}`);
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  const usage = data.usage || {};
-  // Latency, thinking and cost are the three things that go wrong here, and all three are invisible
-  // from the caller's side. Skipped when the provider reports no usage, which is only ever noise.
-  if (usage.completion_tokens !== undefined) {
-    console.log(`[ai] ${model} ${Date.now() - startedAt}ms | prompt ${usage.prompt_tokens ?? "?"} | completion ${usage.completion_tokens} (reasoning ${usage.completion_tokens_details?.reasoning_tokens ?? 0}) | $${usage.cost ?? "?"}`);
+  let transientReason = "";
+  for (let attempt = 0; attempt <= UPSTREAM_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      const delay = UPSTREAM_RETRY_DELAYS_MS[attempt - 1];
+      console.warn(`[ai] ${model} transient failure (${transientReason}); retry ${attempt}/${UPSTREAM_RETRY_DELAYS_MS.length} in ${delay}ms`);
+      await sleep(delay);
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        signal: AbortSignal.timeout(120000),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body: requestBody
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw error;
+      transientReason = `network error: ${error instanceof Error ? error.message : String(error)}`;
+      continue;
+    }
+    if (!response.ok) {
+      if (response.status === 429 || response.status >= 500) {
+        transientReason = `provider returned ${response.status}`;
+        continue;
+      }
+      throw new Error(`AI provider returned ${response.status}`);
+    }
+    const data = await response.json();
+    const choice = data.choices?.[0];
+    const usage = data.usage || {};
+    // Latency, thinking and cost are the three things that go wrong here, and all three are invisible
+    // from the caller's side. Skipped when the provider reports no usage, which is only ever noise.
+    if (usage.completion_tokens !== undefined) {
+      console.log(`[ai] ${model} ${Date.now() - startedAt}ms | prompt ${usage.prompt_tokens ?? "?"} | completion ${usage.completion_tokens} (reasoning ${usage.completion_tokens_details?.reasoning_tokens ?? 0}) | $${usage.cost ?? "?"}`);
+    }
+    // The upstream-error envelope can arrive with or without partial text; either way the reply is
+    // unusable and the failure belongs to the provider, not the prompt.
+    if (choice?.finish_reason === "error") {
+      const partial = String(choice?.message?.content ?? "");
+      transientReason = `upstream error envelope (head: ${partial.slice(0, 80) || "empty"})`;
+      continue;
+    }
+    const content = choice?.message?.content;
+    if (!content) return null;
+    try {
+      return JSON.parse(cleanJson(content)) as T;
+    } catch (error) {
+      // A truncated or prose-wrapped reply is the most common provider failure, and the reason is
+      // invisible from the parse error alone.
+      const truncated = choice?.finish_reason === "length";
+      console.error("[ai] reply was not valid JSON:", JSON.stringify({
+        finishReason: choice?.finish_reason,
+        usage: data.usage,
+        head: content.slice(0, 300),
+        tail: content.slice(-150)
+      }));
+      throw new Error(truncated ? "The model ran out of output budget before it finished the reply." : "The model returned malformed JSON.", { cause: error });
+    }
   }
-  if (!content) return null;
-  try {
-    return JSON.parse(cleanJson(content)) as T;
-  } catch (error) {
-    // A truncated or prose-wrapped reply is the most common provider failure, and the reason is
-    // invisible from the parse error alone.
-    const truncated = data.choices?.[0]?.finish_reason === "length";
-    console.error("[ai] reply was not valid JSON:", JSON.stringify({
-      finishReason: data.choices?.[0]?.finish_reason,
-      usage: data.usage,
-      head: content.slice(0, 300),
-      tail: content.slice(-150)
-    }));
-    throw new Error(truncated ? "The model ran out of output budget before it finished the reply." : "The model returned malformed JSON.", { cause: error });
-  }
+  throw new Error(`AI provider unavailable after ${UPSTREAM_RETRY_DELAYS_MS.length + 1} attempts: ${transientReason}`);
 }
 
 function sentences(article: string) {

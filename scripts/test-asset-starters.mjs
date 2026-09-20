@@ -9,14 +9,15 @@ const temp = await fs.mkdtemp(path.join(os.tmpdir(), "polaris-assets-"));
 const originalFetch = globalThis.fetch;
 const originalKey = process.env.AI_API_KEY;
 try {
-  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "starter-assets", "ai"]) {
+  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "normalize-analysis", "starter-assets", "ai"]) {
     const source = await fs.readFile(`src/lib/${file}.ts`, "utf8");
     const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
     await fs.writeFile(path.join(temp, `${file}.js`), outputText);
   }
   const require = createRequire(import.meta.url);
   const { starterAssets } = require(path.join(temp, 'starter-assets.js'));
-  const { generateWithAI, rewriteAsset } = require(path.join(temp, 'ai.js'));
+  const { generateWithAI, rewriteAsset, askModel } = require(path.join(temp, 'ai.js'));
+  const { normalizeAnalysis, mergeChunkAnalyses } = require(path.join(temp, 'normalize-analysis.js'));
   const { ASSET_SPECS, ASSET_TYPES, assetQualityIssues } = require(path.join(temp, 'asset-specs.js'));
   const { detectSourceLanguage, dominantSourceLanguage, alignSourceConfig } = require(path.join(temp, 'source-config.js'));
   const { contextWindowFor, estimateTokens } = require(path.join(temp, 'context-budget.js'));
@@ -338,7 +339,49 @@ try {
   await rewriteAsset({ ...config, language: 'vi' }, analysis, { ...baseAsset, content: 'Giá vàng giao ngay tăng 1,4% sau khi Fed công bố giữ nguyên lãi suất, và thị trường phản ứng ngay sau cuộc họp báo kéo dài ba mươi phút.' }, [], 'ngắn hơn một chút', 1);
   assert(!rewriteRequests[0].messages[1].content.includes('convert the whole draft to'), 'A draft already in the requested language is left alone');
 
-  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming and grounded single-asset rewriting. No paid API requests.');
+  // Provider outages used to kill a whole analyze run: the last segment died to an upstream error
+  // envelope (HTTP 200, finishReason "error") and every earlier segment was thrown away with it.
+  // askModel now retries fast transient failures, and analyze keeps whichever segments succeeded.
+  let transientAttempts = 0;
+  globalThis.fetch = async () => {
+    transientAttempts += 1;
+    if (transientAttempts === 1) return new Response('upstream unavailable', { status: 503 });
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] });
+  };
+  const retried = await askModel('system', 'prompt');
+  assert.equal(transientAttempts, 2, 'A provider 503 is retried inside askModel');
+  assert.deepEqual(retried, { ok: true }, 'The retry returns the provider reply once it succeeds');
+
+  let envelopeAttempts = 0;
+  globalThis.fetch = async () => {
+    envelopeAttempts += 1;
+    if (envelopeAttempts === 1) return Response.json({ choices: [{ finish_reason: 'error', message: { content: '{"summaryShort": "BOJ na' } }], usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } });
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] });
+  };
+  const enveloped = await askModel('system', 'prompt');
+  assert.equal(envelopeAttempts, 2, 'An upstream-error envelope is read as a transient provider failure and retried');
+  assert.deepEqual(enveloped, { ok: true });
+
+  let authAttempts = 0;
+  globalThis.fetch = async () => { authAttempts += 1; return new Response('unauthorized', { status: 401 }); };
+  await assert.rejects(askModel('system', 'prompt'), /401/, 'Auth failures are deterministic and never retried');
+  assert.equal(authAttempts, 1, 'A 401 makes exactly one provider call');
+
+  let outageAttempts = 0;
+  globalThis.fetch = async () => { outageAttempts += 1; return new Response('down', { status: 503 }); };
+  await assert.rejects(askModel('system', 'prompt'), /AI provider unavailable after 3 attempts/, 'Transient failures stop after the initial call plus two retries');
+  assert.equal(outageAttempts, 3, 'The retry budget is bounded');
+
+  // Partial analyze degradation: one lost segment becomes a coverage warning on the merged analysis
+  // instead of a 502, and a run where every segment failed still fails loudly.
+  const segmentArticle = 'Fact A about the notice.\n\nFact B about the notice.';
+  const segmentA = normalizeAnalysis({ summaryShort: 'A', summaryLong: 'Long A', keyTerms: ['k'], riskFlags: [], facts: [{ id: 'x', type: 'claim', text: 'Fact A about the notice.', sourceExcerpt: 'Fact A about the notice.', sourceLocation: 'p1', verified: false, usableOnSocial: true, riskLevel: 'low' }] }, segmentArticle, 'T');
+  const merged = mergeChunkAnalyses([segmentA], [{ location: '2', reason: 'AI provider unavailable after 3 attempts: provider returned 503' }], segmentArticle, 'T');
+  assert.equal(merged.facts.length, 1, 'Facts from the segments that did analyze survive');
+  assert(merged.riskFlags.some(flag => flag.includes('Segment 2 could not be analyzed') && flag.includes('NOT covered')), 'A skipped segment is reported as a coverage hole where the reviewer reads');
+  assert.throws(() => mergeChunkAnalyses([], [{ location: '1', reason: 'provider returned 503' }], segmentArticle, 'T'), /Analysis failed for all segments/, 'A run where every segment failed still throws');
+
+  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting and partial analyze degradation. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

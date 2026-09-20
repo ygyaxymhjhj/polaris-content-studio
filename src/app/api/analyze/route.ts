@@ -1,5 +1,6 @@
 import { askModel, fallbackAnalysis } from "@/lib/ai";
-import { analysisChunks, normalizeAnalysis } from "@/lib/normalize-analysis";
+import { analysisChunks, mergeChunkAnalyses, normalizeAnalysis } from "@/lib/normalize-analysis";
+import type { ChunkFailure } from "@/lib/normalize-analysis";
 import { NextResponse } from "next/server";
 import type { SourceAnalysis } from "@/lib/types";
 
@@ -36,20 +37,19 @@ export async function POST(request: Request) {
         throw error;
       }
     }
+    // One lost segment must not throw away the segments that did analyze: allSettled keeps every
+    // survivor, and mergeChunkAnalyses reports the skipped parts where the reviewer reads them.
     const results: SourceAnalysis[] = [];
+    const failures: ChunkFailure[] = [];
     for (let i = 0; i < chunks.length; i += 2) {
-      const batch = await Promise.all(chunks.slice(i, i + 2).map((chunk, index) => analyzeChunk(chunk, String(i + index + 1))));
-      results.push(...batch.flat());
+      const batch = chunks.slice(i, i + 2).map((chunk, index) => ({ chunk, location: String(i + index + 1) }));
+      const outcomes = await Promise.allSettled(batch.map(item => analyzeChunk(item.chunk, item.location)));
+      outcomes.forEach((outcome, index) => {
+        if (outcome.status === "fulfilled") results.push(...outcome.value);
+        else failures.push({ location: batch[index].location, reason: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) });
+      });
     }
-    const merged = normalizeAnalysis({
-      summaryShort: results.map(r => r.summaryShort).join(" ").slice(0, 500),
-      summaryLong: results.map(r => r.summaryLong).join("\n\n"),
-      keyTerms: results.flatMap(r => r.keyTerms),
-      // Source-reference warnings are regenerated below with the final stable IDs.
-      riskFlags: results.flatMap(r => r.riskFlags).filter(flag => !/^F\d+: Source excerpt/.test(flag)),
-      facts: results.flatMap(r => r.facts)
-    }, article, title);
-    return NextResponse.json(merged);
+    return NextResponse.json(mergeChunkAnalyses(results, failures, article, title));
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Analysis failed", code: "ANALYSIS_FAILED" }, { status: 502 });
   }
