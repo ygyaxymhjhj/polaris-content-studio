@@ -82,6 +82,8 @@ export interface RewriteMessage {
   role: "user" | "assistant";
   text: string;
   at: string;
+  /** False marks assistant turns whose options were never adopted, so the next request reads the rejected direction as negative context. */
+  adopted?: boolean;
 }
 
 /** Snapshot taken before an AI revision is adopted, so the change can be reverted. */

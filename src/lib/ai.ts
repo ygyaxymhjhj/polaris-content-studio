@@ -32,6 +32,30 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const UPSTREAM_RETRY_DELAYS_MS = [500, 1500];
 
 /**
+ * Thrown when another attempt cannot help: the retry budget inside askModel is spent, the provider
+ * rejected the request outright (auth, bad request, timeout), or the reply envelope is unusable.
+ * Callers that loop attempts must stop on this class, or a single burst of transient failures
+ * turns one ask into six sequential provider calls.
+ */
+export class ProviderUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderUnavailableError";
+  }
+}
+
+/** Shape of the OpenAI-compatible reply envelope; parsed leniently because proxies mangle it. */
+interface ProviderEnvelope {
+  choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    completion_tokens_details?: { reasoning_tokens?: number };
+    cost?: number;
+  };
+}
+
+/**
  * Reasoning models decide how long to think, and left alone some think for tens of thousands of
  * tokens: measured on gemini-3.8-flash, a single rewrite spent 18k reasoning tokens and cost 100x
  * the same call with thinking bounded, because that thinking is most of the wall-clock too.
@@ -77,7 +101,8 @@ export async function askModel<T>(system: string, prompt: string, options: { max
         body: requestBody
       });
     } catch (error) {
-      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw error;
+      // A provider that already hung for two minutes cannot be helped by another two-minute wait.
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) throw new ProviderUnavailableError("AI provider request timed out");
       transientReason = `network error: ${error instanceof Error ? error.message : String(error)}`;
       continue;
     }
@@ -86,9 +111,16 @@ export async function askModel<T>(system: string, prompt: string, options: { max
         transientReason = `provider returned ${response.status}`;
         continue;
       }
-      throw new Error(`AI provider returned ${response.status}`);
+      throw new ProviderUnavailableError(`AI provider returned ${response.status}`);
     }
-    const data = await response.json();
+    let data: ProviderEnvelope;
+    try {
+      data = await response.json();
+    } catch {
+      // A proxy error page or a truncated body is provider-side, so it belongs in the retry budget.
+      transientReason = "provider sent an unparseable envelope";
+      continue;
+    }
     const choice = data.choices?.[0];
     const usage = data.usage || {};
     // Latency, thinking and cost are the three things that go wrong here, and all three are invisible
@@ -120,7 +152,7 @@ export async function askModel<T>(system: string, prompt: string, options: { max
       throw new Error(truncated ? "The model ran out of output budget before it finished the reply." : "The model returned malformed JSON.", { cause: error });
     }
   }
-  throw new Error(`AI provider unavailable after ${UPSTREAM_RETRY_DELAYS_MS.length + 1} attempts: ${transientReason}`);
+  throw new ProviderUnavailableError(`AI provider unavailable after ${UPSTREAM_RETRY_DELAYS_MS.length + 1} attempts: ${transientReason}`);
 }
 
 function sentences(article: string) {
@@ -272,9 +304,10 @@ export async function generateWithAI(config: ProjectConfig, analysis: SourceAnal
         // Never degrade to a local template silently: the pack still completes, so this line is the
         // only evidence of a rate limit or an outage.
         console.error(`[generate] ${platform} provider call failed on attempt ${attempt + 1}:`, error instanceof Error ? error.message : error);
-        // Retry once before falling back: a transient network failure should not cost the channel
-        // its AI draft.
-        if (attempt) break; /* Preserve other platforms when a provider request fails. */
+        // askModel owns provider-side retries now, and stacking a second budget here turned one
+        // outage into up to six sequential calls. Only a model-output problem (malformed JSON,
+        // starved output) can actually be fixed by asking again.
+        if (error instanceof ProviderUnavailableError || attempt) break; /* Preserve other platforms when a provider request fails. */
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
@@ -391,7 +424,9 @@ export async function rewriteAsset(
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       console.error(`[rewrite] provider call failed on attempt ${attempt + 1}:`, failure);
-      if (attempt) break; /* Keep whatever the first attempt produced. */
+      // Provider-side failures are already retried inside askModel; only malformed output earns a
+      // second attempt in this loop.
+      if (error instanceof ProviderUnavailableError || attempt) break; /* Keep whatever the first attempt produced. */
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }

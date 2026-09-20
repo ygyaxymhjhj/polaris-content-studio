@@ -381,7 +381,35 @@ try {
   assert(merged.riskFlags.some(flag => flag.includes('Segment 2 could not be analyzed') && flag.includes('NOT covered')), 'A skipped segment is reported as a coverage hole where the reviewer reads');
   assert.throws(() => mergeChunkAnalyses([], [{ location: '1', reason: 'provider returned 503' }], segmentArticle, 'T'), /Analysis failed for all segments/, 'A run where every segment failed still throws');
 
-  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting and partial analyze degradation. No paid API requests.');
+  // askModel owns provider-side retries now. The generation and rewrite loops must not stack a
+  // second retry budget on top: worst case that turned one outage into six sequential calls.
+  let generationOutageCalls = 0;
+  globalThis.fetch = async () => { generationOutageCalls += 1; return new Response('down', { status: 503 }); };
+  const outaged = await generateWithAI(config, analysis, ['facebook']);
+  assert.equal(generationOutageCalls, 3, 'A generation outage runs the askModel retry budget once, with no second outer round');
+  assert(outaged.usedFallback && outaged.assets.every(asset => asset.generationMode === 'local'), 'The outaged channel still completes from the local template');
+
+  let rewriteOutageCalls = 0;
+  globalThis.fetch = async () => { rewriteOutageCalls += 1; return new Response('down', { status: 503 }); };
+  const rewriteOutage = await rewriteAsset(config, analysis, baseAsset, [], 'shorten it', 2);
+  assert.equal(rewriteOutageCalls, 3, 'A rewrite outage also stops at the askModel budget');
+  assert.equal(rewriteOutage.candidates.length, 0);
+  assert(rewriteOutage.reason?.includes('unavailable after 3 attempts'), 'The failure reason names the exhausted retry budget');
+
+  // A malformed model reply is an output problem, not a provider outage, so the generation loop
+  // still earns its one extra attempt.
+  let malformedCalls = 0;
+  globalThis.fetch = async (_url, options) => {
+    malformedCalls += 1;
+    const platform = JSON.parse(options.body).messages[1].content.match(/for (\w+) ONLY/)[1];
+    if (malformedCalls === 1) return Response.json({ choices: [{ finish_reason: 'stop', message: { content: 'prose, not JSON' } }] });
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: starterAssets(config, analysis, [platform]).assets }) } }] });
+  };
+  const recovered = await generateWithAI(config, analysis, ['facebook']);
+  assert.equal(malformedCalls, 2, 'A malformed reply is retried once by the generation loop');
+  assert(recovered.assets.length === 2 && recovered.assets.every(asset => asset.generationMode === 'ai'), 'The second attempt supplies the AI drafts');
+
+  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

@@ -478,6 +478,21 @@ export default function ContentStudio() {
     setRewriteError("");
   }
 
+  /** Discarding is a decision too: the rejected summaries become context the next request sees. */
+  function discardCandidates() {
+    if (selectedAsset && candidates.length) {
+      const rejected = candidates.map((candidate, index) => `Option ${index + 1}: ${candidate.changeSummary}`).join(" | ");
+      setThreads((current) => ({
+        ...current,
+        [selectedAsset.id]: [
+          ...(current[selectedAsset.id] || []),
+          { role: "assistant" as const, text: `(not applied) ${rejected}`, at: new Date().toISOString(), adopted: false }
+        ].slice(-MAX_TURNS)
+      }));
+    }
+    clearCandidates();
+  }
+
   function openAsset(asset: ContentAsset) {
     rewriteSequence.current += 1;
     setRewriting(false);
@@ -536,16 +551,31 @@ export default function ContentStudio() {
     setSelectedAsset(draft);
     const run = ++rewriteSequence.current;
     setRewriting(true);
-    clearCandidates();
+    // Options left over from the previous round were never adopted, so they become negative
+    // context for this request: the model sees which directions were already tried and rejected.
+    const rejected = candidates.map((candidate, index) => `Option ${index + 1}: ${candidate.changeSummary}`).join(" | ");
+    const baseThread: RewriteMessage[] = rejected
+      ? [...activeThread, { role: "assistant" as const, text: `(not applied) ${rejected}`, at: new Date().toISOString(), adopted: false }].slice(-MAX_TURNS)
+      : activeThread;
+    if (rejected) setThreads((current) => ({ ...current, [selectedAsset.id]: baseThread }));
+    setRewriteError("");
+    setCandidates([]);
+    setPreviewIndex(null);
     try {
       const response = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config, analysis, asset: draft, turns: activeThread, instruction: text, count: optionCount })
+        body: JSON.stringify({ config, analysis, asset: draft, turns: baseThread, instruction: text, count: optionCount })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Rewrite failed");
       if (run !== rewriteSequence.current) return;
+      // The instruction joins the thread as soon as the model answers it, so the next request
+      // inherits this round even when none of its options gets adopted.
+      setThreads((current) => ({
+        ...current,
+        [selectedAsset.id]: [...(current[selectedAsset.id] || []), { role: "user" as const, text, at: new Date().toISOString() }].slice(-MAX_TURNS)
+      }));
       setCandidates(data.candidates || []);
       // Open on the first option so the revision is visible in the draft column right away.
       setPreviewIndex(data.candidates?.length ? 0 : null);
@@ -585,12 +615,13 @@ export default function ContentStudio() {
       revisions: [...(selectedAsset.revisions || []), record].slice(-MAX_REVISIONS)
     });
     setDeliveryDraft(JSON.stringify(meta, null, 2));
+    // The instruction turn was already recorded when the options came back; adopting only adds
+    // the applied outcome so the thread shows what happened without duplicating the request.
     setThreads((current) => ({
       ...current,
       [selectedAsset.id]: [
         ...(current[selectedAsset.id] || []),
-        { role: "user" as const, text: record.instruction, at },
-        { role: "assistant" as const, text: candidate.changeSummary, at }
+        { role: "assistant" as const, text: `(applied) ${candidate.changeSummary}`, at, adopted: true }
       ].slice(-MAX_TURNS)
     }));
     clearCandidates();
@@ -831,7 +862,7 @@ export default function ContentStudio() {
                 {previewCandidate && <div className="preview-banner">
                   <strong>{t("Preview (not saved)")}</strong>
                   <p>{previewCandidate.changeSummary}</p>
-                  <div className="preview-banner-actions"><button className="text-button" onClick={clearCandidates}>{t("Discard")}</button><button className="small-button" onClick={() => adoptCandidate(previewCandidate)}><Check size={14} /> {t("Use this option")}</button></div>
+                  <div className="preview-banner-actions"><button className="text-button" onClick={discardCandidates}>{t("Discard")}</button><button className="small-button" onClick={() => adoptCandidate(previewCandidate)}><Check size={14} /> {t("Use this option")}</button></div>
                 </div>}
                 <label className="field-label">{t("Title / internal name")}<input value={viewAsset.title} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("title", event.target.value)} /></label>
                 <label className="field-label">{t("Content")}<textarea className="drawer-textarea" value={viewAsset.content} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("content", event.target.value)} /></label>
@@ -862,7 +893,7 @@ export default function ContentStudio() {
                 {droppedTurns > 0 && <div className="thread-note"><History size={12} /> {t("Older turns were dropped to fit the model's context window.")}</div>}
 
                 {!!candidates.length && <div className="candidate-section">
-                  <div className="col-head"><span className="eyebrow">{t("OPTIONS TO REVIEW")}</span><button className="text-button" onClick={clearCandidates}>{t("Discard")}</button></div>
+                  <div className="col-head"><span className="eyebrow">{t("OPTIONS TO REVIEW")}</span><button className="text-button" onClick={discardCandidates}>{t("Discard")}</button></div>
                   {candidates.map((candidate, index) => {
                     const delta = candidate.asset.content.length - selectedAsset.content.length;
                     return <div className={`candidate-card ${previewIndex === index ? "active" : ""}`} key={`${candidate.asset.id}-${index}`}>
