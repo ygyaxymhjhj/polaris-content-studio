@@ -28,6 +28,10 @@
 
 - Caption phải giúp người đọc biết ngay bài đang nói về vấn đề gì và thông tin nào đáng chú ý nhất \(1 câu đầu \+ đoạn phân tích bên dưới \+ kèm hashtag\)\.
 
+- Câu mở đầu là hook: một dòng ngắn, gây chú ý ngay và đọc lên là hiểu ngay chuyện gì đang xảy ra; có thể viết dạng tiêu đề ngắn, in hoa dòng hook để tạo điểm nhấn \(chỉ in hoa dòng hook, không in hoa cả caption\) và đặt emoji phù hợp với ngữ cảnh\.
+
+- Nếu bài có số liệu nổi bật \(con số, mức tăng/giảm, số tiền, mốc thời gian, so sánh\) thì đưa con số đáng chú ý nhất vào câu mở đầu hoặc ngay sau đó\. Bài không có số liệu đáng chú ý thì mở bằng sự việc, mâu thuẫn hoặc tác động rõ nhất — không được bịa số và không gượng ép thêm số liệu để câu chuyện trông ấn tượng hơn\.
+
 - Chọn cách mở đầu và cách triển khai dựa trên chính nội dung bài viết, không áp dụng một mẫu cố định\.
 
 - Giữ lại thông tin cần thiết để người đọc hiểu sự việc, đồng thời rút gọn và diễn đạt lại theo cách phù hợp với Facebook\.

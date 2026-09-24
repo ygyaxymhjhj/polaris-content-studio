@@ -87,6 +87,11 @@ try {
   }
   assert(facebookPrompt.messages[0].content.includes('Không biến mọi caption thành quảng cáo'), 'Vietnamese global rules go into the system prompt');
   assert(facebookPrompt.messages[1].content.includes('Mỗi caption đều phải có icon/emoji'), 'Vietnamese platform rules follow the project language');
+  // Facebook opens on an attention hook and leads with a striking figure when the article has one, but
+  // must not force one in. The prompt is the only place the model learns that, so pin it per language.
+  assert(facebookPrompt.messages[1].content.includes('Câu mở đầu là hook'), 'Vietnamese Facebook rules demand an attention hook in the first line');
+  assert(facebookPrompt.messages[1].content.includes('không gượng ép thêm số liệu'), 'Vietnamese Facebook rules forbid forcing a figure in');
+  assert(facebookPrompt.messages[1].content.includes('Each content must open with a hook'), 'The Facebook format brief carries the hook requirement as well');
   // LinkedIn publishes in English whatever the brief language, so every part of its prompt has to
   // agree: the instruction, the global principles, the voice rules and the project context.
   assert.equal(/must use language (\w+)/.exec(linkedinPrompt.messages[1].content)[1], 'en', 'LinkedIn writes in English even when the brief is Vietnamese');
@@ -133,8 +138,15 @@ try {
   // Asking for a fast-news tone made models open Chinese posts with a 【快讯】 column header, so the
   // X rules now say explicitly that the style name is not a label to print.
   requests.length = 0;
-  await generateWithAI({ ...config, language: 'zh' }, analysis, ['x']);
-  assert(requests[0].messages[1].content.includes('不要把「快讯」「突发」这类栏目标签写进文案开头'), 'The Chinese X rules forbid printing the style label');
+  await generateWithAI({ ...config, language: 'zh' }, analysis, ['x', 'facebook']);
+  const zhFor = platform => requests.find(request => request.messages[1].content.includes(`for ${platform} ONLY`));
+  assert(zhFor('x').messages[1].content.includes('不要把「快讯」「突发」这类栏目标签写进文案开头'), 'The Chinese X rules forbid printing the style label');
+  assert(zhFor('facebook').messages[1].content.includes('首句是钩子'), 'The Chinese Facebook rules demand an attention hook in the first line');
+  assert(zhFor('facebook').messages[1].content.includes('也不要为了显得有力硬塞数据'), 'The Chinese Facebook rules forbid forcing a figure in');
+  requests.length = 0;
+  await generateWithAI({ ...config, language: 'en' }, analysis, ['facebook']);
+  assert(requests[0].messages[1].content.includes('The opening sentence is the hook'), 'The English Facebook rules demand an attention hook in the first line');
+  assert(requests[0].messages[1].content.includes('never force one in'), 'The English Facebook rules forbid forcing a figure in');
   requests.length = 0;
   await generateWithAI({ ...config, language: 'vi' }, analysis, ['x']);
   assert(requests[0].messages[1].content.includes('không mở đầu bằng nhãn mục'), 'The Vietnamese X rules forbid printing the style label');
@@ -409,7 +421,7 @@ try {
   assert.equal(malformedCalls, 2, 'A malformed reply is retried once by the generation loop');
   assert(recovered.assets.length === 2 && recovered.assets.every(asset => asset.generationMode === 'ai'), 'The second attempt supplies the AI drafts');
 
-  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
+  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook hook and figure rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

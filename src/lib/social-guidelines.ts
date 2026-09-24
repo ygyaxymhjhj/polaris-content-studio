@@ -95,6 +95,8 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
   facebook: {
     vi: [
       "- Caption phải giúp người đọc biết ngay bài đang nói về vấn đề gì và thông tin nào đáng chú ý nhất (1 câu đầu + đoạn phân tích bên dưới + kèm hashtag).",
+      "- Câu mở đầu là hook: một dòng ngắn, gây chú ý ngay và đọc lên là hiểu ngay chuyện gì đang xảy ra; có thể viết dạng tiêu đề ngắn, in hoa dòng hook để tạo điểm nhấn (chỉ in hoa dòng hook, không in hoa cả caption) và đặt emoji phù hợp với ngữ cảnh.",
+      "- Nếu bài có số liệu nổi bật (con số, mức tăng/giảm, số tiền, mốc thời gian, so sánh) thì đưa con số đáng chú ý nhất vào câu mở đầu hoặc ngay sau đó; bài không có số liệu đáng chú ý thì mở bằng sự việc, mâu thuẫn hoặc tác động rõ nhất — không được bịa số và không gượng ép thêm số liệu để câu chuyện trông ấn tượng hơn.",
       "- Chọn cách mở đầu và cách triển khai dựa trên chính nội dung bài viết, không áp dụng một mẫu cố định.",
       "- Giữ lại thông tin cần thiết để người đọc hiểu sự việc, đồng thời rút gọn và diễn đạt lại theo cách phù hợp với Facebook.",
       "- Không biến caption thành bài báo, bài phân tích hoặc quảng cáo.",
@@ -103,6 +105,8 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
     ].join("\n"),
     zh: [
       "- 文案要让读者一眼看出这篇在讲什么问题、哪条信息最值得关注（1 句开头 + 下方分析段落 + 附带话题标签）。",
+      "- 首句是钩子：一行短句，先抓住注意力，读一遍就知道这篇在讲什么事；可以写成短标题式的一行，配一个贴合语境的图标/emoji。",
+      "- 原文有亮眼数据（数字、涨跌幅、金额、时间点、对比）就把它放进首句或紧接的下一句；没有就用最突出的事件、矛盾或影响开头——不要编造数字，也不要为了显得有力硬塞数据。",
       "- 开头方式与展开方式要基于文章内容本身，不要套用固定模板。",
       "- 保留让读者理解事件所必需的信息，同时按 Facebook 的表达方式精简和改写。",
       "- 不要把文案写成新闻报道、分析长文或广告。",
@@ -111,6 +115,8 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
     ].join("\n"),
     en: [
       "- The caption must tell readers immediately what the post is about and which detail matters most (1 opening sentence + an analysis paragraph below + hashtags).",
+      "- The opening sentence is the hook: one short line that grabs attention and shows at a glance what happened; a short headline-style line, upper-cased for emphasis if it helps (the hook line only, never the whole caption), with an emoji that fits the context.",
+      "- If the article has a striking figure (a number, a percentage move, an amount, a date, a comparison), put it in the opening line or immediately after it; if it has none, open with the most striking event, conflict or impact instead — never invent a figure and never force one in.",
       "- Choose the opening and the structure from the article itself; never apply a fixed template.",
       "- Keep the information readers need to understand the story, while condensing and rewording it for Facebook.",
       "- Do not turn the caption into an article, an analysis piece or an advertisement.",
