@@ -3,6 +3,7 @@ import type { AnyNode } from "domhandler";
 import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 import { collectArticle, CollectionError } from "@/lib/article-collector";
+import { ACW_BROWSER_UA, fetchWithAcwBypass, getCachedAcwCookie, isAcwChallengePage } from "@/lib/acw-challenge";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -65,20 +66,22 @@ function extractArticle(html: string, sourceUrl: string) {
   };
 }
 
-async function fetchPublicPage(initialUrl: URL) {
+async function fetchPublicPage(initialUrl: URL, options: { cookie?: string; userAgent?: string } = {}) {
   let currentUrl = initialUrl;
   for (let redirectCount = 0; redirectCount <= 4; redirectCount += 1) {
     const response = await fetch(currentUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; PolarisContentStudio/1.0; +https://example.com/bot)",
-        Accept: "text/html,application/xhtml+xml"
+        "User-Agent": options.userAgent ?? "Mozilla/5.0 (compatible; PolarisContentStudio/1.0; +https://example.com/bot)",
+        Accept: "text/html,application/xhtml+xml,*/*;q=0.5",
+        ...(options.cookie ? { Cookie: options.cookie, Referer: currentUrl.toString() } : {})
       },
       redirect: "manual",
       signal: AbortSignal.timeout(15_000)
     });
-    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, url: currentUrl };
+    const setCookies = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, url: currentUrl, setCookies };
     const location = response.headers.get("location");
-    if (!location) return { response, url: currentUrl };
+    if (!location) return { response, url: currentUrl, setCookies };
     const nextUrl = new URL(location, currentUrl);
     if (!["http:", "https:"].includes(nextUrl.protocol) || nextUrl.username || nextUrl.password || isPrivateHost(nextUrl)) throw new Error("The page redirected to a URL that is not allowed");
     currentUrl = nextUrl;
@@ -101,7 +104,8 @@ export async function POST(request: Request) {
     if (!["http:", "https:"].includes(url.protocol)) return NextResponse.json({ error: "Only HTTP and HTTPS URLs are supported" }, { status: 400 });
     if (url.username || url.password || isPrivateHost(url)) return NextResponse.json({ error: "This URL is not allowed" }, { status: 400 });
 
-    const { response, url: finalUrl } = await fetchPublicPage(url);
+    const cachedCookie = getCachedAcwCookie(url.host);
+    const { response, url: finalUrl } = await fetchPublicPage(url, cachedCookie ? { cookie: cachedCookie } : {});
     if (response.status === 401 || response.status === 403) return NextResponse.json({
       error: "The source website denied access from this server. Open the article normally and paste its text, or import article JSON exported from a working local instance. The previous article has not been replaced.",
       code: "SOURCE_ACCESS_DENIED",
@@ -111,13 +115,28 @@ export async function POST(request: Request) {
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) return NextResponse.json({ error: "This URL does not contain an HTML article" }, { status: 415 });
 
-    const html = await response.text();
+    let html = await response.text();
+    let effectiveUrl = finalUrl;
+    if (isAcwChallengePage(html)) {
+      try {
+        // Aliyun WAF challenge: run the page's own script in a VM sandbox to
+        // obtain the acw_sc__v2 cookie, then re-request with the session pair.
+        const bypassed = await fetchWithAcwBypass(url, async (cookie) => {
+          const page = await fetchPublicPage(url, { cookie, userAgent: ACW_BROWSER_UA });
+          return { html: await page.response.text(), finalUrl: page.url.toString(), setCookies: page.setCookies };
+        });
+        html = bypassed.html;
+        effectiveUrl = new URL(bypassed.finalUrl);
+      } catch {
+        return NextResponse.json({ error: "This page is protected by an anti-bot verification that could not be solved. Paste the article or use the browser extension instead.", code: "ANTI_BOT_VERIFICATION" }, { status: 424 });
+      }
+    }
     const protection = protectionMessage(html);
     if (protection) return NextResponse.json({ error: protection, code: "ANTI_BOT_VERIFICATION" }, { status: 424 });
-    const article = extractArticle(html, finalUrl.toString());
-    const isNewsDetail = /\/newsdetail\//i.test(new URL(finalUrl).pathname);
+    const article = extractArticle(html, effectiveUrl.toString());
+    const isNewsDetail = /\/newsdetail\//i.test(effectiveUrl.pathname);
     if (article.text.length < (isNewsDetail ? 300 : 80)) return NextResponse.json({ error: "Could not find enough article text on this page. Try the browser crawler or paste the article instead.", code: "ARTICLE_CONTENT_INCOMPLETE" }, { status: 422 });
-    return NextResponse.json({ ...article, sourceUrl: finalUrl.toString() });
+    return NextResponse.json({ ...article, sourceUrl: effectiveUrl.toString() });
   } catch (error) {
     if (error instanceof CollectionError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
     const message = error instanceof Error && error.name === "TimeoutError" ? "The page took too long to respond" : error instanceof Error ? error.message : "Could not fetch article";
