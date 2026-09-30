@@ -134,9 +134,14 @@ APP_DIR=$1; RUN_USER=$2; SERVICE=$3; HEALTH=$4; COMMIT=$5
 printf '%s\n' "$COMMIT" > "$APP_DIR/DEPLOYED_COMMIT"
 chown "$RUN_USER:$RUN_USER" "$APP_DIR/DEPLOYED_COMMIT"
 systemctl start "$SERVICE"
-sleep 3
 systemctl is-active "$SERVICE"
-curl -s -o /dev/null -w "health: %{http_code}\n" "$HEALTH"
+for i in {1..10}; do
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH" || true)
+  if [ "$CODE" = "200" ]; then echo "health: 200"; exit 0; fi
+  sleep 2
+done
+echo "health: $CODE"
+exit 1
 REMOTE
 
 echo "==> done: $SHORT deployed to $SERVER"
