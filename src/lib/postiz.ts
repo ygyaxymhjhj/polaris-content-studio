@@ -52,10 +52,12 @@ export async function fetchPostizIntegrations(): Promise<{ configured: boolean; 
     })).filter(a => a.id);
     return { configured: true, accounts };
   } catch (error) {
+    const cause = error instanceof Error && (error as { cause?: { message?: string; code?: string } }).cause;
+    const detail = cause ? `${error instanceof Error ? error.message : "Error"} (${cause.code || cause.message || String(cause)})` : (error instanceof Error ? error.message : "Failed to connect");
     return {
       configured: true,
       accounts: [],
-      error: error instanceof Error ? error.message : "Failed to connect to Postiz service"
+      error: detail
     };
   }
 }
