@@ -92,11 +92,30 @@ export function extractPublicArticle(html: string, sourceUrl: string) {
   if (!best) return null;
   const container = $(best);
   container.find("br").replaceWith("\n");
+  const metaImg = $('meta[property="og:image"], meta[property="og:image:url"], meta[name="twitter:image"], meta[property="twitter:image"]').first().attr("content") || $('link[rel="image_src"]').attr("href");
+  let imageUrl: string | undefined;
+  if (metaImg) {
+    try {
+      const resolved = new URL(metaImg.trim(), sourceUrl).href;
+      if (/^https?:\/\//i.test(resolved) && !/favicon|logo(\.|_|-)|avatar/i.test(resolved)) imageUrl = resolved;
+    } catch { /* Ignore */ }
+  }
+  if (!imageUrl) {
+    const images = container.find("img").toArray();
+    for (const el of images) {
+      const src = $(el).attr("src") || $(el).attr("data-src") || $(el).attr("data-original");
+      if (!src || src.startsWith("data:") || /\.svg(\?|$)/i.test(src)) continue;
+      try {
+        const resolved = new URL(src.trim(), sourceUrl).href;
+        if (/^https?:\/\//i.test(resolved) && !/favicon|avatar|icon/i.test(resolved)) { imageUrl = resolved; break; }
+      } catch { /* Ignore */ }
+    }
+  }
   const paragraphs = container.find("h1,h2,h3,h4,p,li,blockquote,figcaption,tr").toArray().filter(node => !$(node).find("p,li,blockquote,tr").length).map(node => normal($(node).text())).filter(Boolean);
   const text = normal(paragraphs.length ? paragraphs.join("\n\n") : container.text());
   if (text.length < (/\/newsdetail\//i.test(sourceUrl) ? 300 : 80)) return null;
   if (text.length > 120000) throw new CollectionError("ARTICLE_TOO_LARGE", "Article exceeds 120,000 characters", 413);
-  return { title: title || "Imported article", text, canonical: sourceUrl, sourceUrl, characterCount: text.length, wordCount: text.split(/\s+/).filter(Boolean).length, truncated: false };
+  return { title: title || "Imported article", text, canonical: sourceUrl, sourceUrl, imageUrl, characterCount: text.length, wordCount: text.split(/\s+/).filter(Boolean).length, truncated: false };
 }
 
 async function renderPublicPage(url: string) {

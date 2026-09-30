@@ -7,9 +7,16 @@ export function validateBrowserArticle(value: unknown): ImportedSource | null {
   if (typeof source.text !== "string" || source.text.trim().length < 80 || source.text.length > 120000) return null;
   if (typeof source.title !== "string" || source.title.length > 500) return null;
   if (typeof source.sourceUrl !== "string" || source.sourceUrl.length > 2048) return null;
+  let imageUrl: string | undefined;
+  if (typeof source.imageUrl === "string" && source.imageUrl.length <= 2048) {
+    try {
+      const img = new URL(source.imageUrl);
+      if (["http:", "https:"].includes(img.protocol)) imageUrl = img.href;
+    } catch { /* Ignore invalid image URL. */ }
+  }
   try {
     const url = new URL(source.sourceUrl);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
-    return { title: source.title.trim(), text: source.text.trim(), sourceUrl: url.href, canonical: url.href };
+    return { title: source.title.trim(), text: source.text.trim(), sourceUrl: url.href, canonical: url.href, ...(imageUrl ? { imageUrl } : {}) };
   } catch { return null; }
 }

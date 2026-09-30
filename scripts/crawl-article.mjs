@@ -47,11 +47,15 @@ async function extractPage(page) {
     const values = Array.from(clone.querySelectorAll("h1, h2, h3, p, li, blockquote")).map((node) => normalize(node.textContent || "")).filter((value) => value.length > 20);
     const unique = values.filter((value, index) => values.indexOf(value) === index);
     const text = normalize(unique.join("\n\n")).slice(0, 120000);
+    const metaImg = document.querySelector("meta[property='og:image']")?.getAttribute("content") || document.querySelector("meta[name='twitter:image']")?.getAttribute("content") || document.querySelector("link[rel='image_src']")?.getAttribute("href");
+    const firstImg = Array.from(clone.querySelectorAll("img")).map((img) => img.src).find((src) => /^https?:\/\//i.test(src) && !/favicon|avatar|icon/i.test(src));
+    const imageUrl = metaImg || firstImg || undefined;
     return {
       title: normalize(document.querySelector("meta[property='og:title']")?.getAttribute("content") || document.querySelector("h1")?.textContent || document.title) || "Imported article",
       text,
       canonical: document.querySelector("link[rel='canonical']")?.getAttribute("href") || document.querySelector("meta[property='og:url']")?.getAttribute("content") || location.href,
       sourceUrl: location.href,
+      imageUrl,
       wordCount: text.split(/\s+/).filter(Boolean).length,
       characterCount: text.length,
       truncated: text.length >= 120000

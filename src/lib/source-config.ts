@@ -5,6 +5,7 @@ export interface ImportedSource {
   title?: string;
   sourceUrl?: string;
   canonical?: string;
+  imageUrl?: string;
 }
 
 /**
@@ -93,7 +94,8 @@ export function alignSourceConfig(current: ProjectConfig, source: ImportedSource
     language,
     ...defaults[language],
     audience: audiences[category]?.[language] || defaults[language].audience,
-    websiteUrl: source.canonical || source.sourceUrl || ""
+    websiteUrl: source.canonical || source.sourceUrl || "",
+    imageUrl: source.imageUrl || ""
   };
   const result = { ...current, sourceUrl: source.sourceUrl || "" };
   for (const key of Object.keys(suggestions) as (keyof ProjectConfig)[]) {

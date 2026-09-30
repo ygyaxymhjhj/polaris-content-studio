@@ -40,6 +40,7 @@ export interface ProjectConfig {
   sourceUrl: string;
   tone: string;
   publishDate: string;
+  imageUrl?: string;
 }
 
 export interface ContentAsset {

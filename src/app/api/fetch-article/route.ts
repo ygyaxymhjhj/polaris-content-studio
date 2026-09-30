@@ -34,6 +34,41 @@ function candidateScore(element: cheerio.Cheerio<AnyNode>) {
   return paragraphs.join("\n\n").length + paragraphs.length * 80;
 }
 
+function extractLeadImage($: cheerio.CheerioAPI, container: cheerio.Cheerio<AnyNode>, sourceUrl: string): string | undefined {
+  const metaCandidates = [
+    $('meta[property="og:image"]').attr("content"),
+    $('meta[property="og:image:url"]').attr("content"),
+    $('meta[name="twitter:image"]').attr("content"),
+    $('meta[property="twitter:image"]').attr("content"),
+    $('meta[itemprop="image"]').attr("content"),
+    $('link[rel="image_src"]').attr("href")
+  ];
+  for (const candidate of metaCandidates) {
+    if (!candidate || typeof candidate !== "string") continue;
+    try {
+      const resolved = new URL(candidate.trim(), sourceUrl).href;
+      if (/^https?:\/\//i.test(resolved) && !/favicon|logo(\.|_|-)|avatar/i.test(resolved)) return resolved;
+    } catch { /* Ignore invalid URL. */ }
+  }
+  const images = container.find("img").toArray().concat($("article img, main img, #articleInfo img, .article-content img, .entry-content img, .post-content img").toArray());
+  for (const el of images) {
+    const src = $(el).attr("src") || $(el).attr("data-src") || $(el).attr("data-original") || $(el).attr("data-actualsrc");
+    if (!src || typeof src !== "string" || src.startsWith("data:") || /\.svg(\?|$)/i.test(src)) continue;
+    try {
+      const resolved = new URL(src.trim(), sourceUrl).href;
+      if (/^https?:\/\//i.test(resolved) && !/favicon|avatar|icon|badge/i.test(resolved)) return resolved;
+    } catch { /* Ignore invalid URL. */ }
+  }
+  for (const candidate of metaCandidates) {
+    if (!candidate || typeof candidate !== "string") continue;
+    try {
+      const resolved = new URL(candidate.trim(), sourceUrl).href;
+      if (/^https?:\/\//i.test(resolved)) return resolved;
+    } catch { /* Ignore. */ }
+  }
+  return undefined;
+}
+
 function protectionMessage(html: string) {
   const lower = html.toLowerCase();
   if (lower.includes("aliyunwaf") || lower.includes("acw_sc__v2") || lower.includes("please slide to verify") || lower.includes("access verification")) {
@@ -53,6 +88,7 @@ function extractArticle(html: string, sourceUrl: string) {
   const best = dedicatedArticle.length ? dedicatedArticle.get(0) : candidates.sort((a, b) => candidateScore($(b)) - candidateScore($(a)))[0] || $("body").get(0);
   const container = best ? $(best) : $("body");
   container.find(".about, .article-r, .next-pre, .label, .article-tyzd, .share-channels, .auther").remove();
+  const imageUrl = extractLeadImage($, container, canonical || sourceUrl);
   const paragraphs = container.find("h1, h2, h3, p, li, blockquote").toArray().map((item) => normalizedText($(item).text())).filter((text) => text.length > 20);
   const uniqueParagraphs = paragraphs.filter((text, index) => paragraphs.indexOf(text) === index);
   const text = normalizedText(uniqueParagraphs.join("\n\n")).slice(0, MAX_ARTICLE_CHARS);
@@ -60,6 +96,7 @@ function extractArticle(html: string, sourceUrl: string) {
     title: title || "Imported article",
     text,
     canonical,
+    imageUrl,
     wordCount: text.split(/\s+/).filter(Boolean).length,
     characterCount: text.length,
     truncated: text.length >= MAX_ARTICLE_CHARS

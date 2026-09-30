@@ -12,10 +12,13 @@ import {
   ClipboardCheck,
   CloudUpload,
   Download,
+  ExternalLink,
   FileText,
   Filter,
   Hash,
   History,
+  Image as ImageIcon,
+  ImageOff,
   Layers3,
   LayoutDashboard,
   Link2,
@@ -94,7 +97,8 @@ const initialConfig: ProjectConfig = {
   websiteUrl: "",
   sourceUrl: "",
   tone: "Clear and professional",
-  publishDate: ""
+  publishDate: "",
+  imageUrl: ""
 };
 
 function platformIcon(platform: Platform) {
@@ -267,7 +271,7 @@ export default function ContentStudio() {
   }
 
   function editSourceText(text: string) {
-    const source = { text };
+    const source = { ...importedSource.current, text };
     importedSource.current = source;
     setSourcePending(false);
     setSourceError("");
@@ -986,6 +990,81 @@ function WorkspaceView({
               <label className="field-label full-field">{t("Target audience")}<input value={config.audience} onChange={(event) => updateConfig("audience", event.target.value)} placeholder={t("Who should care about this?")} /></label>
               <label className="field-label full-field">{t("Primary CTA")}<input value={config.cta} onChange={(event) => updateConfig("cta", event.target.value)} placeholder={t("Read the full breakdown")} /></label>
               <label className="field-label full-field">{t("Website URL")} <span className="optional">{t("optional")}</span><input value={config.websiteUrl} onChange={(event) => updateConfig("websiteUrl", event.target.value)} placeholder={t("Add after the article goes live")} /></label>
+              <div className="field-label full-field">
+                <div className="lead-image-label-row">
+                  <span>{t("Article lead image")}</span>
+                  <span className="optional">{config.imageUrl ? t("extracted from source") : t("optional")}</span>
+                </div>
+                {config.imageUrl ? (
+                  <div className="lead-image-card">
+                    <a
+                      href={config.imageUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="lead-image-thumb-wrap"
+                      title={t("View full image")}
+                    >
+                      <img
+                        src={config.imageUrl}
+                        alt={config.title || "Lead image"}
+                        className="lead-image-thumb"
+                        referrerPolicy="no-referrer"
+                        onError={(event) => {
+                          (event.currentTarget as HTMLElement).style.display = "none";
+                          const parent = event.currentTarget.parentElement;
+                          const fallback = parent?.querySelector<HTMLElement>(".lead-image-fallback");
+                          if (fallback) fallback.style.display = "flex";
+                        }}
+                      />
+                      <div className="lead-image-fallback" style={{ display: "none" }}>
+                        <ImageOff size={15} />
+                        <span>{t("Image preview unavailable")}</span>
+                      </div>
+                      <span className="lead-image-zoom-badge">
+                        <ExternalLink size={11} />
+                      </span>
+                    </a>
+                    <div className="lead-image-details">
+                      <div className="lead-image-tag-row">
+                        <span className="lead-image-tag"><ImageIcon size={12} /> {t("Article lead image")}</span>
+                        <div className="lead-image-action-group">
+                          <a
+                            href={config.imageUrl}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="lead-image-action-link"
+                          >
+                            <ExternalLink size={12} /> {t("View full image")}
+                          </a>
+                          <button
+                            type="button"
+                            className="lead-image-action-btn"
+                            onClick={() => updateConfig("imageUrl", "")}
+                          >
+                            <X size={12} /> {t("Remove")}
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        value={config.imageUrl}
+                        onChange={(event) => updateConfig("imageUrl", event.target.value)}
+                        placeholder="https://..."
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="lead-image-empty-wrap">
+                    <div className="lead-image-input-box">
+                      <ImageIcon size={15} className="lead-image-placeholder-icon" />
+                      <input
+                        value={config.imageUrl || ""}
+                        onChange={(event) => updateConfig("imageUrl", event.target.value)}
+                        placeholder={t("Paste image URL (https://...) or fetch from article")}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

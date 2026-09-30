@@ -29,7 +29,10 @@ globalThis.polarisExtractArticle = function () {
   if (text.length > 120000) throw new Error("ARTICLE_TOO_LONG");
   const h1 = [...document.querySelectorAll('h1')].find(visible);
   const title = normalize(h1?.textContent || document.querySelector('meta[property="og:title"]')?.content || pageTitle).slice(0, 500);
+  const metaImg = document.querySelector('meta[property="og:image"]')?.content || document.querySelector('meta[name="twitter:image"]')?.content || document.querySelector('link[rel="image_src"]')?.href;
+  const firstImg = [...clone.querySelectorAll('img')].map(img => img.src).find(src => /^https?:\/\//i.test(src) && !/favicon|avatar|icon/i.test(src));
+  const imageUrl = metaImg || firstImg || undefined;
   // Drop query/fragment data: article URLs may carry tracking or session tokens.
   const safeUrl = new URL(location.href); safeUrl.username = ''; safeUrl.password = ''; safeUrl.search = ''; safeUrl.hash = '';
-  return { title, text, sourceUrl: safeUrl.href, canonical: safeUrl.href, characterCount: text.length, capturedAt: new Date().toISOString(), importMethod: 'browser-extension' };
+  return { title, text, sourceUrl: safeUrl.href, canonical: safeUrl.href, imageUrl, characterCount: text.length, capturedAt: new Date().toISOString(), importMethod: 'browser-extension' };
 };
