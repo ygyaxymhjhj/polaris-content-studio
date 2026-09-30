@@ -203,8 +203,8 @@ export function fallbackAssets(config: ProjectConfig, analysis: SourceAnalysis, 
   return starterAssets(config, analysis, platforms);
 }
 
-/** Channel display names models use instead of the internal keys; the internal key stays canonical. */
-const CHANNEL_ALIASES: Record<string, Platform> = { tiktok: "short_video", reels: "short_video", shorts: "short_video", twitter: "x" };
+/** Channel display names models use instead of the internal key; the internal key stays canonical. */
+const CHANNEL_ALIASES: Record<string, Platform> = { twitter: "x" };
 
 function normalizeAiAssets(rawAssets: unknown, config: ProjectConfig, analysis: SourceAnalysis, platforms: Platform[]) {
   const validIds = new Set(analysis.facts.map((fact) => fact.id));
@@ -214,8 +214,8 @@ function normalizeAiAssets(rawAssets: unknown, config: ProjectConfig, analysis: 
   return rawAssets.flatMap((raw, index) => {
     if (!raw || typeof raw !== "object") return [];
     const source = raw as Partial<ContentAsset>;
-    // Models slip in channel display names instead of the internal keys; accept the common ones so a
-    // "tiktok" reply does not get dropped and cost a retry round trip.
+    // Models slip in channel display names instead of the internal keys; accept the common one so a
+    // "twitter" reply does not get dropped and cost a retry round trip.
     const platform = typeof source.platform === "string" ? CHANNEL_ALIASES[source.platform.toLowerCase()] ?? source.platform : "";
     if (!allowedPlatforms.has(platform as Platform) || !PLATFORM_META[platform as Platform]) return [];
     const content = typeof source.content === "string" ? source.content.trim() : "";
@@ -232,7 +232,7 @@ function normalizeAiAssets(rawAssets: unknown, config: ProjectConfig, analysis: 
       meta: source.meta && typeof source.meta === "object" && !Array.isArray(source.meta) ? source.meta : {},
       platform: platform as Platform,
       // assetType is an internal taxonomy the model cannot know, so its guess is never trusted: a
-      // "video script" label must not reappear on what is now a voiceover copy.
+      // "slideshow copy" label must not reappear on what is now a carousel.
       assetType: defaultType,
       title: typeof source.title === "string" && source.title ? source.title : `${PLATFORM_META[platform as Platform].label} draft`,
       content,
@@ -283,7 +283,7 @@ export async function generateWithAI(config: ProjectConfig, analysis: SourceAnal
     // prompt must agree with itself, and the channel rules explain the brief's own language.
     const project = language === configured ? config : { ...config, language };
     const system = `${PRODUCTION_EDITOR_SYSTEM}\n\nWRITING PRINCIPLES:\n${GLOBAL_GUIDELINES[language]}`;
-    const prompt = `Write ${spec.count} complete starter assets for ${platform} ONLY. Return {assets:[...]}. Every asset must carry platform="${platform}" exactly — normalisation drops replies that mislabel the channel — plus assetType, title, content (complete final copy/script, not a summary or outline), factIds (exact IDs used), riskFlags, status=needs_review, cta, meta. title is an internal management label, never published: keep it under 60 characters in ${language}, format "[channel name] + the asset's strongest fact or angle", no emojis, no hashtags and no clickbait; variants differ in the angle, not in padding. All copy AND delivery notes must use language ${language}. Include cta within publishable copy naturally, and give the click a concrete payoff — what specific content the reader gets — instead of a bare "read more". Use only the configured real URL; if missing, omit links and flag that a destination needs review. No placeholder links. Do not put production instructions inside social post bodies. For multisection formats include every publishable section in content and mirror structured details in meta. Build the asset around the 2-4 facts with the strongest publishing value for this platform; the remaining facts get at most one compact line or are left out — full coverage is not a goal (website and FAQ formats use the full pack). Do not pad or repeat facts to meet length targets; if source is sparse, produce a shorter honest draft and flag missing context.\nFORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\nPROJECT:\n${JSON.stringify(project)}\nFACT PACK:\n${factText(reviewed.facts)}`;
+    const prompt = `Write ${spec.count} complete starter assets for ${platform} ONLY. Return {assets:[...]}. Every asset must carry platform="${platform}" exactly — normalisation drops replies that mislabel the channel — plus assetType, title, content (complete final copy/script, not a summary or outline), factIds (exact IDs used), riskFlags, status=needs_review, cta, meta. title is an internal management label, never published: keep it under 60 characters in ${language}, format "[channel name] + the asset's strongest fact or angle", no emojis, no hashtags and no clickbait; variants differ in the angle, not in padding. All copy AND delivery notes must use language ${language}. Include cta within publishable copy naturally, and give the click a concrete payoff — what specific content the reader gets — instead of a bare "read more". Use only the configured real URL; if missing, omit links and flag that a destination needs review. No placeholder links. Do not put production instructions inside social post bodies. For multisection formats include every publishable section in content and mirror structured details in meta. Build the asset around the 2-4 facts with the strongest publishing value for this platform; the remaining facts get at most one compact line or are left out — full coverage is not a goal. Do not pad or repeat facts to meet length targets; if source is sparse, produce a shorter honest draft and flag missing context.\nFORMAT REQUIREMENTS:\n${spec.brief}${guidelines ? `\nPLATFORM VOICE RULES:\n${guidelines}` : ""}\nPROJECT:\n${JSON.stringify(project)}\nFACT PACK:\n${factText(reviewed.facts)}`;
     let best: ContentAsset[] = [];
     const issuesFor = (items: ContentAsset[]) => [
       ...(items.length === spec.count ? [] : [`Expected ${spec.count} assets; received ${items.length}`]),
@@ -316,7 +316,7 @@ export async function generateWithAI(config: ProjectConfig, analysis: SourceAnal
   // Formats are independent, so they run together. AI_CONCURRENCY throttles providers that
   // rate-limit bursts; the old fixed batch of three turned one round trip into four. Measured, a
   // burst of eleven did complete a pack several times faster but lost four channels to network
-  // errors, so the default stays moderate.
+  // errors, so the default stays moderate. With five channels, a pool of six runs them in one wave.
   const concurrency = Math.max(1, Number(process.env.AI_CONCURRENCY) || 6);
   for (let i = 0; i < requested.length; i += concurrency) {
     const batch = await Promise.all(requested.slice(i, i + concurrency).map(generatePlatform));

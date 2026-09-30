@@ -88,8 +88,9 @@ const LINKEDIN_GUIDELINES = [
 
 /**
  * Platform voice rules transcribed from "Prompt Social.md" at the repository root. That document is
- * the source of truth: when it changes, update this file too. website and faq have no section in the
- * document and keep their ASSET_SPECS brief unchanged.
+ * the source of truth: when it changes, update this file too, and keep its channel sections to the
+ * five channels Polaris publishes to. Every channel here has voice rules of its own, so the format
+ * brief in ASSET_SPECS is never injected alone.
  */
 export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, string>>> = {
   facebook: {
@@ -220,114 +221,4 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Do not add information or turn the caption into advertising when the article has no such intent."
     ].join("\n")
   },
-  short_video: {
-    vi: [
-      "- Viết voice tiếng Việt phù hợp video 40–70 giây, nội dung liền mạch, tự nhiên.",
-      "- Ưu tiên câu chữ đơn giản, dễ hiểu, giống cách nói thực tế; không chèn icon/emoji hoặc hashtag vào voice.",
-      "- Dựa vào nội dung và mục đích của từng bài để tự lựa chọn cách triển khai, không áp dụng một cấu trúc cố định cho mọi video.",
-      "- Nếu nội dung cần nhiều thời lượng hơn để truyền tải đầy đủ, được phép viết dài hơn, tuyệt đối không cắt bớt hoặc rút gọn khiến thông tin sai lệch, thiếu ngữ cảnh.",
-      "- Kiểm tra lại voice khi đọc thành tiếng, đảm bảo không bị vấp, lặp từ hoặc chuyển ý thiếu tự nhiên.",
-      "- Caption: viết 1 câu duy nhất, ngắn gọn, đánh đúng trọng tâm video.",
-      "- Caption: thêm hashtag phù hợp với nội dung; không nhồi hashtag."
-    ].join("\n"),
-    zh: [
-      "- 撰写适配 40–70 秒视频的中文口播，内容连贯、自然。",
-      "- 用词简单易懂，接近真实说话方式；口播里不要插入图标/emoji 或话题标签。",
-      "- 根据每篇内容和目的自行选择展开方式，不要对所有视频套用固定结构。",
-      "- 如果内容需要更长时间才能讲清楚，可以写得更长；绝不要为了缩短而删减到信息失真、语境缺失。",
-      "- 把口播读出声检查一遍，确保不拗口、不重复用词、语义衔接自然。",
-      "- 配文：只写 1 句话，简短，正中视频重点。",
-      "- 配文：添加与内容相符的话题标签；不要堆砌。"
-    ].join("\n"),
-    en: [
-      "- Write a spoken script for a 40–70 second video; keep it coherent and natural.",
-      "- Simple, easy wording close to real speech; no icons/emoji or hashtags in the spoken script.",
-      "- Choose the treatment from each article's content and goal; never a fixed structure for every video.",
-      "- If the content needs more time to be told properly, write longer — never cut or compress it into something misleading or missing context.",
-      "- Read the script aloud once; no stumbles, repeated words or unnatural transitions.",
-      "- Caption: write exactly one sentence — short, hitting the video's core point.",
-      "- Caption: add hashtags that fit the content; do not stuff them."
-    ].join("\n")
-  },
-  community: {
-    vi: [
-      "- Ưu tiên thông báo tính năng, hướng dẫn ngắn, cập nhật dữ liệu, sự kiện, giải đáp và nội dung có ích khi sử dụng app.",
-      "- Nói rõ người dùng được gì hoặc cần làm gì.",
-      "- Nếu có thao tác, viết theo trình tự đơn giản; không hướng dẫn sai hoặc tự đoán giao diện.",
-      "- Không gửi quá nhiều thông báo cho những nội dung không thiết yếu.",
-      "- Không biến mọi bài thành lời nhắc kiểm tra broker; chỉ đề cập khi phù hợp với nội dung.",
-      "- CTA nên là mở app, xem nội dung, phản hồi, đặt câu hỏi hoặc tham gia hoạt động cộng đồng."
-    ].join("\n"),
-    zh: [
-      "- 优先功能公告、简短指引、数据更新、活动、答疑，以及使用 App 时真正有用的内容。",
-      "- 讲清楚用户能得到什么、需要做什么。",
-      "- 若涉及操作，按简单顺序写；不要给出错误指引或臆测界面。",
-      "- 非必要内容不要过度推送。",
-      "- 不要每篇都变成“检查交易商”的提醒；只在内容合适时提及。",
-      "- CTA 应为：打开 App、查看内容、反馈、提问或参与社区活动。"
-    ].join("\n"),
-    en: [
-      "- Prioritise feature announcements, short how-tos, data updates, events, Q&A and content genuinely useful inside the app.",
-      "- State clearly what the user gets or what they need to do.",
-      "- If steps are involved, keep them in a simple order; never misinstruct or guess at the UI.",
-      "- Do not over-notify for non-essential content.",
-      "- Do not turn every post into a broker-check reminder; mention it only when the content warrants.",
-      "- CTA should be: open the app, view the content, give feedback, ask a question or join a community activity."
-    ].join("\n")
-  },
-  push: {
-    vi: [
-      "- Tiêu đề: ngắn, nói thẳng nội dung; tránh giật tít mơ hồ.",
-      "- Nội dung: một lợi ích hoặc một thông tin chính; không nhồi nhiều ý.",
-      "- CTA: một hành động rõ — Xem ngay, Cập nhật giá, Đọc phân tích, Tham gia.",
-      "- Tần suất: chỉ gửi khi có lý do; tránh lặp lại cùng một thông tin.",
-      "- Giọng: rõ, nhanh, hữu ích; không quá bán hàng.",
-      "- Mẫu: “[Thông tin đáng chú ý] — [điểm chính]. Mở app để [hành động cụ thể].”"
-    ].join("\n"),
-    zh: [
-      "- 标题：短，直说内容；避免含糊的标题党。",
-      "- 正文：只讲一个利益点或一条主要信息；不要塞多个意思。",
-      "- CTA：一个明确动作——立即查看、查看最新价格、阅读分析、参加。",
-      "- 频控：只在有理由时发送；避免重复同一条信息。",
-      "- 语气：清晰、快速、有用；不要过度推销。",
-      "- 模板：“[值得关注的信息] — [要点]。打开 App 即可 [具体动作]。”"
-    ].join("\n"),
-    en: [
-      "- Title: short, states the content plainly; no vague clickbait.",
-      "- Body: one benefit or one key piece of information; do not stack multiple ideas.",
-      "- CTA: one clear action — View now, Check the latest price, Read the analysis, Join.",
-      "- Frequency: send only when there is a reason; avoid repeating the same information.",
-      "- Tone: clear, quick, useful; not overly salesy.",
-      "- Template: “[Notable information] — [key point]. Open the app to [specific action].”"
-    ].join("\n")
-  },
-  kol_live: {
-    vi: [
-      "- Nêu thông tin cơ bản của KOL, chủ đề và thời gian thật rõ.",
-      "- Hook có thể dựa trên câu hỏi người xem đang quan tâm: giá vàng, diễn biến thị trường, nhận định, giải đáp hoặc chủ đề của buổi live.",
-      "- Tạo cảm giác tương tác: gửi câu hỏi, để lại vấn đề muốn KOL phân tích, tham gia dự đoán nếu hoạt động có thật.",
-      "- Không hứa hẹn kết quả đầu tư, không dùng ngôn ngữ chắc chắn dự đoán thị trường.",
-      "- Nếu có minigame hoặc hoạt động dự đoán giá vàng, phải nêu đúng thể lệ, thời gian và phần thưởng đã được xác nhận.",
-      "- CTA nên rõ: vào live, đặt câu hỏi trước, bật nhắc lịch hoặc chia sẻ cho người quan tâm.",
-      "- Khung: “Tối nay [KOL] sẽ cùng bạn nói về [chủ đề]. Nếu đang quan tâm [vấn đề], đây là lúc gửi câu hỏi. Hẹn gặp lúc [thời gian] trên [kênh].”"
-    ].join("\n"),
-    zh: [
-      "- 清楚说明 KOL 的基本信息、主题和时间。",
-      "- Hook 可以来自观众正在关心的问题：金价、市场走势、观点、答疑或直播主题。",
-      "- 营造互动感：提问、留下希望 KOL 分析的问题、在活动真实存在时参与预测。",
-      "- 不要承诺投资结果，不要用确定性语言预测市场。",
-      "- 若有小游戏或金价竞猜，必须准确写明已确认的规则、时间和奖品。",
-      "- CTA 要明确：进入直播、提前提问、开启提醒或分享给感兴趣的人。",
-      "- 框架：“今晚 [KOL] 将和大家聊 [主题]。如果你正在关注 [问题]，现在就可以提问。到时见——[时间]，[渠道]。”"
-    ].join("\n"),
-    en: [
-      "- State the KOL's basic details, the topic and the time clearly.",
-      "- The hook can come from what viewers care about: gold prices, market moves, views, Q&A or the live topic.",
-      "- Create interaction: send questions, leave a topic for the KOL to analyse, join a prediction only if the activity is real.",
-      "- Never promise investment outcomes or use certain-sounding market predictions.",
-      "- For any mini-game or gold-price prediction, state only the confirmed rules, timing and prizes.",
-      "- CTA should be clear: join the live, ask ahead, set a reminder or share with someone interested.",
-      "- Framework: “Tonight [KOL] will talk about [topic]. If [issue] matters to you, this is the time to send your question. See you at [time] on [channel].”"
-    ].join("\n")
-  }
 };

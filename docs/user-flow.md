@@ -99,8 +99,7 @@
 使用平台卡片或 Tab 展示：
 
 ```text
-官网 SEO | Facebook | Threads | LinkedIn | X
-Instagram | 短视频 | Community | Push | LIVE | FAQ
+Facebook | Threads | LinkedIn | X | Instagram
 ```
 
 每张卡片显示：
@@ -184,14 +183,14 @@ Fact IDs
 
 ```text
 运营人员创建项目
-→ 上传官网文章
+→ 导入已核对的文章（URL / DOCX / 浏览器扩展）
 → 配置分类、语言、目标用户和 CTA
 → 审核 AI 提取的事实
-→ 点击生成全部平台内容
+→ 勾选 Facebook、Threads、LinkedIn、X、Instagram 并生成
 → 逐个平台检查和修改
 → 提交审核
 → 审核人员批准
-→ 导出给官网、社媒和 App 团队
+→ 导出给社媒渠道团队
 ```
 
 ## 9. 错误处理
@@ -204,4 +203,4 @@ Fact IDs
 - Fact 无法匹配：标记为高风险，不允许直接批准
 - 平台内容超长：显示具体超出字符数
 - 发现敏感词：高亮并要求人工处理
-- 官网链接为空：允许生成，但 CTA 标记为待补链接
+- 文章链接为空：允许生成，但 CTA 标记为待补链接

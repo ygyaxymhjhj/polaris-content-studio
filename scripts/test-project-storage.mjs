@@ -15,15 +15,15 @@ try {
  await page.locator('.project-storage [role=status]').filter({hasText:'Ready to save'}).waitFor({timeout:20000});
  await page.locator('.source-textarea').fill(source);
  await page.getByRole('button',{name:'Generate social drafts',exact:true}).click();
- await page.waitForFunction(()=>document.querySelectorAll('.asset-card:not(.skeleton)').length===11);
+ await page.waitForFunction(()=>document.querySelectorAll('.asset-card:not(.skeleton)').length===5);
  await page.waitForFunction(()=>document.querySelector('.project-storage [role=status]')?.textContent==='Saved to MySQL');
  const list=await (await context.request.get(base+'/api/projects')).json(); assert(list.projects.length>=1);
- const id=list.projects.find(p=>p.assetCount===11)?.id;assert(id);
- await page.reload(); await page.waitForFunction(()=>document.querySelectorAll('.asset-card:not(.skeleton)').length===11);
+ const id=list.projects.find(p=>p.assetCount===5)?.id;assert(id);
+ await page.reload(); await page.waitForFunction(()=>document.querySelectorAll('.asset-card:not(.skeleton)').length===5);
  assert.equal(await page.locator('.asset-preview').first().innerText(),'Persisted fictional content.');
  assert.equal(await page.locator('.status-badge.approved').count(),0,'Persistence must not auto-approve assets');
  const detail=await (await context.request.get(base+`/api/projects?id=${id}`)).json();
- assert.equal(detail.snapshot.sourceText,source);assert.equal(detail.snapshot.assets.length,11);
+ assert.equal(detail.snapshot.sourceText,source);assert.equal(detail.snapshot.assets.length,5);
  const other=await browser.newContext();
  await other.request.get(base+'/api/projects');
  const forbidden=await other.request.get(base+`/api/projects?id=${id}`);assert.equal(forbidden.status(),404);
@@ -33,7 +33,7 @@ try {
  const next={...detail,snapshot:{...detail.snapshot,generationRun:'new-storage-test-run',assets:[]}};
  const saved=await context.request.put(base+'/api/projects',{headers:{Origin:base},data:next});assert.equal(saved.status(),200);
  const conflict=await context.request.put(base+'/api/projects',{headers:{Origin:base},data:next});assert.equal(conflict.status(),409);
- const history=await (await context.request.get(base+'/api/projects')).json();assert(history.projects.some(p=>p.id!==id&&p.assetCount===11),'A new run must archive previous generated content');
+ const history=await (await context.request.get(base+'/api/projects')).json();assert(history.projects.some(p=>p.id!==id&&p.assetCount===5),'A new run must archive previous generated content');
  assert.deepEqual(errors,[]);
  console.log('PASS: real MySQL autosave, generated assets/source restored after reload, no automatic approval, browser isolation, CSRF rejection, schema validation, optimistic conflicts and generation archiving. AI mocked; no paid requests.');
 } finally {

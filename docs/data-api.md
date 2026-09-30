@@ -176,17 +176,11 @@ POST /api/assets/:id/regenerate
 ```json
 {
   "platforms": [
-    "website",
     "facebook",
     "threads",
     "linkedin",
     "x",
-    "instagram",
-    "short_video",
-    "community",
-    "push",
-    "kol_live",
-    "faq"
+    "instagram"
   ],
   "tone": "clear_professional",
   "language": "en"

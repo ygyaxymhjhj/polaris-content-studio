@@ -21,7 +21,6 @@ import {
   Link2,
   Linkedin,
   Loader2,
-  MessageCircle,
   MoreHorizontal,
   Play,
   Plus,
@@ -33,7 +32,6 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
-  Video,
   Wand2,
   X,
   Zap
@@ -76,16 +74,15 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
 ];
 
 const platformGroups: { label: string; platforms: Platform[] }[] = [
-  { label: "Web & social", platforms: ["website", "facebook", "threads", "linkedin", "x", "instagram"] },
-  { label: "App & video", platforms: ["short_video", "community", "push", "kol_live", "faq"] }
+  { label: "Social channels", platforms: DEFAULT_PLATFORMS }
 ];
 
 /**
  * Channels are independent, so each one is its own request in a small pool and lands in the grid
- * the moment it arrives. Kept moderate rather than unbounded: a burst of eleven requests to one
- * provider lost four channels to network errors in testing.
+ * the moment it arrives. The pool is one wave for a full five-channel pack, and stays moderate
+ * rather than unbounded: a provider that rate-limits bursts drops channels to network errors.
  */
-const PACK_CONCURRENCY = 6;
+const PACK_CONCURRENCY = 5;
 
 const initialConfig: ProjectConfig = {
   name: "",
@@ -104,17 +101,11 @@ function platformIcon(platform: Platform) {
   const meta = PLATFORM_META[platform];
   if (platform === "facebook") return <span className="brand-letter facebook-letter">f</span>;
   if (platform === "linkedin") return <Linkedin size={16} strokeWidth={2.5} />;
-  if (platform === "short_video") return <Video size={16} />;
-  if (platform === "push") return <Bell size={16} />;
-  if (platform === "faq") return <CircleHelp size={16} />;
-  if (platform === "community") return <MessageCircle size={16} />;
-  if (platform === "kol_live") return <Play size={15} fill="currentColor" />;
   return <span className="platform-glyph">{meta.icon}</span>;
 }
 
 function labelForAsset(asset: ContentAsset, t: (text: string) => string) {
   const assetType = t((asset.assetType || "content asset").replaceAll("_", " "));
-  if (asset.platform === "short_video") return asset.meta?.duration ? `${assetType} · ${asset.meta.duration}` : assetType;
   if (asset.platform === "instagram") return `${assetType} · ${String(asset.meta?.slideCount || 6)} ${t("slides")}`;
   return assetType;
 }
@@ -763,7 +754,7 @@ export default function ContentStudio() {
 
         <div className="sidebar-project">
           <div className="sidebar-section-title"><span>{t("RECENT PROJECT")}</span><button onClick={() => setView("workspace")}><Plus size={14} /></button></div>
-          <button className={`project-mini ${view === "workspace" || view === "facts" || view === "assets" ? t("selected") : ""}`} onClick={() => setView(analysis ? "assets" : "workspace")}>
+          <button className={`project-mini ${view === "workspace" || view === "facts" || view === "assets" ? "selected" : ""}`} onClick={() => setView(analysis ? "assets" : "workspace")}>
             <span className="project-mini-icon"><Zap size={15} fill="currentColor" /></span>
             <span><strong>{config.name || t("New project")}</strong><small>{analysis ? t("In progress") : t("New project")}</small></span>
             <MoreHorizontal size={16} />
@@ -955,12 +946,12 @@ function WorkspaceView({
     <>
       <div className="page-heading hero-heading">
         <div><div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} <span className="live-pill">V1</span></div><h1>{t("Turn one article into")}<br /><em>{t("a week of growth.")}</em></h1><p>{t("Start with a verified source. Polaris adapts it into platform-ready content without losing the facts.")}</p></div>
-        <div className="hero-orbit"><div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" /><div className="orbit-core">✦</div><span className="orbit-label orbit-label-one">SEO</span><span className="orbit-label orbit-label-two">SOCIAL</span><span className="orbit-label orbit-label-three">APP</span></div>
+        <div className="hero-orbit"><div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" /><div className="orbit-core">✦</div><span className="orbit-label orbit-label-one">FACEBOOK</span><span className="orbit-label orbit-label-two">LINKEDIN</span><span className="orbit-label orbit-label-three">INSTAGRAM</span></div>
       </div>
 
       <div className="metric-row">
         <div className="metric-card"><div className="metric-icon amber"><FileText size={17} /></div><div><strong>1</strong><span>{t("source article")}</span></div></div>
-        <div className="metric-card"><div className="metric-icon blue"><Layers3 size={17} /></div><div><strong>8–12</strong><span>{t("content assets")}</span></div></div>
+        <div className="metric-card"><div className="metric-icon blue"><Layers3 size={17} /></div><div><strong>{DEFAULT_PLATFORMS.length}</strong><span>{t("content assets")}</span></div></div>
         <div className="metric-card"><div className="metric-icon green"><ShieldCheck size={17} /></div><div><strong>100%</strong><span>{t("source-backed")}</span></div></div>
         <div className="metric-card"><div className="metric-icon purple"><BarChart3 size={17} /></div><div><strong>1</strong><span>{t("review gate")}</span></div></div>
       </div>
@@ -1003,7 +994,7 @@ function WorkspaceView({
       <section className="panel distribution-panel">
         <div className="section-heading"><div><span className="step-number">02</span><div className="heading-copy"><h2>{t("Choose your distribution pack")}</h2><p>{t("Each channel gets its own angle, format and call to action.")}</p></div></div><span className="selection-count">{selectedPlatforms.length} / {DEFAULT_PLATFORMS.length} {t("selected")}</span></div>
         <div className="platform-selection">
-          {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-group-label">{t(group.label)}</div><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} className={`platform-option ${selected ? t("selected") : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
+          {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-group-label">{t(group.label)}</div><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} aria-pressed={selected} className={`platform-option ${selected ? "selected" : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
         </div>
         <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> {t("Your source is already reviewed. Review generated drafts before export.")}</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
         {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
@@ -1124,7 +1115,7 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onAppro
 function ExportView({ assets, approvedCount, onExport, loading }: { assets: ContentAsset[]; approvedCount: number; onExport: () => void; loading: string | null }) {
   const t = useTranslation();
   const channels = new Set(assets.map((asset) => asset.platform)).size;
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Export a clean content package for your website, social and app teams.")}</p></div><button className="primary-button" onClick={onExport} disabled={!assets.length || loading === "export"}>{loading === "export" ? <><Loader2 className="spin" size={16} /> {t("Packaging…")}</> : <><Download size={16} /> {t("Download ZIP")}</>}</button></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Website link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Export a clean content package for your social channels.")}</p></div><button className="primary-button" onClick={onExport} disabled={!assets.length || loading === "export"}>{loading === "export" ? <><Loader2 className="spin" size={16} /> {t("Packaging…")}</> : <><Download size={16} /> {t("Download ZIP")}</>}</button></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
 }
 
 function SettingsView() {

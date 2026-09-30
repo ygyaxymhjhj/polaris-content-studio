@@ -9,7 +9,10 @@ const temp = await fs.mkdtemp(path.join(os.tmpdir(), "polaris-assets-"));
 const originalFetch = globalThis.fetch;
 const originalKey = process.env.AI_API_KEY;
 try {
-  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "normalize-analysis", "starter-assets", "ai"]) {
+  // The schema module requires zod, and these files are transpiled into a temp directory, so the
+  // project's own dependencies have to be reachable from there.
+  await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(temp, "node_modules"), "dir");
+  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "normalize-analysis", "starter-assets", "ai", "project-schema"]) {
     const source = await fs.readFile(`src/lib/${file}.ts`, "utf8");
     const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
     await fs.writeFile(path.join(temp, `${file}.js`), outputText);
@@ -18,6 +21,7 @@ try {
   const { starterAssets } = require(path.join(temp, 'starter-assets.js'));
   const { generateWithAI, rewriteAsset, askModel } = require(path.join(temp, 'ai.js'));
   const { normalizeAnalysis, mergeChunkAnalyses } = require(path.join(temp, 'normalize-analysis.js'));
+  const { parseSnapshot, projectSchema } = require(path.join(temp, 'project-schema.js'));
   const { ASSET_SPECS, ASSET_TYPES, assetQualityIssues } = require(path.join(temp, 'asset-specs.js'));
   const { detectSourceLanguage, dominantSourceLanguage, alignSourceConfig } = require(path.join(temp, 'source-config.js'));
   const { contextWindowFor, estimateTokens } = require(path.join(temp, 'context-budget.js'));
@@ -27,8 +31,8 @@ try {
   const analysis = { summaryShort: 'Test', summaryLong: 'Test', keyTerms: [], riskFlags: [], facts: [...facts, { ...facts[0], id: 'EXCLUDED', verified: false, text: 'DO_NOT_USE' }] };
   for (const language of ['en', 'zh', 'vi']) {
     const result = starterAssets({ ...config, language }, analysis, platforms);
-    assert.equal(result.assets.length, 13);
-    assert.equal(new Set(result.assets.map(a => a.id)).size, 13);
+    assert.equal(result.assets.length, 5);
+    assert.equal(new Set(result.assets.map(a => a.id)).size, 5);
     for (const asset of result.assets) {
       assert(asset.content.length > 0);
       assert(!JSON.stringify(asset).includes('DO_NOT_USE'));
@@ -41,11 +45,7 @@ try {
     assert.equal(fb.length, 1, 'Facebook produces one short post, not two angle variants');
     assert(fb[0].content.includes(config.sourceUrl));
     assert(!fb[0].content.includes(fb[0].meta.visualBrief));
-    assert.deepEqual(result.assets.filter(a => a.platform === 'short_video').map(a => a.meta.duration), ['40-70s']);
-    const video = result.assets.filter(a => a.platform === 'short_video')[0];
-    assert(video.assetType === 'voiceover_copy' && video.content.includes('Source detail 1'), 'Short video delivers spoken copy, not a production script');
-    assert(!video.content.includes('0–3s') && !video.content.includes('Narration') && !video.content.includes('On-screen text'), 'No timestamps or shot scaffolding leak into the voiceover copy');
-    assert(video.riskFlags.some(flag => flag.includes('not spoken-style copy') || flag.includes('未做口语化') || flag.includes('chưa chuyển thành văn nói')), 'The offline voiceover draft says the narration is raw excerpts needing oralization');
+    assert.deepEqual([...new Set(result.assets.map(a => a.platform))].sort(), ['facebook', 'instagram', 'linkedin', 'threads', 'x'], 'The pack covers exactly the five supported channels');
   }
   process.env.AI_API_KEY = 'test-only';
   const calls = {};
@@ -55,16 +55,16 @@ try {
     const platform = prompt.match(/for (\w+) ONLY/)[1];
     calls[platform] = (calls[platform] || 0) + 1;
     assert(!prompt.includes('DO_NOT_USE'));
-    if (platform === 'push') return new Response('unavailable', { status: 503 });
+    if (platform === 'threads') return new Response('unavailable', { status: 503 });
     const assets = starterAssets(config, analysis, [platform]).assets;
     if (platform === 'facebook' && calls[platform] === 1) assets.forEach(a => { a.content = 'Too short'; a.meta = {}; });
     return Response.json({ choices: [{ message: { content: JSON.stringify({ assets }) } }] });
   };
-  const result = await generateWithAI(config, analysis, ['facebook', 'push']);
+  const result = await generateWithAI(config, analysis, ['facebook', 'threads']);
   assert.equal(calls.facebook, 2, 'Incomplete Facebook draft should be revised once');
-  assert.equal(result.assets.length, 4);
+  assert.equal(result.assets.length, 2);
   assert(result.assets.filter(a => a.platform === 'facebook').every(a => a.generationMode === 'ai' && a.content.length > 250));
-  assert(result.assets.filter(a => a.platform === 'push').every(a => a.generationMode === 'local'));
+  assert(result.assets.filter(a => a.platform === 'threads').every(a => a.generationMode === 'local'));
   assert(result.usedFallback);
 
   // "Prompt Social.md" fixes LinkedIn to English; every other channel follows the project language.
@@ -75,12 +75,12 @@ try {
     const platform = request.messages[1].content.match(/for (\w+) ONLY/)[1];
     return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: starterAssets(config, analysis, [platform]).assets }) } }] });
   };
-  await generateWithAI({ ...config, language: 'vi' }, analysis, ['facebook', 'linkedin', 'website']);
+  await generateWithAI({ ...config, language: 'vi' }, analysis, ['facebook', 'linkedin', 'instagram']);
   const promptFor = platform => requests.find(request => request.messages[1].content.includes(`for ${platform} ONLY`));
   const facebookPrompt = promptFor('facebook');
   const linkedinPrompt = promptFor('linkedin');
   // Channels without a fixed language keep writing in config.language.
-  for (const platform of ['facebook', 'website']) {
+  for (const platform of ['facebook', 'instagram']) {
     const prompt = promptFor(platform).messages[1].content;
     assert.equal(/must use language (\w+)/.exec(prompt)[1], 'vi', `${platform} writes in config.language`);
     assert(prompt.includes('"language":"vi"'), `${platform} project context matches config.language`);
@@ -101,8 +101,15 @@ try {
   assert(linkedinPrompt.messages[0].content.includes('Write natural, readable English'), 'LinkedIn global rules match the output language');
   assert(!linkedinPrompt.messages[0].content.includes('Viết tiếng Việt tự nhiên'), 'No Vietnamese writing principles reach the LinkedIn prompt');
   assert(!linkedinPrompt.messages[1].content.includes('ngôn ngữ đầu ra đã cấu hình'), 'The rule that made LinkedIn follow config.language is gone');
-  assert(!promptFor('website').messages[1].content.includes('PLATFORM VOICE RULES'), 'Platforms without voice rules keep the format brief only');
-  // Models otherwise mislabel the channel ("tiktok" for short_video) and every reply is dropped, so
+  // Every channel in the product is a social platform with rules of its own in "Prompt Social.md",
+  // so the format brief must never arrive alone: a missing block means a retired channel crept back
+  // in, or a retained one lost its voice rules.
+  requests.length = 0;
+  await generateWithAI(config, analysis, ['facebook', 'threads', 'linkedin', 'x', 'instagram']);
+  for (const platform of ['facebook', 'threads', 'linkedin', 'x', 'instagram']) {
+    assert(promptFor(platform)?.messages[1].content.includes('PLATFORM VOICE RULES'), `${platform} carries its own voice rules`);
+  }
+  // Models otherwise mislabel the channel ("twitter" for x) and every reply is dropped, so
   // the prompt pins the exact internal key, and the canonical asset type overrides any model guess.
   assert(linkedinPrompt.messages[1].content.includes('platform="linkedin" exactly'), 'The prompt pins the exact platform key');
   requests.length = 0;
@@ -113,18 +120,21 @@ try {
     const mislabelled = { ...starterAssets(config, analysis, [platform]).assets[0], assetType: 'the_model_guessed_wrong' };
     return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: [mislabelled] }) } }] });
   };
-  const typed = await generateWithAI(config, analysis, ['short_video', 'instagram']);
-  assert.equal(typed.assets.find(asset => asset.platform === 'short_video').assetType, 'voiceover_copy', 'The model cannot rename an internal asset type');
+  const typed = await generateWithAI(config, analysis, ['x', 'instagram']);
+  assert.equal(typed.assets.find(asset => asset.platform === 'x').assetType, 'short_post', 'The model cannot rename an internal asset type');
   assert.equal(typed.assets.find(asset => asset.platform === 'instagram').assetType, 'carousel', 'Every platform keeps its canonical asset type');
   requests.length = 0;
+  let aliasCalls = 0;
   globalThis.fetch = async (_url, options) => {
-    const request = JSON.parse(options.body);
-    requests.push(request);
-    const spoken = 'Spoken copy that lasts forty seconds of narration time and is long enough to pass the minimum length check without a retry. '.repeat(3);
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: [{ platform: 'tiktok', content: spoken, meta: { duration: '40-70s', caption: 'One line #gold' }, factIds: ['F001'], title: 'T' }] }) } }] });
+    aliasCalls += 1;
+    requests.push(JSON.parse(options.body));
+    const post = 'Gold rose 1.4% to $2,418 an ounce after the Fed held rates steady, and traders read the statement as a pause rather than a pivot.';
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ assets: [{ platform: 'twitter', content: post, meta: { post }, factIds: ['F001'], title: 'T' }] }) } }] });
   };
-  const aliased = await generateWithAI(config, analysis, ['short_video']);
-  assert.equal(aliased.assets.find(asset => asset.platform === 'short_video').assetType, 'voiceover_copy', 'A "tiktok" reply is accepted as short_video without a retry');
+  const aliased = await generateWithAI(config, analysis, ['x']);
+  assert.equal(aliased.assets.find(asset => asset.platform === 'x').assetType, 'short_post', 'A "twitter" reply is accepted as x without a retry');
+  assert.equal(aliasCalls, 1, 'The aliased reply is accepted on the first call, not after a retry');
+  assert(aliased.assets.every(asset => asset.generationMode === 'ai'), 'The aliased reply is kept as a model draft');
   // The editor's actual first step: importing Vietnamese text decides the project language, and that
   // decision must not reach the LinkedIn prompt. Everything above set language explicitly, so without
   // this the imported-project case — the one that was reported — would never be exercised.
@@ -175,9 +185,6 @@ try {
   assert.equal(columnFacebook.content.startsWith('财经快讯'), false, 'Every offline channel strips the column label, not only X');
   const columnVi = starterAssets({ ...config, language: 'vi', title: 'Bản tin tài chính：Vàng tăng' }, analysis, ['x']).assets[0];
   assert(columnVi.content.startsWith('Vàng tăng'), 'A multi-word Vietnamese column label is stripped whole');
-  const columnWebsite = starterAssets({ ...config, language: 'zh', title: '财经快讯：金价上涨' }, analysis, ['website']).assets[0];
-  assert(!columnWebsite.content.startsWith('# 财经快讯'), 'The website draft heading drops the column label');
-  assert.equal(columnWebsite.meta.seoTitle, '财经快讯：金价上涨', 'The SEO title keeps the full source headline');
   // The warning follows the text, not the channel policy: choosing English for a Vietnamese article
   // still leaves excerpt text that has to be rewritten, and matching channel and project language
   // must not silence that.
@@ -421,7 +428,28 @@ try {
   assert.equal(malformedCalls, 2, 'A malformed reply is retried once by the generation loop');
   assert(recovered.assets.length === 1 && recovered.assets.every(asset => asset.generationMode === 'ai'), 'The second attempt supplies the AI drafts');
 
-  console.log('PASS: 13 starter assets in 3 languages, delivery fields, source filtering, Facebook single-post rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
+  // Retiring a channel must not make an existing project unloadable. Validation rejects the whole
+  // snapshot over one unknown platform value, so a project saved while website/FAQ/push still existed
+  // is filtered on load instead of failing entirely.
+  const oldSnapshot = {
+    schemaVersion: 1, config, sourceText: 'Fictional source text', sourceName: 'saved.json', sourcePending: false, importedSource: null,
+    editedConfig: [], analysis: null,
+    assets: [
+      { id: 'old-website', platform: 'website', assetType: 'seo_package', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'needs_review', updatedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'old-push', platform: 'push', assetType: 'push_notification', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'needs_review', updatedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'keep-facebook', platform: 'facebook', assetType: 'short_post', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'needs_review', updatedAt: '2026-01-01T00:00:00.000Z' }
+    ],
+    selectedPlatforms: ['website', 'facebook', 'push'], threads: { 'keep-facebook': [{ role: 'user', text: 'Shorten it', at: '2026-01-01T00:00:00.000Z' }] },
+    usedFallback: false, generationRun: 'saved-run'
+  };
+  const restored = parseSnapshot(oldSnapshot);
+  assert.deepEqual(restored.assets.map(asset => asset.id), ['keep-facebook'], 'Assets for retired channels are dropped when an old project loads');
+  assert.deepEqual(restored.selectedPlatforms, ['facebook'], 'Retired channels are dropped from the saved selection');
+  assert.equal(restored.threads['keep-facebook'].length, 1, 'Revision threads for retained channels survive the migration');
+  assert.throws(() => projectSchema.parse(oldSnapshot), 'The strict schema still rejects a retired channel, which is why the filter runs first');
+  assert.throws(() => parseSnapshot({ ...oldSnapshot, assets: 'not-an-array' }), 'A malformed snapshot still fails validation');
+
+  console.log('PASS: 5 starter assets in 3 languages, delivery fields, source filtering, channel voice rules on every retained channel, Facebook single-post rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, retired-channel migration for saved projects, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

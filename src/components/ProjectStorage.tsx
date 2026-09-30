@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "@/lib/i18n";
-import { projectSchema, type ProjectSnapshot, type SavedProject } from "@/lib/project-schema";
+import { parseSnapshot, type ProjectSnapshot, type SavedProject } from "@/lib/project-schema";
 
 function uuid() {
   const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
@@ -48,7 +48,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
         if (last && data.projects.some((p: SavedProject) => p.id === last)) {
           const response = await fetch(`/api/projects?id=${encodeURIComponent(last)}`, { signal: controller.signal, cache: "no-store" }); const item = await response.json();
           if (!response.ok) throw new Error(item.error || "Unable to restore project");
-          const checked = projectSchema.parse(item.snapshot);
+          const checked = parseSnapshot(item.snapshot);
           if (controller.signal.aborted) return;
           // Never replace edits entered while the storage connection was being established.
           if (latest.current === initial) {
@@ -110,7 +110,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
     try {
       const response = await fetch(`/api/projects?id=${encodeURIComponent(choice)}`, { cache: "no-store" }); const item = await response.json();
       if (!response.ok) throw new Error(item.error || "Unable to restore project");
-      const checked = projectSchema.parse(item.snapshot);
+      const checked = parseSnapshot(item.snapshot);
       if (latest.current !== before) throw new Error("The page changed while loading. Please try again.");
       project.current = { id: item.id, version: item.version }; saved.current = JSON.stringify(checked); latest.current = saved.current; conflict.current = false;
       restore.current(checked); remember(item.id); setStatus("Saved to MySQL");
