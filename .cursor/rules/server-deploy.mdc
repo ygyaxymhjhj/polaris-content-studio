@@ -1,0 +1,23 @@
+---
+description: 部署/更新本地测试服务器（192.168.220.109 上的 polaris-studio）。当用户说「帮我部署在本地服务器中」「部署到本地服务器」「更新服务器代码」等时使用。
+alwaysApply: false
+---
+
+# 本地服务器部署契约
+
+- **一键部署**：在仓库根目录执行 `bash scripts/deploy-lan.sh`（等价 `npm run deploy:lan`）
+  - 默认部署当前 **HEAD 提交**；工作区有未提交改动时脚本会列出并跳过（需一并部署时加 `--worktree`）
+  - 回滚：`bash scripts/deploy-lan.sh --ref <旧提交>`；预览：`--dry-run`；跳过构建/数据库备份：`--no-build` / `--no-db`
+  - 脚本流程：停服 → 备份 → rsync 同步（排除 .env.local/node_modules/.next/.git）→ 安装运行时文件 → `npm ci && npm run build`（polaris-studio 用户）→ 写 `DEPLOYED_COMMIT` → 启动 + 健康检查
+- **SSH**：别名 `polaris-server`（本机 `~/.ssh/config`，密钥 `~/.ssh/id_ed25519_polaris`，已配置免密；root@192.168.220.109）
+- **服务器布局**：
+  - 应用 `/opt/polaris-content-studio/app`（`DEPLOYED_COMMIT` = 已部署提交的完整 SHA）
+  - 服务 `polaris-studio`（systemd，监听 192.168.220.109:13300）
+  - 运行时集成：`/opt/polaris-content-studio/runtime/openrouter-proxy.cjs` + drop-in `40-openrouter-proxy.conf`，**由部署脚本从仓库 `deploy/` 安装，不要手工修改服务器上的这两处**
+  - 网络：服务器直连部分海外站点会被 TLS 重置，`openrouter.ai` 与 WikiFX 系域名（wikifx.com、wikifxtips.com）经本机 v2rayA 代理 `127.0.0.1:20171` 出网
+- **部署后验证**：
+  - `ssh polaris-server 'systemctl is-active polaris-studio'`
+  - `ssh polaris-server 'journalctl -u polaris-studio -n 30 --no-pager'`
+  - 接口冒烟：`curl -s -X POST http://192.168.220.109:13300/api/fetch-article -H "Content-Type: application/json" -d '{"url":"<文章URL>"}'`
+- **安全**：仓库为 PUBLIC，任何凭据不得提交；SSH 密码兜底记录在本机 `.server-credentials.local`（已 gitignore）
+- 更多细节与排障：`docs/lan-deployment.md`

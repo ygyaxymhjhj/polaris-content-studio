@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "crawl:article": "node scripts/crawl-article.mjs"
+    "crawl:article": "node scripts/crawl-article.mjs",
+    "deploy:lan": "bash scripts/deploy-lan.sh"
   },
   "dependencies": {
     "cheerio": "^1.2.0",
