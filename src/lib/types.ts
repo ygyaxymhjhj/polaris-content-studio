@@ -7,6 +7,15 @@ export type Platform =
 
 export type AssetStatus = "draft" | "needs_review" | "approved" | "revision_required";
 export type RiskLevel = "low" | "medium" | "high";
+export type PublishStatus = "unpublished" | "publishing" | "published" | "failed";
+
+export interface SocialAccount {
+  id: string;
+  name: string;
+  identifier: string;
+  picture?: string;
+  disabled?: boolean;
+}
 
 export interface FactItem {
   id: string;
@@ -54,6 +63,12 @@ export interface ContentAsset {
   content: string;
   cta?: string;
   deepLink?: string;
+  imageUrl?: string;
+  publishStatus?: PublishStatus;
+  publishedUrl?: string;
+  publishedAt?: string;
+  publishError?: string;
+  targetAccountId?: string;
   factIds: string[];
   riskFlags: string[];
   status: AssetStatus;

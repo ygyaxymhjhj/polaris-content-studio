@@ -9,7 +9,14 @@ const config = z.object({ name: str, title: str, category: str, language: z.enum
 const fact = z.object({ id: str, type: z.enum(["claim", "number", "date", "entity", "quote"]), text: str, sourceExcerpt: str, sourceLocation: str, verified: z.boolean(), usableOnSocial: z.boolean(), riskLevel: z.enum(["low", "medium", "high"]) });
 const metadata = z.record(z.string(), z.unknown());
 const before = z.object({ title: str, content: str, cta: str.optional(), meta: metadata.optional(), factIds: strings });
-const asset = z.object({ id: str, platform, assetType: str, generationMode: z.enum(["ai", "local"]).optional(), variant: str.optional(), title: str, hook: str.optional(), content: str, cta: str.optional(), deepLink: str.optional(), factIds: strings, riskFlags: strings, status: z.enum(["draft", "needs_review", "approved", "revision_required"]), meta: metadata.optional(), updatedAt: str, revisions: z.array(z.object({ at: str, instruction: str, before })).max(40).optional() });
+const asset = z.object({
+  id: str, platform, assetType: str, generationMode: z.enum(["ai", "local"]).optional(), variant: str.optional(),
+  title: str, hook: str.optional(), content: str, cta: str.optional(), deepLink: str.optional(),
+  imageUrl: str.optional(), publishStatus: z.enum(["unpublished", "publishing", "published", "failed"]).optional(),
+  publishedUrl: str.optional(), publishedAt: str.optional(), publishError: str.optional(), targetAccountId: str.optional(),
+  factIds: strings, riskFlags: strings, status: z.enum(["draft", "needs_review", "approved", "revision_required"]),
+  meta: metadata.optional(), updatedAt: str, revisions: z.array(z.object({ at: str, instruction: str, before })).max(40).optional()
+});
 export const projectSchema = z.object({
   schemaVersion: z.literal(1), config, sourceText: str, sourceName: str, sourcePending: z.boolean(),
   importedSource: z.object({ text: str, title: str.optional(), sourceUrl: str.optional(), canonical: str.optional(), imageUrl: str.optional() }).nullable(),

@@ -107,7 +107,7 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
         break;
       }
     }
-    assets.push({ id: `local-${platform}`, platform, assetType, title, content, cta: config.cta, factIds: facts.map(f => f.id), riskFlags: [label.fallback, ...(languageWarning ? [languageWarning] : [])], status: "needs_review", updatedAt: new Date().toISOString(), meta, generationMode: "local" });
+    assets.push({ id: `local-${platform}`, platform, assetType, title, content, cta: config.cta, imageUrl: config.imageUrl || undefined, publishStatus: "unpublished", factIds: facts.map(f => f.id), riskFlags: [label.fallback, ...(languageWarning ? [languageWarning] : [])], status: "needs_review", updatedAt: new Date().toISOString(), meta, generationMode: "local" });
   }
   return { assets, usedFallback: true };
 }

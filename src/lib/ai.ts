@@ -236,6 +236,8 @@ function normalizeAiAssets(rawAssets: unknown, config: ProjectConfig, analysis: 
       assetType: defaultType,
       title: typeof source.title === "string" && source.title ? source.title : `${PLATFORM_META[platform as Platform].label} draft`,
       content,
+      imageUrl: config.imageUrl || undefined,
+      publishStatus: "unpublished" as const,
       factIds: resolvedFactIds,
       riskFlags,
       status: "needs_review" as const,
