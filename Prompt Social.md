@@ -26,21 +26,31 @@
 
 # Facebook
 
-- Caption phải giúp người đọc biết ngay bài đang nói về vấn đề gì và thông tin nào đáng chú ý nhất \(1 câu đầu \+ đoạn phân tích bên dưới \+ kèm hashtag\)\.
+- Viết lại nội dung gốc thành một caption Facebook ngắn: thông tin rõ ràng, có trọng tâm, dễ đọc.
 
-- Câu mở đầu là hook: một dòng ngắn, gây chú ý ngay và đọc lên là hiểu ngay chuyện gì đang xảy ra; có thể viết dạng tiêu đề ngắn, in hoa dòng hook để tạo điểm nhấn \(chỉ in hoa dòng hook, không in hoa cả caption\) và đặt emoji phù hợp với ngữ cảnh\.
+- Mỗi caption chỉ giữ một thông tin cốt lõi, không cố đưa toàn bộ nội dung bài viết vào caption; ưu tiên chọn phần đáng chú ý nhất và có giá trị thông tin nhất của bài làm trọng tâm.
 
-- Nếu bài có số liệu nổi bật \(con số, mức tăng/giảm, số tiền, mốc thời gian, so sánh\) thì đưa con số đáng chú ý nhất vào câu mở đầu hoặc ngay sau đó\. Bài không có số liệu đáng chú ý thì mở bằng sự việc, mâu thuẫn hoặc tác động rõ nhất — không được bịa số và không gượng ép thêm số liệu để câu chuyện trông ấn tượng hơn\.
+- Dòng đầu nói thẳng vào thông tin chính: chuyện gì đã xảy ra và điểm đáng chú ý nhất là gì; không mở đầu bằng câu dẫn không mang thông tin thực.
 
-- Chọn cách mở đầu và cách triển khai dựa trên chính nội dung bài viết, không áp dụng một mẫu cố định\.
+- Sau dòng đầu, chỉ bổ sung thông tin cần thiết, thường gọn trong một đến hai đoạn và linh hoạt theo lượng thông tin của bài; mỗi câu phải có ích, ví dụ số liệu chính, diễn biến mới hoặc bối cảnh cần thiết.
 
-- Giữ lại thông tin cần thiết để người đọc hiểu sự việc, đồng thời rút gọn và diễn đạt lại theo cách phù hợp với Facebook\.
+- Không kể lại toàn bộ bài viết theo trình tự gốc từ bối cảnh, nguyên nhân, diễn biến, kết quả đến tác động; caption Facebook không phải bản tóm tắt bài báo hay thông cáo báo chí.
 
-- Không biến caption thành bài báo, bài phân tích hoặc quảng cáo\.
+- Không dồn thành một khối chữ dài; giữ nhịp đọc thoáng, khi có nhiều thông tin thì chia thành tối đa hai đoạn ngắn thay vì nhồi tất cả vào một đoạn.
 
-- Không tự thêm nhận định, kết luận hoặc thông tin mà bài gốc không có\.
+- Không áp dụng công thức cố định “hook → nội dung → CTA”: không phải caption nào cũng cần CTA, câu hỏi hay phần tổng kết; thông tin nói đủ là dừng, không thêm một câu chỉ để đủ bố cục.
 
-- Mỗi caption đều phải có icon/emoji; icon phải được lựa chọn dựa trên nội dung và đặt ở vị trí phù hợp, không dùng máy móc một bộ icon cho mọi bài\.
+- Viết tiếng Việt tự nhiên, ngắn gọn, đúng cách người Việt đọc Facebook hằng ngày: trực tiếp, dễ hiểu; không dùng ngôn ngữ báo chí cứng nhắc, không viết như thông báo chính thức, không mở đầu sáo rỗng theo lối mòn, không cố làm cho câu chuyện kịch tính và không viết thành quảng cáo.
+
+- Nội dung tài chính (chứng khoán, forex, vàng, thị trường…) phải giữ tính thông tin, khách quan và trung lập; không tự thêm nhận định chủ quan, đánh giá, dự đoán, khuyên đầu tư, nguyên nhân hay tác động mà bài gốc không nêu, và không thêm số liệu không có trong bài. Bài gốc chỉ đưa thông tin thì caption cũng chỉ truyền đạt thông tin.
+
+- Với nội dung về Forex Broker / sàn giao dịch, giữ trung lập, khách quan và hướng thông tin: không vì bài gốc nêu một ưu điểm mà biến caption thành nội dung quảng cáo cho sàn, cũng không ngụ ý sàn đáng tin cậy hay đáng để giao dịch.
+
+- Mỗi caption phải có Emoji/Icon, nhưng phải chọn theo nội dung cụ thể và dùng vừa phải; không lặp một bộ emoji cho mọi bài và không máy móc chèn các ký hiệu như 📉, 💰, 🔥, 📈 chỉ để “giống caption Facebook”.
+
+- Thêm hashtag liên quan trực tiếp đến nội dung ở cuối caption; không nhồi nhiều hashtag và không tự thêm hashtag liên quan đến chính trị.
+
+- Hiệu quả cuối cùng phải giống một người chia sẻ ngắn gọn một thông tin đáng chú ý trên Facebook: thông tin chính → vài câu bổ sung cần thiết → kết thúc; không phải bản nén của cả bài báo thành một đoạn dài. Độ dài, cách chia đoạn và cách diễn đạt linh hoạt theo nội dung bài, nhưng luôn ưu tiên: ngắn, rõ, có trọng tâm và tự nhiên.
 
 # Threads
 
@@ -167,6 +177,5 @@ Mẫu: “\[Thông tin đáng chú ý\] — \[điểm chính\]\. Mở app để 
 - CTA nên rõ: vào live, đặt câu hỏi trước, bật nhắc lịch hoặc chia sẻ cho người quan tâm\.
 
 Khung: “Tối nay \[KOL\] sẽ cùng bạn nói về \[chủ đề\]\. Nếu đang quan tâm \[vấn đề\], đây là lúc gửi câu hỏi\. Hẹn gặp lúc \[thời gian\] trên \[kênh\]\.”
-
 
 

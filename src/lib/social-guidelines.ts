@@ -94,34 +94,49 @@ const LINKEDIN_GUIDELINES = [
 export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, string>>> = {
   facebook: {
     vi: [
-      "- Caption phải giúp người đọc biết ngay bài đang nói về vấn đề gì và thông tin nào đáng chú ý nhất (1 câu đầu + đoạn phân tích bên dưới + kèm hashtag).",
-      "- Câu mở đầu là hook: một dòng ngắn, gây chú ý ngay và đọc lên là hiểu ngay chuyện gì đang xảy ra; có thể viết dạng tiêu đề ngắn, in hoa dòng hook để tạo điểm nhấn (chỉ in hoa dòng hook, không in hoa cả caption) và đặt emoji phù hợp với ngữ cảnh.",
-      "- Nếu bài có số liệu nổi bật (con số, mức tăng/giảm, số tiền, mốc thời gian, so sánh) thì đưa con số đáng chú ý nhất vào câu mở đầu hoặc ngay sau đó; bài không có số liệu đáng chú ý thì mở bằng sự việc, mâu thuẫn hoặc tác động rõ nhất — không được bịa số và không gượng ép thêm số liệu để câu chuyện trông ấn tượng hơn.",
-      "- Chọn cách mở đầu và cách triển khai dựa trên chính nội dung bài viết, không áp dụng một mẫu cố định.",
-      "- Giữ lại thông tin cần thiết để người đọc hiểu sự việc, đồng thời rút gọn và diễn đạt lại theo cách phù hợp với Facebook.",
-      "- Không biến caption thành bài báo, bài phân tích hoặc quảng cáo.",
-      "- Không tự thêm nhận định, kết luận hoặc thông tin mà bài gốc không có.",
-      "- Mỗi caption đều phải có icon/emoji; icon phải được lựa chọn dựa trên nội dung và đặt ở vị trí phù hợp, không dùng máy móc một bộ icon cho mọi bài."
+      "- Viết lại nội dung gốc thành một caption Facebook ngắn: thông tin rõ ràng, có trọng tâm, dễ đọc.",
+      "- Mỗi caption chỉ giữ một thông tin cốt lõi, không cố đưa toàn bộ nội dung bài viết vào caption; ưu tiên chọn phần đáng chú ý nhất và có giá trị thông tin nhất của bài làm trọng tâm.",
+      "- Dòng đầu nói thẳng vào thông tin chính: chuyện gì đã xảy ra và điểm đáng chú ý nhất là gì; không mở đầu bằng câu dẫn không mang thông tin thực.",
+      "- Sau dòng đầu, chỉ bổ sung thông tin cần thiết, thường gọn trong một đến hai đoạn và linh hoạt theo lượng thông tin của bài; mỗi câu phải có ích, ví dụ số liệu chính, diễn biến mới hoặc bối cảnh cần thiết.",
+      "- Không kể lại toàn bộ bài viết theo trình tự gốc từ bối cảnh, nguyên nhân, diễn biến, kết quả đến tác động; caption Facebook không phải bản tóm tắt bài báo hay thông cáo báo chí.",
+      "- Không dồn thành một khối chữ dài; giữ nhịp đọc thoáng, khi có nhiều thông tin thì chia thành tối đa hai đoạn ngắn thay vì nhồi tất cả vào một đoạn.",
+      "- Không áp dụng công thức cố định “hook → nội dung → CTA”: không phải caption nào cũng cần CTA, câu hỏi hay phần tổng kết; thông tin nói đủ là dừng, không thêm một câu chỉ để đủ bố cục.",
+      "- Viết tiếng Việt tự nhiên, ngắn gọn, đúng cách người Việt đọc Facebook hằng ngày: trực tiếp, dễ hiểu; không dùng ngôn ngữ báo chí cứng nhắc, không viết như thông báo chính thức, không mở đầu sáo rỗng theo lối mòn, không cố làm cho câu chuyện kịch tính và không viết thành quảng cáo.",
+      "- Nội dung tài chính (chứng khoán, forex, vàng, thị trường…) phải giữ tính thông tin, khách quan và trung lập; không tự thêm nhận định chủ quan, đánh giá, dự đoán, khuyên đầu tư, nguyên nhân hay tác động mà bài gốc không nêu, và không thêm số liệu không có trong bài. Bài gốc chỉ đưa thông tin thì caption cũng chỉ truyền đạt thông tin.",
+      "- Với nội dung về Forex Broker / sàn giao dịch, giữ trung lập, khách quan và hướng thông tin: không vì bài gốc nêu một ưu điểm mà biến caption thành nội dung quảng cáo cho sàn, cũng không ngụ ý sàn đáng tin cậy hay đáng để giao dịch.",
+      "- Mỗi caption phải có Emoji/Icon, nhưng phải chọn theo nội dung cụ thể và dùng vừa phải; không lặp một bộ emoji cho mọi bài và không máy móc chèn các ký hiệu như 📉, 💰, 🔥, 📈 chỉ để “giống caption Facebook”.",
+      "- Thêm hashtag liên quan trực tiếp đến nội dung ở cuối caption; không nhồi nhiều hashtag và không tự thêm hashtag liên quan đến chính trị.",
+      "- Hiệu quả cuối cùng phải giống một người chia sẻ ngắn gọn một thông tin đáng chú ý trên Facebook: thông tin chính → vài câu bổ sung cần thiết → kết thúc; không phải bản nén của cả bài báo thành một đoạn dài. Độ dài, cách chia đoạn và cách diễn đạt linh hoạt theo nội dung bài, nhưng luôn ưu tiên: ngắn, rõ, có trọng tâm và tự nhiên."
     ].join("\n"),
     zh: [
-      "- 文案要让读者一眼看出这篇在讲什么问题、哪条信息最值得关注（1 句开头 + 下方分析段落 + 附带话题标签）。",
-      "- 首句是钩子：一行短句，先抓住注意力，读一遍就知道这篇在讲什么事；可以写成短标题式的一行，配一个贴合语境的图标/emoji。",
-      "- 原文有亮眼数据（数字、涨跌幅、金额、时间点、对比）就把它放进首句或紧接的下一句；没有就用最突出的事件、矛盾或影响开头——不要编造数字，也不要为了显得有力硬塞数据。",
-      "- 开头方式与展开方式要基于文章内容本身，不要套用固定模板。",
-      "- 保留让读者理解事件所必需的信息，同时按 Facebook 的表达方式精简和改写。",
-      "- 不要把文案写成新闻报道、分析长文或广告。",
-      "- 不要自行添加原文没有的观点、结论或信息。",
-      "- 每条文案都必须有图标/emoji；图标要依据内容选择并放在合适位置，不要对所有文章机械套用同一组。"
+      "- 将原文内容改写成适合 Facebook 发布的短文案：信息清晰、有重点、容易阅读。",
+      "- 一篇内容只抓住一个核心信息，不把原文所有内容都塞进文案；优先选择原文中最值得关注、最有信息价值的内容作为重点。",
+      "- 第一行直接说重点：告诉读者发生了什么、这件事最值得关注的地方是什么；不要先写没有实际信息的铺垫。",
+      "- 第一行之后只补充必要的信息，通常控制在两段，根据原文的信息量灵活调整；每句话都应该有作用，例如补充关键数据、事件进展或必要背景。",
+      "- 不要把整篇文章重新讲一遍：不要按原文顺序把背景、原因、经过、结果、影响全部复述；Facebook 文案不是文章摘要，也不是新闻稿。",
+      "- 不要写成一整段很长的文字：内容较多时分成一两个短段落，保持阅读节奏，不要把所有信息堆在一个大段落里。",
+      "- 不使用固定的「Hook → 内容 → CTA」模板：不是每篇内容都需要 CTA、提问或总结；信息说清楚之后就可以结束，不要为了完整而强行加一句。",
+      "- 使用自然、简洁、符合中文读者 Facebook 阅读习惯的中文：直接、容易理解；不使用生硬的新闻媒体语言，不写成正式公告，不使用空泛、套路化的开场白，不故意写得夸张、戏剧化，不把文案写成广告。",
+      "- 财经、股票、外汇、黄金、市场等内容必须保持信息型、客观、中立的表达；不得自行增加主观判断、评价、预测、投资建议、原文没有提到的原因或影响、原文没有的数据。原文只是提供信息时，文案也只负责传达信息。",
+      "- 涉及 Forex Broker / 交易平台时保持中立、客观、信息导向：不能因为原文提到某一个优点就把文案写成对该平台的宣传，也不能暗示其值得信赖或值得交易。",
+      "- 每篇文案必须有 Emoji / Icon，但必须根据具体内容选择、数量适中；不要每篇都使用同一套 Emoji，不要为了“像 Facebook 文案”而机械加入 📉、💰、🔥、📈 等固定符号。",
+      "- 文案结尾添加与内容直接相关的 Hashtag；不要堆砌 Hashtag，也不要自行添加政治相关 Hashtag。",
+      "- 最终效果应该像一个人在 Facebook 上简洁地分享一条值得关注的信息：重点信息 → 补充几句必要信息 → 结束；而不是把整篇新闻压缩成一大段文字。整体长度、分段方式和具体表达根据原文内容调整，但始终优先保证：短、清楚、有重点、自然。"
     ].join("\n"),
     en: [
-      "- The caption must tell readers immediately what the post is about and which detail matters most (1 opening sentence + an analysis paragraph below + hashtags).",
-      "- The opening sentence is the hook: one short line that grabs attention and shows at a glance what happened; a short headline-style line, upper-cased for emphasis if it helps (the hook line only, never the whole caption), with an emoji that fits the context.",
-      "- If the article has a striking figure (a number, a percentage move, an amount, a date, a comparison), put it in the opening line or immediately after it; if it has none, open with the most striking event, conflict or impact instead — never invent a figure and never force one in.",
-      "- Choose the opening and the structure from the article itself; never apply a fixed template.",
-      "- Keep the information readers need to understand the story, while condensing and rewording it for Facebook.",
-      "- Do not turn the caption into an article, an analysis piece or an advertisement.",
-      "- Do not add opinions, conclusions or information the source article does not contain.",
-      "- Every caption must include an icon/emoji; choose it from the content and place it sensibly — never a mechanical set for every article."
+      "- Rewrite the source into a short Facebook caption: clear, focused and easy to read.",
+      "- One caption carries one core message; never cram the whole article into it. Pick the most notable, most informative part of the source as the focus.",
+      "- State the point in the first line: what happened and what matters most about it. Never open with filler that carries no real information.",
+      "- After the first line, add only the necessary information, usually within one or two paragraphs and adjusted to how much the source holds; every sentence must do a job, such as a key figure, a development or essential context.",
+      "- Do not retell the whole article in its original order of background, cause, events, outcome and impact; a Facebook caption is not an article summary or a press release.",
+      "- Never one long block of text: when there is more to say, split it into one or two short paragraphs and keep a readable rhythm instead of piling everything together.",
+      "- No fixed “hook → body → CTA” template: not every caption needs a CTA, a question or a wrap-up — when the information is complete, stop instead of adding a sentence just to complete the structure.",
+      "- Write natural, concise English that fits how readers take in Facebook daily: direct and easy to follow; no stiff newsroom language, no formal notice tone, no empty formulaic openers, no deliberate dramatisation, and never advertising copy.",
+      "- Finance content (stocks, forex, gold, markets and the like) must stay informational, objective and neutral; never add subjective judgement, evaluation, forecasts, investment advice, causes or impacts the source does not mention, or figures the source does not contain. When the source only informs, the caption only informs.",
+      "- For content about a Forex broker or trading platform, stay neutral, objective and informational: a merit the source mentions must not turn the caption into promotion for that platform, and nothing may imply it is trustworthy or worth trading with.",
+      "- Every caption must carry an emoji/icon, chosen for the specific content and used in moderation; never repeat one set of emoji across captions and never mechanically inject symbols such as 📉, 💰, 🔥 or 📈 just to “look like a Facebook caption”.",
+      "- End with hashtags directly related to the content; do not pile on hashtags and never add political hashtags.",
+      "- The finished caption should read like a person briefly sharing one noteworthy piece of news on Facebook: the key information → a few necessary details → the end. Length, paragraphs and phrasing follow the source, but always keep it short, clear, focused and natural."
     ].join("\n")
   },
   threads: {
