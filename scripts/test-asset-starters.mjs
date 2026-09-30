@@ -27,8 +27,8 @@ try {
   const analysis = { summaryShort: 'Test', summaryLong: 'Test', keyTerms: [], riskFlags: [], facts: [...facts, { ...facts[0], id: 'EXCLUDED', verified: false, text: 'DO_NOT_USE' }] };
   for (const language of ['en', 'zh', 'vi']) {
     const result = starterAssets({ ...config, language }, analysis, platforms);
-    assert.equal(result.assets.length, 14);
-    assert.equal(new Set(result.assets.map(a => a.id)).size, 14);
+    assert.equal(result.assets.length, 13);
+    assert.equal(new Set(result.assets.map(a => a.id)).size, 13);
     for (const asset of result.assets) {
       assert(asset.content.length > 0);
       assert(!JSON.stringify(asset).includes('DO_NOT_USE'));
@@ -38,7 +38,7 @@ try {
       assert.equal(asset.assetType, ASSET_TYPES[asset.platform], `${asset.platform}: offline template and canonical asset types stay in sync`);
     }
     const fb = result.assets.filter(a => a.platform === 'facebook');
-    assert.notEqual(fb[0].content, fb[1].content);
+    assert.equal(fb.length, 1, 'Facebook produces one short post, not two angle variants');
     assert(fb[0].content.includes(config.sourceUrl));
     assert(!fb[0].content.includes(fb[0].meta.visualBrief));
     assert.deepEqual(result.assets.filter(a => a.platform === 'short_video').map(a => a.meta.duration), ['40-70s']);
@@ -62,8 +62,8 @@ try {
   };
   const result = await generateWithAI(config, analysis, ['facebook', 'push']);
   assert.equal(calls.facebook, 2, 'Incomplete Facebook draft should be revised once');
-  assert.equal(result.assets.length, 5);
-  assert(result.assets.filter(a => a.platform === 'facebook').every(a => a.generationMode === 'ai' && a.content.length > 350));
+  assert.equal(result.assets.length, 4);
+  assert(result.assets.filter(a => a.platform === 'facebook').every(a => a.generationMode === 'ai' && a.content.length > 250));
   assert(result.assets.filter(a => a.platform === 'push').every(a => a.generationMode === 'local'));
   assert(result.usedFallback);
 
@@ -86,12 +86,12 @@ try {
     assert(prompt.includes('"language":"vi"'), `${platform} project context matches config.language`);
   }
   assert(facebookPrompt.messages[0].content.includes('Không biến mọi caption thành quảng cáo'), 'Vietnamese global rules go into the system prompt');
-  assert(facebookPrompt.messages[1].content.includes('Mỗi caption đều phải có icon/emoji'), 'Vietnamese platform rules follow the project language');
-  // Facebook opens on an attention hook and leads with a striking figure when the article has one, but
-  // must not force one in. The prompt is the only place the model learns that, so pin it per language.
-  assert(facebookPrompt.messages[1].content.includes('Câu mở đầu là hook'), 'Vietnamese Facebook rules demand an attention hook in the first line');
-  assert(facebookPrompt.messages[1].content.includes('không gượng ép thêm số liệu'), 'Vietnamese Facebook rules forbid forcing a figure in');
-  assert(facebookPrompt.messages[1].content.includes('Each content must open with a hook'), 'The Facebook format brief carries the hook requirement as well');
+  assert(facebookPrompt.messages[1].content.includes('Mỗi caption phải có Emoji/Icon'), 'Vietnamese platform rules follow the project language');
+  // Facebook captions now open on the point itself and must not add figures the source does not
+  // contain. The prompt is the only place the model learns that, so pin it per language.
+  assert(facebookPrompt.messages[1].content.includes('Dòng đầu nói thẳng vào thông tin chính'), 'Vietnamese Facebook rules state the point in the first line');
+  assert(facebookPrompt.messages[1].content.includes('không thêm số liệu không có trong bài'), 'Vietnamese Facebook rules forbid adding figures the source does not contain');
+  assert(facebookPrompt.messages[1].content.includes('The first line states the point directly'), 'The Facebook format brief states the point in the first line as well');
   // LinkedIn publishes in English whatever the brief language, so every part of its prompt has to
   // agree: the instruction, the global principles, the voice rules and the project context.
   assert.equal(/must use language (\w+)/.exec(linkedinPrompt.messages[1].content)[1], 'en', 'LinkedIn writes in English even when the brief is Vietnamese');
@@ -141,12 +141,12 @@ try {
   await generateWithAI({ ...config, language: 'zh' }, analysis, ['x', 'facebook']);
   const zhFor = platform => requests.find(request => request.messages[1].content.includes(`for ${platform} ONLY`));
   assert(zhFor('x').messages[1].content.includes('不要把「快讯」「突发」这类栏目标签写进文案开头'), 'The Chinese X rules forbid printing the style label');
-  assert(zhFor('facebook').messages[1].content.includes('首句是钩子'), 'The Chinese Facebook rules demand an attention hook in the first line');
-  assert(zhFor('facebook').messages[1].content.includes('也不要为了显得有力硬塞数据'), 'The Chinese Facebook rules forbid forcing a figure in');
+  assert(zhFor('facebook').messages[1].content.includes('第一行直接说重点'), 'The Chinese Facebook rules state the point in the first line');
+  assert(zhFor('facebook').messages[1].content.includes('原文没有的数据'), 'The Chinese Facebook rules forbid adding figures the source does not contain');
   requests.length = 0;
   await generateWithAI({ ...config, language: 'en' }, analysis, ['facebook']);
-  assert(requests[0].messages[1].content.includes('The opening sentence is the hook'), 'The English Facebook rules demand an attention hook in the first line');
-  assert(requests[0].messages[1].content.includes('never force one in'), 'The English Facebook rules forbid forcing a figure in');
+  assert(requests[0].messages[1].content.includes('State the point in the first line'), 'The English Facebook rules state the point in the first line');
+  assert(requests[0].messages[1].content.includes('figures the source does not contain'), 'The English Facebook rules forbid adding figures the source does not contain');
   requests.length = 0;
   await generateWithAI({ ...config, language: 'vi' }, analysis, ['x']);
   assert(requests[0].messages[1].content.includes('không mở đầu bằng nhãn mục'), 'The Vietnamese X rules forbid printing the style label');
@@ -419,9 +419,9 @@ try {
   };
   const recovered = await generateWithAI(config, analysis, ['facebook']);
   assert.equal(malformedCalls, 2, 'A malformed reply is retried once by the generation loop');
-  assert(recovered.assets.length === 2 && recovered.assets.every(asset => asset.generationMode === 'ai'), 'The second attempt supplies the AI drafts');
+  assert(recovered.assets.length === 1 && recovered.assets.every(asset => asset.generationMode === 'ai'), 'The second attempt supplies the AI drafts');
 
-  console.log('PASS: 14 starter assets in 3 languages, delivery fields, source filtering, Facebook hook and figure rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
+  console.log('PASS: 13 starter assets in 3 languages, delivery fields, source filtering, Facebook single-post rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

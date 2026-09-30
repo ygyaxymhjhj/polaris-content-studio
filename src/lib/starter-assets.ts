@@ -78,7 +78,9 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
       switch (platform) {
         case "facebook":
           assetType = "short_post";
-          content = [variant ? label.question : title, label.context, blocks, label.caution, variant ? title : label.question, cta].join("\n\n");
+          // One short post per the platform rules: the headline states the point first and the
+          // reviewed source text follows. The template adds no forced question or wrap-up of its own.
+          content = [title, label.context, blocks, label.caution, cta].join("\n\n");
           meta = { visualBrief: label.visual, imageText: title, firstComment: [label.caution, cta].join("\n\n") };
           break;
         case "website":
