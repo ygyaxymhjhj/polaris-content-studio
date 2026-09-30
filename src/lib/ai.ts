@@ -111,6 +111,9 @@ export async function askModel<T>(system: string, prompt: string, options: { max
         transientReason = `provider returned ${response.status}`;
         continue;
       }
+      // 402 is the provider asking for money, not a hiccup: retrying cannot succeed, and the
+      // operator needs the remedy (top up the account) rather than the raw status code.
+      if (response.status === 402) throw new ProviderUnavailableError("AI provider account is out of credits (402). Top up the provider balance, then generate again.");
       throw new ProviderUnavailableError(`AI provider returned ${response.status}`);
     }
     let data: ProviderEnvelope;

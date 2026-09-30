@@ -113,6 +113,20 @@ function labelForAsset(asset: ContentAsset, t: (text: string) => string) {
   return assetType;
 }
 
+/**
+ * Gateways and proxies answer with HTML error pages, and so does a 404 for a route a stale tab
+ * still calls. Parsing that as JSON yields "Unexpected token '<'", which names neither the cause
+ * nor the status, so the status and the likely fix are surfaced instead.
+ */
+async function readJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`Unexpected HTTP ${response.status} from the server (HTML instead of JSON). Usually a gateway error page or a stale page calling a route that no longer exists — hard-refresh (Cmd+Shift+R), then retry.`);
+  }
+}
+
 export default function ContentStudio() {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
   useEffect(() => {
@@ -174,7 +188,7 @@ export default function ContentStudio() {
   const loadChannels = useCallback(async () => {
     try {
       const res = await fetch("/api/social/channels");
-      const data = await res.json();
+      const data = await readJson<{ configured?: boolean; accounts?: SocialAccount[] }>(res);
       if (data.configured) setPostizConfigured(true);
       if (Array.isArray(data.accounts)) {
         setSocialAccounts(data.accounts);
@@ -319,7 +333,7 @@ export default function ContentStudio() {
       const form = new FormData();
       form.append("file", file);
       const response = await fetch("/api/parse", { method: "POST", body: form });
-      const data = await response.json();
+      const data = await readJson<ImportedSource & { error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Unable to parse file");
       importSource(data, file.name);
       notify("Article imported. Review the source before generating.");
@@ -345,7 +359,7 @@ export default function ContentStudio() {
     setSourceError("");
     try {
       const response = await fetch("/api/fetch-article", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: config.sourceUrl }) });
-      const data = await response.json();
+      const data = await readJson<ImportedSource & { error?: string; code?: string; characterCount?: number }>(response);
       if (!response.ok) throw new Error(data.code === "SOURCE_ACCESS_DENIED" ? "The website denied server access. Paste the article or import JSON exported from your local tool. The previous article is still displayed." : data.error || "Unable to fetch article");
       importSource({ ...data, sourceUrl: data.sourceUrl || config.sourceUrl }, data.title ? `${data.title}.url` : config.sourceUrl);
       notify(`${(data.characterCount || data.text?.length || 0).toLocaleString()} ${t("characters imported")}`);
@@ -365,7 +379,7 @@ export default function ContentStudio() {
     setLoading("analyze");
     try {
       const analysisResponse = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ article: sampleArticle, title: demoConfig.title }) });
-      const rawAnalysis = await analysisResponse.json();
+      const rawAnalysis = await readJson<Record<string, unknown> & { error?: string }>(analysisResponse);
       if (!analysisResponse.ok) throw new Error(rawAnalysis.error || "Demo analysis failed");
       const sourceAnalysis = normalizeAnalysis(rawAnalysis, sampleArticle, demoConfig.title);
       const confirmed = { ...sourceAnalysis, facts: sourceAnalysis.facts.map((fact) => ({ ...fact, verified: fact.usableOnSocial })) };
@@ -394,7 +408,7 @@ export default function ContentStudio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ article: sourceText, title: config.title })
       });
-      const data = await response.json();
+      const data = await readJson<Record<string, unknown> & { error?: string }>(response);
       if (run !== packSequence.current) return;
       if (!response.ok) throw new Error(data.error || "Analysis failed");
       const mapped = normalizeAnalysis(data, sourceText, config.title);
@@ -452,7 +466,7 @@ export default function ContentStudio() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ config: configToUse, analysis: analysisToUse, platforms: [channel] })
           });
-          const data = await response.json();
+          const data = await readJson<{ error?: string; assets?: ContentAsset[]; usedFallback?: boolean }>(response);
           if (!response.ok) throw new Error(data.error || "Generation failed");
           if (run !== packSequence.current) return;
           setAssets((current) => [...current, ...(data.assets || [])]);
@@ -581,7 +595,7 @@ export default function ContentStudio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config, analysis, asset: draft, turns: baseThread, instruction: text, count: optionCount })
       });
-      const data = await response.json();
+      const data = await readJson<{ error?: string; candidates?: RewriteCandidate[]; droppedTurns?: number }>(response);
       if (!response.ok) throw new Error(data.error || "Rewrite failed");
       if (run !== rewriteSequence.current) return;
       // The instruction joins the thread as soon as the model answers it, so the next request
@@ -715,7 +729,7 @@ export default function ContentStudio() {
           publishAt: postAt || undefined
         })
       });
-      const data = await res.json();
+      const data = await readJson<{ success?: boolean; error?: string; publishedUrl?: string; publishedAt?: string }>(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || "发布失败");
       }
