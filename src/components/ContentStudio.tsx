@@ -2,7 +2,6 @@
 
 import {
   ArrowRight,
-  BarChart3,
   Bell,
   BookOpen,
   Check,
@@ -1170,14 +1169,6 @@ function WorkspaceView({
         <div><div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} · V1</div><h1 style={{ fontSize: 32, margin: "6px 0 10px" }}>{t("从一篇原创新闻，到全渠道社交媒体矩阵")}</h1><p style={{ maxWidth: 640 }}>{t("自动提取关键信息与原头图，通过 Postiz 托管账号直接完成多渠道原生内容预览与发布。")}</p></div>
       </div>
 
-      <div className="metric-row">
-        <div className="metric-card"><div className="metric-icon amber"><FileText size={17} /></div><div><strong>1</strong><span>{t("source article")}</span></div></div>
-        <div className="metric-card"><div className="metric-icon blue"><Layers3 size={17} /></div><div><strong>{DEFAULT_PLATFORMS.length}</strong><span>{t("content assets")}</span></div></div>
-        <div className="metric-card"><div className="metric-icon green"><ShieldCheck size={17} /></div><div><strong>100%</strong><span>{t("source-backed")}</span></div></div>
-        <div className="metric-card"><div className="metric-icon purple"><BarChart3 size={17} /></div><div><strong>1</strong><span>{t("review gate")}</span></div></div>
-      </div>
-
-      <div className="info-banner">{t("Test mode: the saved WikiFX article is preloaded on page load. No fetch needed; review facts before generating. You can still replace the source.")}</div>
       <section className="panel source-panel">
         <div className="section-heading"><div><span className="step-number">01</span><div className="heading-copy"><h2>{t("导入文章来源")}</h2><p>{t("支持公网文章 URL 链接抓取，或直接粘贴新闻正文及上传文档")}</p></div></div><div className="heading-links"><button className="text-button" onClick={loadSample}><Sparkles size={14} /> {t("Restore test article")}</button><button className="text-button demo-link" onClick={runDemo} disabled={loading !== null}><Play size={14} fill="currentColor" /> {t("Preview full demo")}</button></div></div>
 
@@ -1260,14 +1251,6 @@ function WorkspaceView({
         {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
       </section>
 
-      <section className="panel distribution-panel">
-        <div className="section-heading"><div><span className="step-number">02</span><div className="heading-copy"><h2>{t("Choose your distribution pack")}</h2><p>{t("Each channel gets its own angle, format and call to action.")}</p></div></div><span className="selection-count">{selectedPlatforms.length} / {DEFAULT_PLATFORMS.length} {t("selected")}</span></div>
-        <div className="platform-selection">
-          {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-group-label">{t(group.label)}</div><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} aria-pressed={selected} className={`platform-option ${selected ? "selected" : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
-        </div>
-        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> {t("Your source is already reviewed. Review generated drafts before export.")}</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
-        {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
-      </section>
     </>
   );
 }
