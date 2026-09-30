@@ -18,10 +18,11 @@ export async function fetchPostizIntegrations(): Promise<{ configured: boolean; 
     return { configured: false, accounts: [] };
   }
   try {
-    const response = await fetch(`${config.apiUrl}/public/v1/integrations`, {
+    const base = config.apiUrl.endsWith("/api") ? config.apiUrl : `${config.apiUrl}/api`;
+    const response = await fetch(`${base}/public/v1/integrations`, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: config.apiKey,
         "x-api-key": config.apiKey
       },
       signal: AbortSignal.timeout(10000)
@@ -91,11 +92,12 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
   };
 
   try {
-    const response = await fetch(`${config.apiUrl}/public/v1/posts`, {
+    const base = config.apiUrl.endsWith("/api") ? config.apiUrl : `${config.apiUrl}/api`;
+    const response = await fetch(`${base}/public/v1/posts`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: config.apiKey,
         "x-api-key": config.apiKey
       },
       body: JSON.stringify(payload),
