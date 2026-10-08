@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
+import { signIn } from './_login.mjs';
 const source = 'This is a fictional review test. The company opens at 09:00. '.repeat(10);
 const analysis = { summaryShort: 'Review test', summaryLong: 'Fictional test data.', keyTerms: ['Test'], riskFlags: ['Review the source.'], facts: Array.from({length:58}, (_,i)=>({id:`F${String(i+1).padStart(3,'0')}`,type:'claim',text:`Test fact ${i+1}`,sourceExcerpt:i===57?'Invented quotation':'The company opens at 09:00.',sourceLocation:'Test paragraph',verified:false,usableOnSocial:true,riskLevel:'low'})) };
 const browser = await chromium.launch();
+let account;
 try {
  const page=await browser.newPage(); const errors=[]; const requests=[];
  page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/api/analyze',r=>r.fulfill({json:analysis}));
  await page.route('**/api/generate',async r=>{requests.push(r.request().postDataJSON());await r.fulfill({json:{assets:[],usedFallback:false}});});
  await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
- await page.goto(process.env.TEST_BASE_URL || 'http://localhost:3002');
- await page.locator('.locale-switcher select').selectOption('en');
+ account = await signIn(page, process.env.TEST_BASE_URL || 'http://localhost:3002');
+ await page.locator('.segmented-tab').nth(1).click();
  await page.locator('.source-textarea').fill(source);
  await page.getByRole('button',{name:'Generate social drafts',exact:true}).click();
  await page.getByRole('button',{name:'Regenerate',exact:true}).waitFor();
@@ -43,4 +45,4 @@ try {
  assert((await page.locator('.source-textarea').inputValue()).includes('Updated source.'));
  assert.deepEqual(errors,[]);
  console.log('PASS: reviewed article generates directly, unmatched evidence excluded, optional reference controls preserve editing safeguards, failure preserves source without generating. No paid AI calls.');
-}finally{await browser.close();}
+}finally{if (account) await account.cleanup();await browser.close();}

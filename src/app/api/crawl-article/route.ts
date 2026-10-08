@@ -5,6 +5,7 @@ import path from "node:path";
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
 import { NextResponse } from "next/server";
+import { currentUser, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -72,6 +73,8 @@ function runCrawler(url: string, output: string) {
 }
 
 export async function POST(request: Request) {
+  const auth = await currentUser();
+  if (!auth) return unauthorized();
   let workdir: string | undefined;
   try {
     const body = await request.json() as { url?: string };

@@ -30,6 +30,28 @@ bash scripts/deploy-lan.sh          # 等价：npm run deploy:lan
 
 手动兜底步骤（脚本不可用时）：停服 → 同步代码（排除 `.env.local`、`node_modules`、`.next`、`.git`）→ 以 polaris-studio 用户执行 `npm ci`、`npm run build` → 启动服务。不要上传开发机的 node_modules 或 .next。
 
+## 账号与登录
+
+应用不再匿名开放：未登录访问 `/` 会 307 跳转到 `/login`，九个 API 路由全部返回 401。
+
+**首次上线需要管理员手工做两步**——`init.sql` 只在全新数据卷上自动执行，重启 Compose 不会重跑，已有数据卷必须显式迁移：
+
+```sh
+# 1. 建 users / sessions 两张表并补授权（容器内已注入 MYSQL_ROOT_PASSWORD）
+docker exec -i polaris-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' \
+  < /opt/polaris-content-studio/app/deploy/mysql/init.sql
+
+# 2. 建第一个账号；之后在页面「设置 → 成员」里加人、改密码、停用
+cd /opt/polaris-content-studio/app && POLARIS_PASSWORD='临时密码' \
+  node scripts/create-user.mjs <用户名> "<显示名>"
+```
+
+漏掉第 1 步，登录接口会返回 503。
+
+健康检查探测的是 **`/login`**（未登录时返回 200）；`/` 现在返回 307，不能用它做健康检查。
+
+**残余风险**：内网是纯 HTTP，密码在局域网内**明文传输**，同网段嗅探可截获（UFW 已限制到 `192.168.0.0/16`，但不足以消除该风险）。彻底解决需在前面加一层 TLS 反向代理（如 Caddy）。另外登录不限制单账号消耗共享 AI 额度的速度。
+
 ## 网络与代理
 
 - 服务器**直连部分海外站点**（含 wikifxtips.com 的 CDN）会在 TLS 握手阶段被重置，相关流量需经服务器本机 v2rayA 代理 `127.0.0.1:20171` 出网。
@@ -38,7 +60,7 @@ bash scripts/deploy-lan.sh          # 等价：npm run deploy:lan
 
 ## 验收状态
 
-页面 HTTP 200；中越英切换、语言偏好保存、文章配置对齐的浏览器回归已通过。生产构建成功。AI 调用经代理出网（journal 可见成功的计费调用）。
+未登录访问 `/login` 返回 HTTP 200，访问 `/` 返回 307；中越英切换、语言偏好保存、文章配置对齐的浏览器回归已通过。生产构建成功。AI 调用经代理出网（journal 可见成功的计费调用）。
 
 ## 运维
 

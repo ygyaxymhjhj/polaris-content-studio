@@ -21,6 +21,7 @@ import {
   Link2,
   Linkedin,
   Loader2,
+  LogOut,
   MoreHorizontal,
   Play,
   Plus,
@@ -32,17 +33,22 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
+  UserPlus,
+  Users,
   Wand2,
   X,
   Zap
 } from "lucide-react";
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocaleContext, translate, UiLanguage, useTranslation } from "@/lib/i18n";
+// Type-only: @/lib/auth pulls in mysql2 and next/headers, which must not reach the client bundle.
+import type { User } from "@/lib/auth";
 import JSZip from "jszip";
 import fixedArticle from "@/data/test-article.json";
 import { validateBrowserArticle } from "@/lib/browser-import";
 import { normalizeAnalysis } from "@/lib/normalize-analysis";
 import ProjectStorage from "@/components/ProjectStorage";
+import MembersPanel from "@/components/MembersPanel";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
@@ -67,6 +73,9 @@ import {
 const sampleArticle = fixedArticle.text;
 
 type View = "workspace" | "facts" | "assets" | "export" | "settings";
+
+/** "Alex Lee" -> "AL", a single CJK name -> its first character. */
+const initials = (name: string) => name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "workspace", label: "Workspace", icon: LayoutDashboard },
@@ -127,8 +136,28 @@ async function readJson<T>(response: Response): Promise<T> {
   }
 }
 
-export default function ContentStudio() {
+/** One row of the publish audit as returned by GET /api/social/publishes. */
+interface PublishHistoryEntry {
+  id: string;
+  accountName: string;
+  publishedByName: string;
+  publishedUrl: string | null;
+  scheduledAt: string | null;
+  status: "published" | "failed";
+  error: string | null;
+  createdAt: string;
+}
+
+export default function ContentStudio({ user, claimedProjects }: { user: User; claimedProjects: number }) {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
+  // Set by the sign-in redirect when this browser's pre-account projects were adopted into the account.
+  const announcedClaim = useRef(false);
+  useEffect(() => {
+    if (claimedProjects > 0 && !announcedClaim.current) {
+      announcedClaim.current = true;
+      notify(translate(uiLanguage, "Projects saved in this browser before sign-in are now in your account."));
+    }
+  }, [claimedProjects, uiLanguage]);
   useEffect(() => {
     try {
       const saved = localStorage.getItem("polaris-ui-language");
@@ -173,8 +202,13 @@ export default function ContentStudio() {
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [socialAccounts, setSocialAccounts] = useState<SocialAccount[]>([]);
   const [postizConfigured, setPostizConfigured] = useState<boolean>(false);
+  const [postizUiUrl, setPostizUiUrl] = useState<string>("");
   const [drawerMode, setDrawerMode] = useState<"edit" | "preview">("edit");
   const [publishModalAsset, setPublishModalAsset] = useState<ContentAsset | null>(null);
+  const [publishHistory, setPublishHistory] = useState<PublishHistoryEntry[]>([]);
+  // Set by ProjectStorage once the current project has a saved id; rides along on publish calls
+  // so the audit can tie each post back to its content project.
+  const [currentProjectId, setCurrentProjectId] = useState<string>("");
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [scheduleTime, setScheduleTime] = useState<string>("");
   const [publishing, setPublishing] = useState<boolean>(false);
@@ -188,13 +222,14 @@ export default function ContentStudio() {
   const loadChannels = useCallback(async () => {
     try {
       const res = await fetch("/api/social/channels");
-      const data = await readJson<{ configured?: boolean; accounts?: SocialAccount[] }>(res);
+      const data = await readJson<{ configured?: boolean; accounts?: SocialAccount[]; uiUrl?: string | null }>(res);
       if (data.configured) setPostizConfigured(true);
-      if (Array.isArray(data.accounts)) {
-        setSocialAccounts(data.accounts);
-        if (data.accounts.length > 0) {
-          setSelectedAccountId(data.accounts[0].id);
-        }
+      if (data.uiUrl) setPostizUiUrl(data.uiUrl);
+      const accounts = Array.isArray(data.accounts) ? data.accounts : null;
+      if (accounts) {
+        setSocialAccounts(accounts);
+        // Keep the member's current pick across refreshes; only fall back to the first account when it vanished.
+        setSelectedAccountId(current => (current && accounts.some(account => account.id === current) ? current : accounts[0]?.id || ""));
       }
     } catch { /* Silent on offline. */ }
   }, []);
@@ -202,6 +237,26 @@ export default function ContentStudio() {
   useEffect(() => {
     void loadChannels();
   }, [loadChannels]);
+
+  // Channels are connected in Postiz, outside this app; refresh when the publish dialog opens so a
+  // channel added moments ago shows up without a full page reload.
+  useEffect(() => {
+    if (publishModalAsset) void loadChannels();
+  }, [publishModalAsset, loadChannels]);
+
+  const loadPublishHistory = useCallback(async (assetId: string) => {
+    setPublishHistory([]);
+    try {
+      const res = await fetch(`/api/social/publishes?assetId=${encodeURIComponent(assetId)}`);
+      if (!res.ok) return;
+      const data = await readJson<{ publishes?: PublishHistoryEntry[] }>(res);
+      if (Array.isArray(data.publishes)) setPublishHistory(data.publishes);
+    } catch { /* History is informational; the publish flow does not depend on it. */ }
+  }, []);
+
+  useEffect(() => {
+    if (publishModalAsset) void loadPublishHistory(publishModalAsset.id);
+  }, [publishModalAsset, loadPublishHistory]);
 
   useEffect(() => {
     document.documentElement.dataset.polarisArticleImport = "v1";
@@ -260,6 +315,11 @@ export default function ContentStudio() {
   function notify(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 3200);
+  }
+
+  function signOut() {
+    // Navigate regardless of the response: the cookie is cleared client-side either way.
+    void fetch("/api/auth/logout", { method: "POST" }).finally(() => location.assign("/login"));
   }
 
   function updateConfig(field: keyof ProjectConfig, value: string) {
@@ -726,7 +786,10 @@ export default function ContentStudio() {
           integrationId: accountId,
           content: asset.content,
           imageUrl: asset.imageUrl || config.imageUrl,
-          publishAt: postAt || undefined
+          publishAt: postAt || undefined,
+          projectId: currentProjectId || undefined,
+          platform: asset.platform,
+          accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId
         })
       });
       const data = await readJson<{ success?: boolean; error?: string; publishedUrl?: string; publishedAt?: string }>(res);
@@ -870,7 +933,7 @@ export default function ContentStudio() {
 
         <div className="sidebar-bottom">
           <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><Settings2 size={17} /><span>{t("Settings")}</span></button>
-          <div className="user-row"><div className="user-avatar">AL</div><div><strong>Alex Lee</strong><small>{t("Content operator")}</small></div><MoreHorizontal size={16} /></div>
+          <div className="user-row"><div className="user-avatar">{initials(user.displayName)}</div><div><strong>{user.displayName}</strong><small>{user.username}</small></div><button className="icon-button" title={t("Sign out")} aria-label={t("Sign out")} onClick={signOut}><LogOut size={15} /></button></div>
         </div>
       </aside>
 
@@ -887,7 +950,7 @@ export default function ContentStudio() {
         </header>
 
         <div className="content-wrap">
-          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} />
+          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={setCurrentProjectId} />
           {view === "workspace" && <>
             {(sourceError || sourcePending) && <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>}
             <a className="secondary-button" href="/downloads/polaris-article-import.zip" download><Download size={15} /> {t("Download browser extension")}</a>
@@ -1087,10 +1150,27 @@ export default function ContentStudio() {
             </div>
             <div className="dialog-body">
               <label className="field-label">
-                选择目标社媒账号
+                <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                  选择目标社媒账号
+                  <span style={{ display: "inline-flex", gap: 6 }}>
+                    {postizUiUrl && (
+                      <a className="small-button" href={postizUiUrl} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 4, textDecoration: "none" }} title="在 Postiz 中添加并授权新账号">
+                        <Plus size={13} /> 连接新账号
+                      </a>
+                    )}
+                    <button type="button" className="small-button" onClick={() => void loadChannels()} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <RefreshCw size={13} /> 刷新账号
+                    </button>
+                  </span>
+                </span>
                 {!socialAccounts.length ? (
                   <div className="info-banner" style={{ marginTop: 6 }}>
-                    <span>未获取到 Postiz 账号。请检查服务端 <code>POSTIZ_API_URL</code> 和 <code>POSTIZ_API_KEY</code> 配置。</span>
+                    <span>
+                      {postizConfigured
+                        ? "未获取到已授权账号。点击「连接新账号」在 Postiz 完成平台授权后，再点「刷新账号」。"
+                        : <>未获取到 Postiz 账号。请检查服务端 <code>POSTIZ_API_URL</code> 和 <code>POSTIZ_API_KEY</code> 配置。</>}
+                      {postizUiUrl && <> 也可以 <a href={postizUiUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>打开 Postiz 授权新账号</a>。</>}
+                    </span>
                   </div>
                 ) : (
                   <div className="account-select-grid" style={{ marginTop: 6 }}>
@@ -1137,6 +1217,30 @@ export default function ContentStudio() {
                 <label className="field-label">
                   排期时间
                   <input type="datetime-local" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} style={{ marginTop: 6 }} />
+                </label>
+              )}
+
+              {publishHistory.length > 0 && (
+                <label className="field-label" style={{ marginTop: 10 }}>
+                  此素材的发布记录
+                  <div style={{ marginTop: 6, display: "grid", gap: 6, fontSize: 12 }}>
+                    {publishHistory.map((entry) => (
+                      <div key={entry.id} style={{ border: "1px solid #e4e4e7", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                          <strong>{entry.accountName}</strong>
+                          <span style={{ color: entry.status === "published" ? "#166534" : "#b91c1c" }}>
+                            {entry.status === "published" ? "已发布" : "失败"}
+                          </span>
+                        </div>
+                        <div style={{ color: "#71717a" }}>
+                          {new Date(entry.createdAt).toLocaleString()} · {entry.publishedByName}
+                          {entry.scheduledAt ? ` · 排期 ${new Date(entry.scheduledAt).toLocaleString()}` : ""}
+                        </div>
+                        {entry.publishedUrl && <a href={entry.publishedUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>查看已发布内容</a>}
+                        {entry.error && <div style={{ color: "#b91c1c" }}>{entry.error}</div>}
+                      </div>
+                    ))}
+                  </div>
                 </label>
               )}
             </div>
@@ -1392,5 +1496,5 @@ function ExportView({ assets, approvedCount, onExport, onBatchPublish, loading, 
 
 function SettingsView({ postizConfigured, socialAccounts, onRefreshAccounts }: { postizConfigured: boolean; socialAccounts: SocialAccount[]; onRefreshAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>已托管账号 ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onRefreshAccounts}><RefreshCw size={13} /> 刷新账号列表</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div></div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>已托管账号 ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onRefreshAccounts}><RefreshCw size={13} /> 刷新账号列表</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div><MembersPanel /></div></>;
 }

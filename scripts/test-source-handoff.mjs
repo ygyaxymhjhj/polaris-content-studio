@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
+import { signIn } from './_login.mjs';
 const browser = await chromium.launch();
+let account;
 try {
   const page = await browser.newPage();
   let analyzeRequests = 0;
   page.on('request', r => { if (r.url().includes('/api/analyze')) analyzeRequests++; });
   await page.route('**/api/fetch-article', r => r.fulfill({ status: 424, json: { code: 'SOURCE_ACCESS_DENIED', error: 'Denied' } }));
-  await page.goto(process.env.TEST_BASE_URL || 'http://localhost:3002');
-  await page.locator('.locale-switcher select').selectOption('en');
+  account = await signIn(page, process.env.TEST_BASE_URL || 'http://localhost:3002');
   const oldText = await page.locator('.source-textarea').inputValue();
   await page.locator('.url-input-row input').fill('https://example.com/new-article');
   await page.getByRole('button', { name: 'Fetch article', exact: true }).click();
@@ -29,4 +30,4 @@ try {
   await page.waitForFunction(text => document.querySelector('.source-textarea')?.value === text, oldText);
   assert.equal(await page.locator('.info-banner[role="alert"]').count(), 0);
   console.log('PASS: access-denied message, stale source guard, JSON export and real JSON upload round-trip.');
-} finally { await browser.close(); }
+} finally { if (account) await account.cleanup(); await browser.close(); }

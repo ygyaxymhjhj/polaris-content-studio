@@ -12,6 +12,20 @@ export function getPostizConfig(): PostizConfig | null {
   return { apiUrl, apiKey };
 }
 
+/**
+ * Browser-reachable Postiz base URL for the "connect a new channel" hand-off.
+ * The server may reach Postiz via localhost while members browse over the LAN
+ * address, so POSTIZ_UI_URL wins when set; otherwise POSTIZ_API_URL with an
+ * "/api" suffix stripped is the best guess.
+ */
+export function getPostizUiUrl(): string | null {
+  const explicit = (process.env.POSTIZ_UI_URL || "").trim().replace(/\/+$/, "");
+  if (explicit) return explicit;
+  const config = getPostizConfig();
+  if (!config) return null;
+  return config.apiUrl.replace(/\/api\/?$/, "") || null;
+}
+
 export async function fetchPostizIntegrations(): Promise<{ configured: boolean; accounts: SocialAccount[]; error?: string }> {
   const config = getPostizConfig();
   if (!config) {

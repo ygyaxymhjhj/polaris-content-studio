@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { signIn } from "./_login.mjs";
 
 // Run against an existing dev server: node scripts/test-ui-languages.mjs
 const browser = await chromium.launch({ headless: true });
+let account;
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
-  await page.goto(process.env.TEST_BASE_URL || "http://localhost:3000");
+  account = await signIn(page, process.env.TEST_BASE_URL || "http://localhost:3000");
   const language = page.locator('.locale-switcher select');
   await language.selectOption("zh");
   await page.getByRole("button", { name: "生成社媒草稿", exact: true }).waitFor();
@@ -33,5 +35,6 @@ try {
   assert.deepEqual(errors, []);
   console.log("PASS: Chinese/Vietnamese/English UI, persistence, independent output language, source preservation, settings and mobile switcher.");
 } finally {
+  if (account) await account.cleanup();
   await browser.close();
 }

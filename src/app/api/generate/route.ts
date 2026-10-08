@@ -1,8 +1,11 @@
 import { fallbackAssets, generateWithAI } from "@/lib/ai";
 import { FactItem, PLATFORM_META, Platform, ProjectConfig, SourceAnalysis } from "@/lib/types";
 import { NextResponse } from "next/server";
+import { currentUser, unauthorized } from "@/lib/auth";
 
 export async function POST(request: Request) {
+  const auth = await currentUser();
+  if (!auth) return unauthorized();
   let body: { config: ProjectConfig; analysis: SourceAnalysis; platforms: Platform[] } | null = null;
   try {
     body = await request.json() as { config: ProjectConfig; analysis: SourceAnalysis; platforms: Platform[] };

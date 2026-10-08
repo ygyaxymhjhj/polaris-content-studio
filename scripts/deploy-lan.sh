@@ -16,7 +16,8 @@ REMOTE_ROOT=/opt/polaris-content-studio
 APP_DIR="$REMOTE_ROOT/app"
 SERVICE=polaris-studio
 RUN_USER=polaris-studio
-HEALTH_URL=http://192.168.220.109:13300/
+# /login, not /: the root route redirects anonymous callers, so it answers 307 rather than 200.
+HEALTH_URL=http://192.168.220.109:13300/login
 
 REF=HEAD
 USE_WORKTREE=0

@@ -1,7 +1,10 @@
 import mammoth from "mammoth";
 import { NextResponse } from "next/server";
+import { currentUser, unauthorized } from "@/lib/auth";
 
 export async function POST(request: Request) {
+  const auth = await currentUser();
+  if (!auth) return unauthorized();
   try {
     const formData = await request.formData();
     const file = formData.get("file");

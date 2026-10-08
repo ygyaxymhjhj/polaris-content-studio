@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 import { collectArticle, CollectionError } from "@/lib/article-collector";
 import { ACW_BROWSER_UA, fetchWithAcwBypass, getCachedAcwCookie, isAcwChallengePage } from "@/lib/acw-challenge";
+import { currentUser, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -127,6 +128,8 @@ async function fetchPublicPage(initialUrl: URL, options: { cookie?: string; user
 }
 
 export async function POST(request: Request) {
+  const auth = await currentUser();
+  if (!auth) return unauthorized();
   try {
     const body = await request.json() as { url?: string };
     const rawUrl = String(body.url || "").trim();

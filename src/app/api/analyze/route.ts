@@ -3,11 +3,14 @@ import { analysisChunks, mergeChunkAnalyses, normalizeAnalysis } from "@/lib/nor
 import type { ChunkFailure } from "@/lib/normalize-analysis";
 import { NextResponse } from "next/server";
 import type { SourceAnalysis } from "@/lib/types";
+import { currentUser, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
+  const auth = await currentUser();
+  if (!auth) return unauthorized();
   try {
     const body = await request.json();
     const article = typeof body.article === "string" ? body.article.trim() : "";

@@ -3,14 +3,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { chromium } from 'playwright';
+import { signIn } from './_login.mjs';
 
 const extension = path.resolve('browser-extension');
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'polaris-extension-test-'));
 const context = await chromium.launchPersistentContext(profile, { channel: 'chromium', headless: true, args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
+let account;
 try {
   const app = await context.newPage();
-  await app.goto(process.env.TEST_BASE_URL || 'http://localhost:3002/');
-  await app.locator('.locale-switcher select').selectOption('en');
+  account = await signIn(app, process.env.TEST_BASE_URL || 'http://localhost:3002');
+  // The source panel opens on the URL tab; the paste textarea only exists on the text tab.
+  await app.locator('.segmented-tab').nth(1).click();
   await app.waitForFunction(() => document.documentElement.dataset.polarisArticleImport === 'v1');
   const oldText = await app.locator('.source-textarea').inputValue();
   const reader = await context.newPage();
@@ -46,11 +49,13 @@ try {
   assert.equal((await send(article)).ok, true);
   await dialog.getByRole('button', { name: 'Confirm article import', exact: true }).click();
   assert.equal(await app.locator('.source-textarea').inputValue(), article.text);
+  await app.locator('.segmented-tab').nth(0).click();
   assert.equal(await app.locator('.url-input-row input').inputValue(), article.sourceUrl);
   await reader.evaluate(() => { document.title = 'Access Denied'; });
   assert(await reader.evaluate(() => { try { globalThis.polarisExtractArticle(); return false; } catch { return true; } }));
   console.log('PASS: DOM extraction on a synthetic article, hidden/form exclusion, installed extension bridge, invalid URL rejection, cancel/confirm import and access-denied detection. No live website or paid AI request.');
 } finally {
+  if (account) await account.cleanup();
   await context.close();
   await fs.rm(profile, { recursive: true, force: true });
 }

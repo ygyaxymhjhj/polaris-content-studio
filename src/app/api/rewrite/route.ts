@@ -1,10 +1,13 @@
 import { rewriteAsset } from "@/lib/ai";
 import { ContentAsset, MAX_TURNS, PLATFORM_META, ProjectConfig, RewriteMessage, SourceAnalysis } from "@/lib/types";
 import { NextResponse } from "next/server";
+import { currentUser, unauthorized } from "@/lib/auth";
 
 const MAX_CANDIDATES = 3;
 
 export async function POST(request: Request) {
+  const auth = await currentUser();
+  if (!auth) return unauthorized();
   try {
     const body = await request.json() as {
       config?: ProjectConfig;

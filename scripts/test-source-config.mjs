@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { signIn } from "./_login.mjs";
 
 const browser = await chromium.launch({ headless: true });
+let account;
 try {
   const page = await browser.newPage();
   const duplicateKeyErrors = [];
@@ -11,8 +13,7 @@ try {
   await page.route("**/api/analyze", route => route.fulfill({ json: { summaryShort: "Test", summaryLong: "Test summary", keyTerms: ['Forex', 'Forex'], riskFlags: ['high', 'high'], facts: [{ id: "F001", text: "Test fact", type: "claim", riskLevel: "low", sourceExcerpt: "Thị trường ngoại hối hôm nay.", sourceLocation: "p1", verified: false, usableOnSocial: true }] } }));
   await page.route('**/api/generate', route => route.fulfill({ json: { assets: [], usedFallback: false } }));
   await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
-  await page.goto(process.env.TEST_BASE_URL || "http://localhost:3000");
-  await page.locator('.locale-switcher select').selectOption("en");
+  account = await signIn(page, process.env.TEST_BASE_URL || "http://localhost:3000");
   const field = name => page.getByLabel(name, { exact: true });
   const url = page.locator('.url-input-row input');
   await url.fill(article.sourceUrl);
@@ -54,4 +55,4 @@ try {
   await page.locator('.source-textarea').fill('另一篇正文');
   assert.equal(await page.locator('.input-grid input').last().inputValue(), '');
   console.log('PASS: source alignment, Vietnamese/Chinese detection, category hints, updated links, stale analysis reset, preserved manual overrides and pasted source.');
-} finally { await browser.close(); }
+} finally { if (account) await account.cleanup(); await browser.close(); }

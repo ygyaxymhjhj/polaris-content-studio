@@ -26,7 +26,9 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .6; }
 
 .app-shell { display: flex; min-height: 100vh; background: var(--paper); }
-.sidebar { width: 252px; min-height: 100vh; flex: 0 0 252px; padding: 28px 15px 18px; color: #eeedf3; background: var(--navy); display: flex; flex-direction: column; }
+/* Viewport-height and sticky: as a stretched flex item the rail grew with the page content, which
+   pushed .sidebar-bottom (Settings, sign out) below the fold on long views like the workspace. */
+.sidebar { width: 252px; height: 100vh; position: sticky; top: 0; overflow-y: auto; flex: 0 0 252px; padding: 28px 15px 18px; color: #eeedf3; background: var(--navy); display: flex; flex-direction: column; }
 .brand-lockup { display: flex; align-items: center; gap: 11px; padding: 0 13px 35px; }
 .brand-mark { width: 31px; height: 31px; border: 1px solid #777184; border-radius: 9px; display: grid; place-items: center; color: #ddcaff; font-size: 16px; background: linear-gradient(145deg, #7061bb, #2e3040); box-shadow: 0 5px 20px #0003; }
 .brand-name { font: 700 13px/1 "Manrope", sans-serif; letter-spacing: .19em; }
@@ -348,3 +350,33 @@ html[lang="vi"] .topbar .system-status { display: none; }
 
 @media (max-width: 1050px) { .sidebar { width: 218px; flex-basis: 218px; }.topbar, .content-wrap { padding-left: 28px; padding-right: 28px; }.source-grid, .facts-layout { grid-template-columns: 1fr; }.facts-aside { display: grid; grid-template-columns: 1fr 1fr; }.next-card { margin-top: 0; }.assets-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.hero-orbit { margin-right: 0; } }
 @media (max-width: 760px) { .url-import { align-items: flex-start; }.url-import-label { display: block; }.url-import-label span { display: block; margin-top: 3px; }.url-input-row { display: block; }.url-input-row input { width: 100%; }.url-input-row .secondary-button { width: 100%; margin-top: 7px; }.sidebar { width: 65px; flex-basis: 65px; padding: 22px 9px; }.brand-lockup { justify-content: center; padding: 0 0 30px; }.brand-lockup > div:last-child, .workspace-label, .workspace-switcher > *:not(.workspace-avatar), .nav-item span, .sidebar-project, .sidebar-bottom .nav-item span, .user-row > div:not(.user-avatar), .user-row > svg { display: none; }.workspace-switcher { justify-content: center; padding: 8px; }.workspace-avatar { display: grid !important; }.nav-item { justify-content: center; padding: 11px 8px; }.nav-count { display: block !important; position: absolute; margin: -22px -25px 0 0; min-width: 15px; padding: 1px 3px; font-size: 8px; }.sidebar-bottom .nav-item { display: flex; }.user-row { justify-content: center; padding: 18px 0 0; }.topbar { height: 60px; padding: 0 17px; }.system-status, .help-button, .topbar-actions .icon-button:first-of-type { display: none; }.content-wrap { padding: 30px 17px 50px; }.page-heading, .compact-heading { display: block; }.page-heading h1 { font-size: 35px; }.hero-heading { min-height: 0; }.hero-orbit { display: none; }.metric-row { grid-template-columns: 1fr 1fr; margin-top: 27px; }.metric-card { min-height: 68px; padding: 11px; }.source-panel, .distribution-panel { padding: 20px 16px; }.source-grid, .platform-selection, .facts-layout, .facts-aside, .settings-grid { grid-template-columns: 1fr; }.section-heading { display: block; }.section-heading > .text-button, .selection-count { display: inline-flex; margin: 14px 0 0 42px; }.panel-actions { display: block; }.action-note { margin-bottom: 14px; }.primary-button.large { width: 100%; }.assets-heading .heading-actions { margin-top: 17px; }.assets-heading .heading-actions button { flex: 1; }.asset-toolbar { display: block; }.filter-button { margin-top: 12px; }.assets-grid { grid-template-columns: 1fr; }.export-summary { display: block; padding: 20px; }.export-stats { justify-content: space-between; margin: 24px 0 0; }.fact-location { display: none; }.fact-row-top { flex-wrap: wrap; }.fact-progress { margin-top: 20px; }.drawer-footer { bottom: -20px; margin-bottom: -20px; padding-left: 20px; padding-right: 20px; }.asset-drawer { padding: 20px; }.drawer-footer { margin-left: -20px; margin-right: -20px; } }
+
+/* Sign-in screen: the only view rendered before an account is known. */
+.login-shell { min-height: 100vh; display: grid; place-items: center; padding: 32px 18px; background: var(--paper); }
+.login-panel { width: 100%; max-width: 372px; border: 1px solid var(--line); border-radius: 14px; padding: 30px 30px 24px; background: var(--white); box-shadow: 0 18px 44px #16151b0f; }
+.login-brand { padding: 0 0 22px; }
+.login-brand .brand-product { color: var(--muted); }
+.login-panel h1 { margin: 0 0 7px; font: 800 27px/1.1 "Manrope", sans-serif; letter-spacing: -.045em; }
+.login-intro { margin: 0 0 22px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.login-panel .field-label { margin-bottom: 14px; }
+.login-error { margin: 0 0 14px; border: 1px solid #f3d3d2; border-radius: 7px; padding: 9px 11px; color: #b42318; background: #fef4f4; font-size: 11px; }
+.login-language { justify-content: center; margin-top: 18px; color: var(--muted); }
+
+/* Members panel, a full-width card inside the Settings grid. */
+.settings-card-wide { grid-column: 1 / -1; min-height: 0; }
+.settings-card p.members-intro { min-height: 0; margin-bottom: 16px; }
+.member-list { display: flex; flex-direction: column; }
+.member-list > div:first-child .member-row { border-top: 0; }
+.member-row { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--line); padding: 11px 0; }
+.member-identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.member-identity strong { font-size: 12px; font-weight: 600; }
+.member-identity small { color: var(--muted); font: 10px "DM Mono", monospace; }
+.member-status { flex: 0 0 auto; border-radius: 9px; padding: 3px 8px; font: 9px "DM Mono", monospace; text-transform: uppercase; }
+.member-status.on { color: #1c7f5d; background: #e4f5ee; }
+.member-status.off { color: #9a5a58; background: #fbeceb; }
+.member-actions { flex: 0 0 auto; display: flex; gap: 7px; }
+.member-reset { display: flex; gap: 7px; padding: 0 0 11px; }
+.member-reset input, .member-create input { min-width: 0; flex: 1; height: 33px; border: 1px solid var(--line); border-radius: 6px; outline: 0; padding: 0 9px; color: var(--ink); background: #fff; font-size: 11px; }
+.member-create { display: flex; flex-wrap: wrap; gap: 7px; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 14px; }
+.member-create input { flex: 1 1 150px; }
+.members-notice { margin: 12px 0 0; color: #1c7f5d; font-size: 11px; }

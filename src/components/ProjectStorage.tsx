@@ -9,13 +9,16 @@ function uuid() {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 const lastKey = "polaris-last-project";
-export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot: ProjectSnapshot; busy: boolean; onRestore: (snapshot: ProjectSnapshot) => void }) {
+export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange }: { snapshot: ProjectSnapshot; busy: boolean; onRestore: (snapshot: ProjectSnapshot) => void; onProjectChange?: (projectId: string) => void }) {
   const t = useTranslation();
   const serialized = JSON.stringify(snapshot);
   const latest = useRef(serialized); latest.current = serialized;
   const restore = useRef(onRestore); restore.current = onRestore;
   const saved = useRef(serialized);
   const project = useRef({ id: "", version: 0 });
+  // Mirror of project.current.id: refs do not re-render, so the parent learns about id changes
+  // (new draft, saved id, restored project, saved-as-copy) through this piece of state.
+  const [projectId, setProjectId] = useState("");
   const flight = useRef<Promise<boolean> | null>(null);
   const enabled = useRef(false);
   const conflict = useRef(false);
@@ -28,6 +31,14 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
   const [working, setWorking] = useState(false);
   const [, refreshStatus] = useState(0);
   const remember = (id: string) => { try { localStorage.setItem(lastKey, id); } catch { /* History still works without this preference. */ } };
+  const applyProject = (id: string, version: number) => {
+    project.current = { id, version };
+    setProjectId(id);
+  };
+
+  useEffect(() => {
+    if (projectId && onProjectChange) onProjectChange(projectId);
+  }, [projectId, onProjectChange]);
   const refreshHistory = useCallback(async () => {
     const response = await fetch("/api/projects", { cache: "no-store" }); const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Storage unavailable");
@@ -43,7 +54,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
         if (!response.ok) throw new Error(data.error || "Storage unavailable");
         if (!data.enabled) { setStatus("Database is not configured"); return; }
         if (controller.signal.aborted) return;
-        setProjects(data.projects); project.current = { id: uuid(), version: 0 };
+        setProjects(data.projects); applyProject(uuid(), 0);
         let last = ""; try { last = localStorage.getItem(lastKey) || ""; } catch { /* Optional preference. */ }
         if (last && data.projects.some((p: SavedProject) => p.id === last)) {
           const response = await fetch(`/api/projects?id=${encodeURIComponent(last)}`, { signal: controller.signal, cache: "no-store" }); const item = await response.json();
@@ -52,7 +63,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
           if (controller.signal.aborted) return;
           // Never replace edits entered while the storage connection was being established.
           if (latest.current === initial) {
-            project.current = { id: item.id, version: item.version }; saved.current = JSON.stringify(checked); latest.current = saved.current;
+            applyProject(item.id, item.version); saved.current = JSON.stringify(checked); latest.current = saved.current;
             restore.current(checked); setChoice(item.id);
           }
         }
@@ -76,7 +87,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
           const response = await fetch("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...current, snapshot: JSON.parse(value) }) });
           const result = await response.json();
           if (!response.ok) { if (response.status === 409) conflict.current = true; throw new Error(result.error || "Save failed"); }
-          project.current = { id: result.id, version: result.version }; saved.current = value;
+          applyProject(result.id, result.version); saved.current = value;
           remember(result.id); setChoice(result.id);
         }
         setStatus("Saved to MySQL"); refreshStatus(v => v + 1);
@@ -112,7 +123,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
       if (!response.ok) throw new Error(item.error || "Unable to restore project");
       const checked = parseSnapshot(item.snapshot);
       if (latest.current !== before) throw new Error("The page changed while loading. Please try again.");
-      project.current = { id: item.id, version: item.version }; saved.current = JSON.stringify(checked); latest.current = saved.current; conflict.current = false;
+      applyProject(item.id, item.version); saved.current = JSON.stringify(checked); latest.current = saved.current; conflict.current = false;
       restore.current(checked); remember(item.id); setStatus("Saved to MySQL");
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to restore project"); }
     finally { switching.current = false; setWorking(false); }
@@ -121,7 +132,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
     if (working || busy) return;
     // A conflicted tab may save its work as a new project without overwriting the other tab.
     if (!conflict.current && latest.current !== saved.current && !await save()) return;
-    project.current = { id: uuid(), version: 0 }; conflict.current = false;
+    applyProject(uuid(), 0); conflict.current = false;
     await save(true);
   }
   const dirty = serialized !== saved.current;
@@ -135,7 +146,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore }: { snapshot
       <button className="small-button" disabled={!choice || working || busy} onClick={() => void loadProject()}>{t("Restore project")}</button>
       <button className="small-button" disabled={working} onClick={() => void refreshHistory().then(() => { enabled.current = true; if (!project.current.id) project.current.id = uuid(); setReady(true); setError(""); setStatus("Ready to save"); }).catch(e => setError(e.message))}>{t("Refresh history")}</button>
     </div>
-    <p>{t("Projects are isolated by browser cookie, not a user login. Save editor changes before closing. Wait for Saved to MySQL before refreshing; running AI jobs do not resume automatically.")}</p>
+    <p>{t("Projects are isolated by account, not by browser. Save editor changes before closing. Wait for Saved to MySQL before refreshing; running AI jobs do not resume automatically.")}</p>
     {error && <p role="alert" className="storage-error">{t(error)}</p>}
   </section>;
 }
