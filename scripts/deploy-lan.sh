@@ -64,7 +64,7 @@ echo "==> deploy $SHORT -> $SERVER:$APP_DIR"
 
 RSYNC_FLAGS=(-rlptz -c --delete
   --exclude '.git' --exclude '.env' --exclude '.env.local'
-  --exclude 'node_modules' --exclude '.next' --exclude '.DS_Store'
+  --exclude 'node_modules' --exclude '.next' --exclude '.next-dev' --exclude '.DS_Store'
   --exclude 'DEPLOYED_COMMIT' --exclude '.cursor' --exclude '.playwright-mcp'
   --exclude '*.tsbuildinfo')
 
@@ -90,7 +90,7 @@ cp -a "$APP_DIR/.env.local" "$BK/env-before" 2>/dev/null || true
 cp -a "$ROOT/runtime" "$BK/runtime" 2>/dev/null || true
 cp -a /etc/systemd/system/polaris-studio.service "$BK/" 2>/dev/null || true
 cp -a /etc/systemd/system/polaris-studio.service.d "$BK/" 2>/dev/null || true
-tar -C "$APP_DIR" --exclude=node_modules --exclude=.next --exclude=.env.local -czf "$BK/app-source.tgz" .
+tar -C "$APP_DIR" --exclude=node_modules --exclude=.next --exclude=.next-dev --exclude=.env.local -czf "$BK/app-source.tgz" .
 if [ "$WITH_DB" = 1 ]; then
   if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'polaris-mysql'; then
     bash "$APP_DIR/deploy/mysql/backup.sh" || echo "warn: database backup failed (continuing)"
