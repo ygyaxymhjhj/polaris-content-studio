@@ -380,3 +380,25 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .member-create { display: flex; flex-wrap: wrap; gap: 7px; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 14px; }
 .member-create input { flex: 1 1 150px; }
 .members-notice { margin: 12px 0 0; color: #1c7f5d; font-size: 11px; }
+
+/* Connect-accounts dialog: a status board over Postiz, which owns the actual platform authorisation. */
+.connect-dialog { max-width: 560px; }
+.provider-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.provider-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; border: 1px solid #e4e4e7; border-radius: 9px; padding: 11px 6px; background: #fff; text-align: center; }
+.provider-tile.connected { border-color: #c7d2fe; background: #f7f8ff; }
+.provider-icon { font: 700 17px/1 "Manrope", sans-serif; }
+.provider-tile strong { font-size: 11px; font-weight: 600; color: #27272a; }
+.provider-tile small { color: #a1a1aa; font: 9px "DM Mono", monospace; }
+.provider-tile.connected small { color: #5e4adf; }
+.connect-account-list { display: flex; flex-direction: column; gap: 6px; }
+.connect-account-row { display: flex; align-items: center; gap: 10px; border: 1px solid #e4e4e7; border-radius: 8px; padding: 9px 11px; background: #fff; }
+.connect-account-row.off { background: #fafafa; }
+.connect-account-mark { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; border-radius: 7px; color: #fff; font: 700 11px "Manrope", sans-serif; }
+.connect-account-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.connect-account-name strong { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connect-account-row.off .connect-account-name strong { color: #a1a1aa; }
+.connect-account-name small { color: #a1a1aa; font: 9px "DM Mono", monospace; text-transform: uppercase; }
+.account-state { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; border-radius: 9px; padding: 3px 8px; font: 9px "DM Mono", monospace; }
+.account-state.ok { color: #1c7f5d; background: #e4f5ee; }
+.account-state.warn { color: #9a5a58; background: #fbeceb; }
+@media (max-width: 560px) { .provider-grid { grid-template-columns: repeat(3, 1fr); } }

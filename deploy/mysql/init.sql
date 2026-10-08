@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
   username VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   display_name VARCHAR(128) NOT NULL,
+  role ENUM('admin','member') NOT NULL DEFAULT 'member',
   -- scrypt$N$r$p$<salt hex>$<hash hex>; parameters travel with the hash so they can be raised later.
   password_hash VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   disabled TINYINT(1) NOT NULL DEFAULT 0,

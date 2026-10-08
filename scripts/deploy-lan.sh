@@ -6,7 +6,6 @@
 #   scripts/deploy-lan.sh                # deploy current HEAD commit
 #   scripts/deploy-lan.sh --ref <sha>    # deploy a specific commit (also for rollback)
 #   scripts/deploy-lan.sh --worktree     # deploy the working tree as-is (includes uncommitted changes)
-#   scripts/deploy-lan.sh --no-build     # sync + install files only, skip npm ci / next build
 #   scripts/deploy-lan.sh --no-db        # skip the database backup step
 #   scripts/deploy-lan.sh --dry-run      # show what rsync would change, touch nothing
 set -euo pipefail
@@ -21,7 +20,6 @@ HEALTH_URL=http://192.168.220.109:13300/login
 
 REF=HEAD
 USE_WORKTREE=0
-DO_BUILD=1
 WITH_DB=1
 DRY_RUN=0
 
@@ -29,7 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="$2"; shift 2 ;;
     --worktree) USE_WORKTREE=1; shift ;;
-    --no-build) DO_BUILD=0; shift ;;
+    --no-build) echo "error: --no-build is unsafe; deployments must rebuild production artifacts before starting the service." >&2; exit 2 ;;
     --no-db) WITH_DB=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -116,22 +114,20 @@ systemctl daemon-reload
 echo "runtime files installed"
 REMOTE
 
-if [ "$DO_BUILD" = 1 ]; then
-  echo "==> 5/6 build (npm ci + next build)"
-  ssh "$SERVER" bash -s -- "$APP_DIR" "$RUN_USER" <<'REMOTE'
+echo "==> 5/6 build (npm ci + next build)"
+ssh "$SERVER" bash -s -- "$APP_DIR" "$RUN_USER" <<'REMOTE'
 set -euo pipefail
 APP_DIR=$1; RUN_USER=$2
 chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH && npm ci && NEXT_TELEMETRY_DISABLED=1 npm run build"
 REMOTE
-else
-  echo "==> 5/6 build skipped (--no-build)"
-fi
 
 echo "==> 6/6 record commit, start, verify"
 ssh "$SERVER" bash -s -- "$APP_DIR" "$RUN_USER" "$SERVICE" "$HEALTH_URL" "$COMMIT" <<'REMOTE'
 set -euo pipefail
 APP_DIR=$1; RUN_USER=$2; SERVICE=$3; HEALTH=$4; COMMIT=$5
+# Anonymous /login does not query users, so HTTP 200 alone cannot verify a role migration.
+runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH && node scripts/check-user-roles.mjs"
 printf '%s\n' "$COMMIT" > "$APP_DIR/DEPLOYED_COMMIT"
 chown "$RUN_USER:$RUN_USER" "$APP_DIR/DEPLOYED_COMMIT"
 systemctl start "$SERVICE"

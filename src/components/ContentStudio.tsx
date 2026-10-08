@@ -49,6 +49,7 @@ import { validateBrowserArticle } from "@/lib/browser-import";
 import { normalizeAnalysis } from "@/lib/normalize-analysis";
 import ProjectStorage from "@/components/ProjectStorage";
 import MembersPanel from "@/components/MembersPanel";
+import ConnectAccountsDialog from "@/components/ConnectAccountsDialog";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
@@ -203,6 +204,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const [socialAccounts, setSocialAccounts] = useState<SocialAccount[]>([]);
   const [postizConfigured, setPostizConfigured] = useState<boolean>(false);
   const [postizUiUrl, setPostizUiUrl] = useState<string>("");
+  const [connectOpen, setConnectOpen] = useState(false);
+  // Distinguishes "Postiz is unreachable" from "no accounts connected yet"; the connect dialog
+  // shows a different message for each, and swallowing the error made the two look identical.
+  const [channelsError, setChannelsError] = useState("");
   const [drawerMode, setDrawerMode] = useState<"edit" | "preview">("edit");
   const [publishModalAsset, setPublishModalAsset] = useState<ContentAsset | null>(null);
   const [publishHistory, setPublishHistory] = useState<PublishHistoryEntry[]>([]);
@@ -222,16 +227,19 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const loadChannels = useCallback(async () => {
     try {
       const res = await fetch("/api/social/channels");
-      const data = await readJson<{ configured?: boolean; accounts?: SocialAccount[]; uiUrl?: string | null }>(res);
+      const data = await readJson<{ configured?: boolean; accounts?: SocialAccount[]; uiUrl?: string | null; error?: string }>(res);
       if (data.configured) setPostizConfigured(true);
       if (data.uiUrl) setPostizUiUrl(data.uiUrl);
+      setChannelsError(data.error || "");
       const accounts = Array.isArray(data.accounts) ? data.accounts : null;
       if (accounts) {
         setSocialAccounts(accounts);
         // Keep the member's current pick across refreshes; only fall back to the first account when it vanished.
         setSelectedAccountId(current => (current && accounts.some(account => account.id === current) ? current : accounts[0]?.id || ""));
       }
-    } catch { /* Silent on offline. */ }
+    } catch (error) {
+      setChannelsError(error instanceof Error ? error.message : "Could not reach the server.");
+    }
   }, []);
 
   useEffect(() => {
@@ -984,7 +992,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onApprove={approveAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
           )}
           {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} onBatchPublish={batchPublish} loading={loading} socialAccountsCount={socialAccounts.length} />}
-          {view === "settings" && <SettingsView postizConfigured={postizConfigured} socialAccounts={socialAccounts} onRefreshAccounts={loadChannels} />}
+          {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setConnectOpen(true)} />}
         </div>
       </main>
 
@@ -1153,13 +1161,11 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
                   选择目标社媒账号
                   <span style={{ display: "inline-flex", gap: 6 }}>
-                    {postizUiUrl && (
-                      <a className="small-button" href={postizUiUrl} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 4, textDecoration: "none" }} title="在 Postiz 中添加并授权新账号">
-                        <Plus size={13} /> 连接新账号
-                      </a>
-                    )}
+                    <button type="button" className="small-button" onClick={() => setConnectOpen(true)} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <Plus size={13} /> {t("Manage accounts")}
+                    </button>
                     <button type="button" className="small-button" onClick={() => void loadChannels()} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      <RefreshCw size={13} /> 刷新账号
+                      <RefreshCw size={13} /> {t("Refresh")}
                     </button>
                   </span>
                 </span>
@@ -1167,9 +1173,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                   <div className="info-banner" style={{ marginTop: 6 }}>
                     <span>
                       {postizConfigured
-                        ? "未获取到已授权账号。点击「连接新账号」在 Postiz 完成平台授权后，再点「刷新账号」。"
-                        : <>未获取到 Postiz 账号。请检查服务端 <code>POSTIZ_API_URL</code> 和 <code>POSTIZ_API_KEY</code> 配置。</>}
-                      {postizUiUrl && <> 也可以 <a href={postizUiUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>打开 Postiz 授权新账号</a>。</>}
+                        ? t("No authorised accounts yet. Open Postiz, connect a platform, then press Refresh.")
+                        : t("Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}
                     </span>
                   </div>
                 ) : (
@@ -1253,6 +1258,16 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           </div>
         </div>
       )}
+
+      <ConnectAccountsDialog
+        open={connectOpen}
+        onClose={() => setConnectOpen(false)}
+        configured={postizConfigured}
+        uiUrl={postizUiUrl}
+        accounts={socialAccounts}
+        error={channelsError}
+        onRefresh={loadChannels}
+      />
 
       {toast && <div className="toast"><CheckCircle2 size={17} /> {t(toast)}</div>}
     </div></LocaleContext.Provider>
@@ -1494,7 +1509,7 @@ function ExportView({ assets, approvedCount, onExport, onBatchPublish, loading, 
   return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("一键打包下载或批量提交至已绑定的 Postiz 社媒账号队列。")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchPublish} disabled={!assets.length || loading === "export"}><Send size={15} /> 批量同步发布至 Postiz</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>已托管账号</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
 }
 
-function SettingsView({ postizConfigured, socialAccounts, onRefreshAccounts }: { postizConfigured: boolean; socialAccounts: SocialAccount[]; onRefreshAccounts: () => void }) {
+function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>已托管账号 ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onRefreshAccounts}><RefreshCw size={13} /> 刷新账号列表</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div><MembersPanel /></div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>已托管账号 ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
 }

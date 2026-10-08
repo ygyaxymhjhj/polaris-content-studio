@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Bootstraps the first account. The member-management UI needs a signed-in user, so the
-// very first one has to be created out of band. Afterwards use the Settings page.
+// very first administrator has to be created out of band. Afterwards use the Settings page.
 //
+//   node scripts/create-user.mjs --admin admin ["Display name"]
 //   node scripts/create-user.mjs <username> ["Display name"]
 //   node scripts/create-user.mjs --self-check
 //
@@ -73,9 +74,12 @@ function askHidden(question) {
 }
 
 async function main() {
-  const [username, displayName] = process.argv.slice(2);
-  if (!username) {
-    console.error('usage: node scripts/create-user.mjs <username> ["Display name"]');
+  const args = process.argv.slice(2);
+  const role = args[0] === "--admin" ? "admin" : "member";
+  if (role === "admin") args.shift();
+  const [username, displayName] = args;
+  if (!username || args.length > 2) {
+    console.error('usage: node scripts/create-user.mjs [--admin] <username> ["Display name"]');
     process.exit(2);
   }
   if (!/^[a-zA-Z0-9._-]{3,64}$/.test(username)) {
@@ -99,10 +103,10 @@ async function main() {
   });
   try {
     const id = randomUUID();
-    await db.execute('INSERT INTO users (id, username, display_name, password_hash) VALUES (?,?,?,?)', [
-      id, username, displayName || username, hashPassword(password)
+    await db.execute('INSERT INTO users (id, username, display_name, password_hash, role) VALUES (?,?,?,?,?)', [
+      id, username, displayName || username, hashPassword(password), role
     ]);
-    console.log(`created ${username} (${id})`);
+    console.log(`created ${username} (${id}, ${role})`);
   } catch (error) {
     if (error?.code === 'ER_DUP_ENTRY') {
       console.error(`username "${username}" already exists. Change its password from the Settings page instead.`);

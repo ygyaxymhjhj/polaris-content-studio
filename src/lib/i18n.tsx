@@ -203,7 +203,8 @@ const messages: Record<string, [string, string]> = {
   "Cannot reach the server. Check the connection and try again.": ["无法连接服务器，请检查网络后重试。", "Không kết nối được máy chủ. Kiểm tra kết nối và thử lại."],
   "Projects saved in this browser before sign-in are now in your account.": ["登录前保存在本浏览器的项目已归入你的账号。", "Các dự án đã lưu trong trình duyệt này trước khi đăng nhập nay thuộc tài khoản của bạn."],
   "Members": ["成员", "Thành viên"],
-  "Anyone signed in can add members, reset passwords and disable accounts. There are no roles.": ["任何已登录成员都可以添加账号、重置密码和停用账号，暂不区分角色。", "Mọi thành viên đã đăng nhập đều có thể thêm tài khoản, đặt lại mật khẩu và vô hiệu hoá tài khoản. Chưa phân quyền."],
+  "Only administrators can add members, reset passwords and disable accounts. New accounts are members.": ["仅管理员可以添加成员、重置密码和停用账号，新账号默认为普通成员。", "Chỉ quản trị viên có thể thêm thành viên, đặt lại mật khẩu và vô hiệu hoá tài khoản. Tài khoản mới là thành viên thông thường."],
+  "Only administrators can manage members.": ["仅管理员可以管理成员。", "Chỉ quản trị viên có thể quản lý thành viên."],
   "Reset password": ["重置密码", "Đặt lại mật khẩu"], "Save password": ["保存密码", "Lưu mật khẩu"],
   "New password (at least 8 characters)": ["新密码（至少 8 位）", "Mật khẩu mới (ít nhất 8 ký tự)"],
   "Initial password (at least 8 characters)": ["初始密码（至少 8 位）", "Mật khẩu ban đầu (ít nhất 8 ký tự)"],
@@ -221,7 +222,17 @@ const messages: Record<string, [string, string]> = {
   "You cannot disable your own account.": ["不能停用自己的账号。", "Không thể vô hiệu hoá tài khoản của chính bạn."],
   "A new password of at least 8 characters is required.": ["新密码至少需要 8 位。", "Mật khẩu mới cần ít nhất 8 ký tự."],
   "Invalid member update.": ["成员更新请求无效。", "Yêu cầu cập nhật thành viên không hợp lệ."],
-  "Username must be 3-64 letters, digits, dot, underscore or hyphen; password at least 8 characters.": ["用户名须为 3–64 位字母、数字、点、下划线或连字符；密码至少 8 位。", "Tên đăng nhập gồm 3-64 ký tự chữ, số, dấu chấm, gạch dưới hoặc gạch ngang; mật khẩu ít nhất 8 ký tự."]
+  "Username must be 3-64 letters, digits, dot, underscore or hyphen; password at least 8 characters.": ["用户名须为 3–64 位字母、数字、点、下划线或连字符；密码至少 8 位。", "Tên đăng nhập gồm 3-64 ký tự chữ, số, dấu chấm, gạch dưới hoặc gạch ngang; mật khẩu ít nhất 8 ký tự."],
+  "POSTIZ CHANNELS": ["POSTIZ 渠道", "KÊNH POSTIZ"], "Connect social accounts": ["连接社媒账号", "Kết nối tài khoản mạng xã hội"],
+  "Refresh": ["刷新", "Làm mới"], "Close": ["关闭", "Đóng"], "Done": ["完成", "Xong"],
+  "Platform authorisation happens in Postiz; Polaris never handles platform credentials. Connect there, then press Refresh.": ["平台授权在 Postiz 中完成，Polaris 不接触平台凭证。授权后回到这里点「刷新」。", "Việc uỷ quyền diễn ra trong Postiz; Polaris không giữ thông tin đăng nhập nền tảng. Hãy kết nối ở đó rồi nhấn Làm mới."],
+  "Platform coverage": ["平台覆盖", "Độ phủ nền tảng"], "connected": ["已连接", "đã kết nối"],
+  "Not connected": ["未连接", "Chưa kết nối"], "Authorised accounts": ["已授权账号", "Tài khoản đã uỷ quyền"],
+  "Needs reconnect": ["需重连", "Cần kết nối lại"], "Ready": ["可用", "Sẵn sàng"],
+  "No authorised accounts yet. Open Postiz, connect a platform, then press Refresh.": ["尚未获取到已授权账号。请打开 Postiz 连接平台后，回到这里点「刷新」。", "Chưa có tài khoản nào được uỷ quyền. Mở Postiz, kết nối nền tảng rồi nhấn Làm mới."],
+  "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.": ["服务端尚未配置 Postiz。请设置 POSTIZ_API_URL 与 POSTIZ_API_KEY。", "Máy chủ chưa cấu hình Postiz. Hãy đặt POSTIZ_API_URL và POSTIZ_API_KEY."],
+  "POSTIZ_UI_URL is not configured on the server.": ["服务端尚未配置 POSTIZ_UI_URL（浏览器可达的 Postiz 地址）。", "Máy chủ chưa cấu hình POSTIZ_UI_URL (địa chỉ Postiz mà trình duyệt truy cập được)."],
+  "Open Postiz to connect": ["打开 Postiz 连接新账号", "Mở Postiz để kết nối"], "Manage accounts": ["连接 / 管理账号", "Kết nối / quản lý tài khoản"]
 };
 
 export function translate(language: UiLanguage, text: string): string {

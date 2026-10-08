@@ -6,7 +6,7 @@ import { useTranslation } from "@/lib/i18n";
 
 type Member = { id: string; username: string; displayName: string; disabled: boolean; createdAt: string };
 
-export default function MembersPanel() {
+export default function MembersPanel({ canManageMembers }: { canManageMembers: boolean }) {
   const t = useTranslation();
   const [members, setMembers] = useState<Member[]>([]);
   const [currentUserId, setCurrentUserId] = useState("");
@@ -19,28 +19,59 @@ export default function MembersPanel() {
   const [draft, setDraft] = useState({ username: "", displayName: "", password: "" });
   const [resetFor, setResetFor] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [accessDenied, setAccessDenied] = useState(false);
+  const hasPermission = canManageMembers === true && !accessDenied;
+
+  const revokeAccess = useCallback(() => {
+    setAccessDenied(true);
+    setMembers([]);
+    setCurrentUserId("");
+    setDraft({ username: "", displayName: "", password: "" });
+    setResetFor("");
+    setNewPassword("");
+    setError("");
+    setNotice("");
+  }, []);
 
   const load = useCallback(async () => {
-    const response = await fetch("/api/auth/users", { cache: "no-store" });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) { setError(data.error || "Could not load members."); return; }
-    setMembers(data.users);
-    setCurrentUserId(data.currentUserId);
-    setError("");
-  }, []);
+    if (!hasPermission) return false;
+    try {
+      const response = await fetch("/api/auth/users", { cache: "no-store" });
+      if (response.status === 401 || response.status === 403) {
+        revokeAccess();
+        return false;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) { setError(data.error || "Could not load members."); return false; }
+      setMembers(data.users);
+      setCurrentUserId(data.currentUserId);
+      setError("");
+      return true;
+    } catch {
+      setError("Could not load members.");
+      return false;
+    }
+  }, [hasPermission, revokeAccess]);
 
   useEffect(() => { void load(); }, [load]);
 
   async function send(method: "POST" | "PATCH", body: unknown) {
+    if (!hasPermission || busy) return false;
     setBusy(true);
     setError("");
     setNotice("");
     try {
       const response = await fetch("/api/auth/users", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (response.status === 401 || response.status === 403) {
+        revokeAccess();
+        return false;
+      }
       const data = await response.json().catch(() => ({}));
       if (!response.ok) { setError(data.error || "Could not update the account."); return false; }
-      await load();
-      return true;
+      return await load();
+    } catch {
+      setError("Could not update the account.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -66,11 +97,13 @@ export default function MembersPanel() {
     }
   }
 
+  if (!hasPermission) return null;
+
   return (
     <div className="settings-card settings-card-wide">
       <div className="settings-card-icon"><Users size={18} /></div>
       <h2>{t("Members")}</h2>
-      <p className="members-intro">{t("Anyone signed in can add members, reset passwords and disable accounts. There are no roles.")}</p>
+      <p className="members-intro">{t("Only administrators can add members, reset passwords and disable accounts. New accounts are members.")}</p>
 
       <div className="member-list">
         {members.map((member) => (

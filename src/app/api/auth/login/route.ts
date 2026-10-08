@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
   if (claimed) console.log(`[auth] adopted ${claimed} anonymous project(s) into ${account.username}`);
 
   const response = json({
-    user: { id: account.id, username: account.username, displayName: account.displayName },
+    user: { id: account.id, username: account.username, displayName: account.displayName, role: account.role },
     claimed
   });
   response.cookies.set(sessionCookie, token, sessionCookieOptions(request.nextUrl.protocol === "https:"));

@@ -1,7 +1,5 @@
-// Regression test for the internal sign-in system. Needs a running app and a real MySQL
-// (see docs/mysql-storage.md); it creates and removes its own accounts.
-//
-//   TEST_BASE_URL=http://localhost:3002 node scripts/test-auth.mjs
+// Real-browser auth regression. Use an isolated app/MySQL; creates and removes its own accounts.
+// TEST_BASE_URL=http://localhost:3002 node scripts/test-auth.mjs
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chromium } from "playwright";
@@ -16,11 +14,11 @@ const browser = await chromium.launch();
 const userIds = [];
 const ownerHashes = [];
 
-async function addUser(label, displayName) {
+async function addUser(label, displayName, role = "member") {
   const id = randomUUID();
   const username = `${label}.${suffix}`;
-  await db.execute("INSERT INTO users (id, username, display_name, password_hash) VALUES (?,?,?,?)", [
-    id, username, displayName, hashPassword(password)
+  await db.execute("INSERT INTO users (id, username, display_name, password_hash, role) VALUES (?,?,?,?,?)", [
+    id, username, displayName, hashPassword(password), role
   ]);
   userIds.push(id);
   ownerHashes.push(ownerHashFor(id));
@@ -29,24 +27,31 @@ async function addUser(label, displayName) {
 
 const login = (context, username, candidate = password) =>
   context.request.post(`${base}/api/auth/login`, { headers: { Origin: base }, data: { username, password: candidate } });
+const update = (context, id, action, newPassword) => context.request.patch(`${base}/api/auth/users`, {
+  headers: { Origin: base }, data: { id, action, ...(newPassword ? { password: newPassword } : {}) }
+});
+async function accountState(id) {
+  const [users] = await db.execute("SELECT id, password_hash, role, disabled FROM users WHERE id=?", [id]);
+  const [sessions] = await db.execute("SELECT id FROM sessions WHERE user_id=? ORDER BY id", [id]);
+  return { users, sessions };
+}
 
 try {
-  // 1. Nothing is reachable without a session.
   const anonymous = await browser.newContext();
   const anonymousPage = await anonymous.newPage();
   await anonymousPage.goto(base);
   await anonymousPage.locator(".login-panel").waitFor({ timeout: 20000 });
-  assert.equal(new URL(anonymousPage.url()).pathname, "/login", "an anonymous visit must land on the sign-in page");
-  for (const path of ["/api/projects", "/api/social/channels"]) {
-    assert.equal((await anonymous.request.get(base + path)).status(), 401, `${path} must require a session`);
+  assert.equal(new URL(anonymousPage.url()).pathname, "/login");
+  for (const path of ["/api/projects", "/api/social/channels", "/api/auth/users"]) {
+    assert.equal((await anonymous.request.get(base + path)).status(), 401, `${path} requires a session`);
   }
-  for (const path of ["/api/generate", "/api/analyze", "/api/rewrite", "/api/parse", "/api/fetch-article", "/api/crawl-article", "/api/social/publish"]) {
-    assert.equal((await anonymous.request.post(base + path, { data: {} })).status(), 401, `${path} must require a session`);
+  for (const path of ["/api/generate", "/api/analyze", "/api/rewrite", "/api/parse", "/api/fetch-article", "/api/crawl-article", "/api/social/publish", "/api/auth/users"]) {
+    assert.equal((await anonymous.request.post(base + path, { headers: { Origin: base }, data: {} })).status(), 401, `${path} requires a session`);
   }
+  assert.equal((await anonymous.request.patch(`${base}/api/auth/users`, { headers: { Origin: base }, data: {} })).status(), 401);
   await anonymous.close();
 
-  // 2. A wrong password is refused and does not open the workspace.
-  const alice = await addUser("alice", "Alice Tester");
+  const alice = await addUser("alice", "Alice Tester", "admin");
   const aliceContext = await browser.newContext();
   const alicePage = await aliceContext.newPage();
   await alicePage.goto(`${base}/login`);
@@ -55,28 +60,24 @@ try {
   await alicePage.locator(".login-panel button.primary-button").click();
   await alicePage.locator(".login-error").waitFor({ timeout: 15000 });
   assert.match(await alicePage.locator(".login-error").innerText(), /Incorrect username or password/);
-  assert.equal(await alicePage.locator(".app-shell").count(), 0, "a failed sign-in must not open the workspace");
+  assert.equal(await alicePage.locator(".app-shell").count(), 0);
 
-  // 3. The right password opens it, and the signed-in identity is shown.
   await alicePage.locator('.login-panel input[type="password"]').fill(password);
   await alicePage.locator(".login-panel button.primary-button").click();
   await alicePage.locator(".app-shell").waitFor({ timeout: 30000 });
-  // Wait for hydration: .app-shell is server-rendered, so clicks before this are dropped.
   await alicePage.locator(".project-storage [role=status]").filter({ hasText: "Ready to save" }).waitFor({ timeout: 30000 });
   assert.equal((await alicePage.locator(".user-row strong").innerText()).trim(), "Alice Tester");
   const ownProjects = await aliceContext.request.get(`${base}/api/projects`);
   assert.equal(ownProjects.status(), 200);
-  assert.deepEqual((await ownProjects.json()).projects, [], "a new account starts with no projects");
+  assert.deepEqual((await ownProjects.json()).projects, []);
 
-  // 4. The Settings page manages members end to end.
-  // Count requests while the panel sits idle: a re-render loop still lets the assertions below
-  // pass, but it hammers the server and makes the form unusable to a real person.
+  // The administrator panel must work without the old re-fetch loop.
   let memberCalls = 0;
-  alicePage.on("request", (request) => { if (request.url().includes("/api/auth/users")) memberCalls += 1; });
+  alicePage.on("request", request => { if (request.url().includes("/api/auth/users")) memberCalls += 1; });
   await alicePage.locator(".sidebar-bottom .nav-item").click();
-  await alicePage.locator(".settings-card-wide").waitFor({ timeout: 15000 });
+  await alicePage.locator(".member-create").waitFor({ timeout: 15000 });
   await alicePage.waitForTimeout(3000);
-  assert.ok(memberCalls <= 5, `the members panel must not re-fetch in a loop (saw ${memberCalls} calls in 3s)`);
+  assert.ok(memberCalls >= 1 && memberCalls <= 5, `expected one members fetch, not a loop (got ${memberCalls})`);
   const carol = `carol.${suffix}`;
   const carolPassword = "carol-test-password";
   await alicePage.locator(".member-create input").nth(0).fill(carol);
@@ -85,23 +86,22 @@ try {
   await alicePage.locator(".member-create button").click();
   const carolRow = alicePage.locator(".member-row", { hasText: carol });
   await carolRow.waitFor({ timeout: 15000 });
-
-  const [carolRecord] = await db.execute("SELECT id FROM users WHERE username=?", [carol]);
-  assert.equal(carolRecord.length, 1, "the member created in the UI must exist in the database");
+  const [carolRecord] = await db.execute("SELECT id, role FROM users WHERE username=?", [carol]);
+  assert.equal(carolRecord.length, 1);
+  assert.equal(carolRecord[0].role, "member", "web-created accounts must default to member");
   userIds.push(carolRecord[0].id);
   ownerHashes.push(ownerHashFor(carolRecord[0].id));
-
   const carolContext = await browser.newContext();
-  assert.equal((await login(carolContext, carol, carolPassword)).status(), 200, "the new member must be able to sign in");
-
-  // Disabling from the same page must end that member's session.
+  const carolSignIn = await login(carolContext, carol, carolPassword);
+  assert.equal(carolSignIn.status(), 200);
+  assert.equal((await carolSignIn.json()).user.role, "member");
+  assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 403);
   await carolRow.locator(".small-button").nth(1).click();
   await carolRow.locator(".member-status.off").waitFor({ timeout: 15000 });
-  assert.equal((await carolContext.request.get(`${base}/api/projects`)).status(), 401, "disabling from the UI must end the member's session");
+  assert.equal((await carolContext.request.get(`${base}/api/projects`)).status(), 401);
   await carolContext.close();
 
-  // 5. Projects saved by this browser before accounts existed are adopted once.
-  const bob = await addUser("bob", "Bob Tester");
+  const bob = await addUser("bob", "Bob Tester", "member");
   const legacyToken = randomBytes(32).toString("hex");
   const legacyOwner = createHash("sha256").update(legacyToken).digest("hex");
   const legacyProjectId = randomUUID();
@@ -109,43 +109,84 @@ try {
   await db.execute("INSERT INTO projects (id, owner_hash, name, snapshot) VALUES (?,?,?,?)", [
     legacyProjectId, legacyOwner, "Legacy project", JSON.stringify({ config: { name: "Legacy project" }, assets: [], sourceText: "legacy" })
   ]);
-
   const bobContext = await browser.newContext();
   await bobContext.addCookies([{ name: "polaris-project-owner", value: legacyToken, url: base }]);
   const firstSignIn = await login(bobContext, bob.username);
   assert.equal(firstSignIn.status(), 200);
-  assert.equal((await firstSignIn.json()).claimed, 1, "the first sign-in must adopt this browser's anonymous projects");
+  const firstBody = await firstSignIn.json();
+  assert.equal(firstBody.user.role, "member");
+  assert.equal(firstBody.claimed, 1);
   const [moved] = await db.execute("SELECT owner_hash FROM projects WHERE id=?", [legacyProjectId]);
-  assert.equal(moved[0].owner_hash, ownerHashFor(bob.id), "the project must now belong to the account");
-
-  // Signing in again with the same anonymous cookie must not adopt a second time.
+  assert.equal(moved[0].owner_hash, ownerHashFor(bob.id));
   await bobContext.addCookies([{ name: "polaris-project-owner", value: legacyToken, url: base }]);
-  const secondSignIn = await login(bobContext, bob.username);
-  assert.equal((await secondSignIn.json()).claimed, 0, "an account that already owns projects must not adopt again");
+  assert.equal((await (await login(bobContext, bob.username)).json()).claimed, 0);
 
-  // 6. Disabling an account ends its live session.
-  const disabled = await bobContext.request.patch(`${base}/api/auth/users`, { headers: { Origin: base }, data: { id: alice.id, action: "disable" } });
-  assert.equal(disabled.status(), 200);
-  assert.equal((await aliceContext.request.get(`${base}/api/projects`)).status(), 401, "a disabled account's session must stop working");
+  // A member cannot read the list, create an account, mutate the target, or revoke its sessions.
+  const before = await accountState(alice.id);
+  const forbiddenList = await bobContext.request.get(`${base}/api/auth/users`);
+  assert.equal(forbiddenList.status(), 403);
+  assert.equal((await forbiddenList.json()).users, undefined);
+  const forbiddenUsername = `forbidden.${suffix}`;
+  assert.equal((await bobContext.request.post(`${base}/api/auth/users`, {
+    headers: { Origin: base }, data: { username: forbiddenUsername, displayName: "Forbidden", password, role: "admin" }
+  })).status(), 403);
+  const [notCreated] = await db.execute("SELECT id FROM users WHERE username=?", [forbiddenUsername]);
+  assert.equal(notCreated.length, 0);
+  for (const action of ["disable", "enable", "password"]) {
+    assert.equal((await update(bobContext, alice.id, action, "forbidden-password")).status(), 403);
+    assert.deepEqual(await accountState(alice.id), before);
+    assert.equal((await aliceContext.request.get(`${base}/api/projects`)).status(), 200);
+  }
+  assert.equal((await update(bobContext, bob.id, "disable")).status(), 403);
 
-  // 7. Nobody can lock themselves out.
-  const selfDisable = await bobContext.request.patch(`${base}/api/auth/users`, { headers: { Origin: base }, data: { id: bob.id, action: "disable" } });
-  assert.equal(selfDisable.status(), 400);
+  const bobPage = await bobContext.newPage();
+  let bobMemberCalls = 0;
+  bobPage.on("request", request => { if (request.url().includes("/api/auth/users")) bobMemberCalls += 1; });
+  await bobPage.goto(base);
+  await bobPage.waitForFunction(() => {
+    const status = document.querySelector(".project-storage [role=status]")?.textContent || "";
+    return status.length > 0 && !status.includes("Connecting storage");
+  }, null, { timeout: 30000 });
+  await bobPage.locator(".sidebar-bottom .nav-item").click();
+  await bobPage.getByRole("button", { name: "Manage accounts", exact: true }).waitFor();
+  assert.equal(await bobPage.locator(".member-create, .member-list").count(), 0);
+  await bobPage.getByRole("button", { name: "Manage accounts", exact: true }).click();
+  await bobPage.locator(".connect-dialog").waitFor();
+  assert.equal(bobMemberCalls, 0, "member settings must never fetch the members API");
+  assert.equal((await bobContext.request.get(`${base}/api/social/channels`)).status(), 200);
 
-  // 8. Signing out kills the token server-side, not just in the browser.
+  // Only an administrator can disable, enable, and reset another account's password.
+  assert.equal((await update(aliceContext, bob.id, "disable")).status(), 200);
+  assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401);
+  assert.equal((await update(aliceContext, bob.id, "enable")).status(), 200);
+  assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401, "enable must not resurrect an old session");
+  assert.equal((await login(bobContext, bob.username)).status(), 200);
+  const newPassword = "bob-replacement-password";
+  assert.equal((await update(aliceContext, bob.id, "password", newPassword)).status(), 200);
+  assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401);
+  assert.equal((await login(bobContext, bob.username)).status(), 401);
+  assert.equal((await login(bobContext, bob.username, newPassword)).status(), 200);
+  assert.equal((await update(aliceContext, alice.id, "disable")).status(), 400);
+  assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 200);
   assert.equal((await bobContext.request.post(`${base}/api/auth/logout`, { headers: { Origin: base } })).status(), 200);
-  assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401, "the token must be dead after signing out");
+  assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401);
 
-  // 9. Repeated failures are throttled.
   const throttled = await browser.newContext();
   let lastStatus = 0;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    lastStatus = (await login(throttled, `nobody.${suffix}`, "wrong")).status();
-  }
-  assert.equal(lastStatus, 429, "the sixth failure inside the window must be throttled");
+  for (let attempt = 0; attempt < 6; attempt++) lastStatus = (await login(throttled, `nobody.${suffix}`, "wrong")).status();
+  assert.equal(lastStatus, 429);
   await throttled.close();
 
-  console.log("PASS: anonymous access refused on page and every API route; wrong password rejected; sign-in shows the account; pre-account projects adopted once only; disabling ends live sessions; self-disable refused; sign-out invalidates the token; failures throttled.");
+  // A rejected action must discard an already-loaded administrator panel.
+  await alicePage.route("**/api/auth/users", route => route.fulfill({
+    status: 403, contentType: "application/json",
+    body: JSON.stringify({ error: "Only administrators can manage members.", code: "FORBIDDEN" })
+  }));
+  await carolRow.locator(".small-button").nth(1).click();
+  await alicePage.locator(".member-create").waitFor({ state: "hidden", timeout: 15000 });
+  assert.equal(await alicePage.locator(".member-list, .member-actions, .member-create").count(), 0, "Revoked permission must hide member data and all management controls");
+  await alicePage.unroute("**/api/auth/users");
+  console.log("PASS: login/anonymous/logout/throttle and legacy adoption regressions; admin UI and member default; member API 403 without account/session mutation; member settings retain social connections without fetching members; admin password/disable/enable and self-disable protection.");
 } finally {
   await browser.close();
   for (const owner of ownerHashes) await db.execute("DELETE FROM projects WHERE owner_hash=?", [owner]);

@@ -26,7 +26,8 @@ bash scripts/deploy-lan.sh          # 等价：npm run deploy:lan
 - `--worktree`：连同工作区未提交改动一起部署（默认不部署未提交内容）
 - `--ref <commit>`：部署指定提交（回滚即部署旧提交）
 - `--dry-run`：只预览 rsync 变更，不做任何修改
-- `--no-build` / `--no-db`：跳过构建 / 跳过数据库备份
+- `--no-db`：跳过数据库备份
+- 不支持 `--no-build`：部署必须重新构建生产产物，该参数会在停服、同步前被拒绝。旧 `.next` 即使连接已迁移数据库，也可能仍执行旧的无权限代码。
 
 手动兜底步骤（脚本不可用时）：停服 → 同步代码（排除 `.env.local`、`node_modules`、`.next`、`.git`）→ 以 polaris-studio 用户执行 `npm ci`、`npm run build` → 启动服务。不要上传开发机的 node_modules 或 .next。
 
@@ -34,21 +35,33 @@ bash scripts/deploy-lan.sh          # 等价：npm run deploy:lan
 
 应用不再匿名开放：未登录访问 `/` 会 307 跳转到 `/login`，九个 API 路由全部返回 401。
 
-**首次上线需要管理员手工做两步**——`init.sql` 只在全新数据卷上自动执行，重启 Compose 不会重跑，已有数据卷必须显式迁移：
+**全新环境**：`init.sql` 仅在新数据卷上自动执行。初始化表和授权后，必须显式创建管理员；普通账号不能管理成员：
 
 ```sh
-# 1. 建 users / sessions 两张表并补授权（容器内已注入 MYSQL_ROOT_PASSWORD）
-docker exec -i polaris-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' \
+# 1. 初始化 schema 和应用账号权限（容器内已有 MYSQL_ROOT_PASSWORD）
+docker exec -i polaris-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' \
   < /opt/polaris-content-studio/app/deploy/mysql/init.sql
 
-# 2. 建第一个账号；之后在页面「设置 → 成员」里加人、改密码、停用
-cd /opt/polaris-content-studio/app && POLARIS_PASSWORD='临时密码' \
-  node scripts/create-user.mjs <用户名> "<显示名>"
+# 2. 创建首个管理员；密码隐藏输入，之后在「设置 → 成员」中创建普通账号
+cd /opt/polaris-content-studio/app
+node scripts/create-user.mjs --admin admin "Administrator"
+node scripts/check-user-roles.mjs
 ```
 
-漏掉第 1 步，登录接口会返回 503。
+不带 `--admin` 的初始化命令创建普通成员；网页添加成员始终创建普通成员，不会按用户名提权。已有 `admin` 账号不需要重建或重置密码。
 
-健康检查探测的是 **`/login`**（未登录时返回 200）；`/` 现在返回 307，不能用它做健康检查。
+**已有环境升级角色权限**：先停服并备份，将迁移文件同步到服务器后，使用有 DDL 权限的数据库管理员执行以下迁移，再启动新代码。应用数据库账号没有 ALTER 权限，不应扩权。重跑 `CREATE TABLE IF NOT EXISTS` 的 `init.sql` **不会**给旧表补 `role` 列。
+
+```sh
+docker exec -i polaris-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' \
+  < /opt/polaris-content-studio/app/deploy/mysql/migrations/2026-10-08-user-roles.sql
+cd /opt/polaris-content-studio/app
+node scripts/check-user-roles.mjs
+```
+
+迁移仅将既有用户名 `admin` 设为管理员，其余账号默认为普通成员，保留用户 ID、密码、会话和项目归属。预检必须确认 `users.role` 存在且 `admin` 是启用的管理员，否则不能启动新版本。部署脚本强制重新构建，并在启动前执行此预检，但不代替管理员执行迁移。权限升级不能通过跳过构建复用旧 `.next`。
+
+健康检查探测的是 **`/login`**（未登录时返回 200）；`/` 现在返回 307，不能用它做健康检查。匿名 `/login` 的 200 不代表数据库角色升级成功，角色验收必须通过上述预检并分别验证管理员和普通成员的实际权限。
 
 **残余风险**：内网是纯 HTTP，密码在局域网内**明文传输**，同网段嗅探可截获（UFW 已限制到 `192.168.0.0/16`，但不足以消除该风险）。彻底解决需在前面加一层 TLS 反向代理（如 Caddy）。另外登录不限制单账号消耗共享 AI 额度的速度。
 

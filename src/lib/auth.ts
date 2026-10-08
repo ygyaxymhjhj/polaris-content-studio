@@ -12,7 +12,7 @@ const sessionTtlDays = Number(process.env.SESSION_TTL_DAYS || 30);
 // Parameters travel inside each stored hash, so raising them later needs no migration.
 const scryptParams = { N: 16384, r: 8, p: 1 };
 
-export type User = { id: string; username: string; displayName: string };
+export type User = { id: string; username: string; displayName: string; role: "admin" | "member" };
 export type Member = User & { disabled: boolean; createdAt: string };
 export type Account = User & { passwordHash: string; disabled: boolean };
 export type Auth = { user: User; ownerHash: string };
@@ -73,12 +73,12 @@ export async function currentUser(): Promise<Auth | null> {
   const token = (await cookies()).get(sessionCookie)?.value;
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
   const [rows] = await database().execute<RowDataPacket[]>(
-    "SELECT u.id, u.username, u.display_name AS displayName FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires_at>? AND u.disabled=0",
+    "SELECT u.id, u.username, u.display_name AS displayName, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires_at>? AND u.disabled=0",
     [hashToken(token), utc(new Date())]
   );
   if (!rows.length) return null;
   const row = rows[0];
-  const user: User = { id: String(row.id), username: String(row.username), displayName: String(row.displayName) };
+  const user: User = { id: String(row.id), username: String(row.username), displayName: String(row.displayName), role: row.role === "admin" ? "admin" : "member" };
   return { user, ownerHash: ownerHashFor(user.id) };
 }
 
@@ -87,7 +87,7 @@ export const unauthorized = () =>
 
 export async function findUserByUsername(username: string): Promise<Account | undefined> {
   const [rows] = await database().execute<RowDataPacket[]>(
-    "SELECT id, username, display_name AS displayName, password_hash AS passwordHash, disabled FROM users WHERE username=?",
+    "SELECT id, username, display_name AS displayName, role, password_hash AS passwordHash, disabled FROM users WHERE username=?",
     [username]
   );
   if (!rows.length) return undefined;
@@ -96,6 +96,7 @@ export async function findUserByUsername(username: string): Promise<Account | un
     id: String(row.id),
     username: String(row.username),
     displayName: String(row.displayName),
+    role: row.role === "admin" ? "admin" : "member",
     passwordHash: String(row.passwordHash),
     disabled: Number(row.disabled) === 1
   };
@@ -103,12 +104,13 @@ export async function findUserByUsername(username: string): Promise<Account | un
 
 export async function listUsers(): Promise<Member[]> {
   const [rows] = await database().execute<RowDataPacket[]>(
-    "SELECT id, username, display_name AS displayName, disabled, created_at AS createdAt FROM users ORDER BY created_at"
+    "SELECT id, username, display_name AS displayName, role, disabled, created_at AS createdAt FROM users ORDER BY created_at"
   );
   return rows.map((row) => ({
     id: String(row.id),
     username: String(row.username),
     displayName: String(row.displayName),
+    role: row.role === "admin" ? "admin" : "member",
     disabled: Number(row.disabled) === 1,
     createdAt: String(row.createdAt)
   }));
@@ -116,7 +118,7 @@ export async function listUsers(): Promise<Member[]> {
 
 export async function createUser(username: string, displayName: string, password: string) {
   const id = randomUUID();
-  await database().execute("INSERT INTO users (id, username, display_name, password_hash) VALUES (?,?,?,?)", [
+  await database().execute("INSERT INTO users (id, username, display_name, password_hash, role) VALUES (?,?,?,?,'member')", [
     id,
     username,
     displayName,
