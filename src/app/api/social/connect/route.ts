@@ -4,6 +4,7 @@ import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { createPostizAuthorizationUrl, fetchPostizIntegrations, PostizConnectionError } from "@/lib/postiz";
 import { claimNewAccounts, consumeConnectAttempt, createConnectAttempt } from "@/lib/social-accounts";
+import { isSameOrigin } from "@/lib/same-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ const cookieOptions = (request: NextRequest) => ({
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function POST(request: NextRequest) {
-  if (request.headers.get("origin") !== request.nextUrl.origin) {
+  if (!isSameOrigin(request)) {
     return json({ error: "Same-origin request required." }, 403);
   }
   const auth = await currentUser();

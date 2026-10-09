@@ -12,6 +12,7 @@ import {
   verifyPassword
 } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
+import { isSameOrigin } from "@/lib/same-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,7 +49,7 @@ function recordFailure(key: string) {
 let decoyHash: string | undefined;
 
 export async function POST(request: NextRequest) {
-  if (request.headers.get("origin") !== new URL(request.url).origin) return json({ error: "Same-origin request required" }, 403);
+  if (!isSameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
   if (!databaseConfigured()) return json({ error: "This deployment has no account storage configured." }, 503);
   // Unauthenticated endpoint: refuse an oversized body before buffering it.
   if (Number(request.headers.get("content-length") || 0) > 4096) return json({ error: "Invalid request." }, 413);

@@ -21,6 +21,7 @@ const target = '22222222-2222-4222-8222-222222222222';
 const url = 'http://localhost:3002/api/auth/users';
 let auth;
 const calls = [];
+const sameOriginModule = loadModule('src/lib/same-origin.ts');
 const routes = loadModule('src/app/api/auth/users/route.ts', {
   '@/lib/auth': {
     currentUser: async () => auth,
@@ -29,7 +30,8 @@ const routes = loadModule('src/app/api/auth/users/route.ts', {
     createUser: async (...args) => { calls.push(['create', ...args]); return target; },
     setPassword: async (...args) => calls.push(['password', ...args]),
     setDisabled: async (...args) => calls.push(['disabled', ...args])
-  }
+  },
+  '@/lib/same-origin': sameOriginModule
 });
 function request(method, data, origin = 'http://localhost:3002') {
   return new NextRequest(url, {

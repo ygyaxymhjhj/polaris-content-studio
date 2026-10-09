@@ -14,10 +14,10 @@ export default function LoginForm() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("polaris-ui-language");
-      if (saved === "zh" || saved === "vi") setUiLanguage(saved);
+      if (saved === "zh" || saved === "vi" || saved === "th") setUiLanguage(saved);
     } catch { /* Optional preference. */ }
   }, []);
-  useEffect(() => { document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : uiLanguage; }, [uiLanguage]);
+  useEffect(() => { document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : uiLanguage === "th" ? "th-TH" : uiLanguage; }, [uiLanguage]);
 
   const t = (text: string) => translate(uiLanguage, text);
 
@@ -79,6 +79,7 @@ export default function LoginForm() {
               <option value="en">{t("English")}</option>
               <option value="zh">简体中文</option>
               <option value="vi">Tiếng Việt</option>
+              <option value="th">ไทย</option>
             </select>
           </label>
         </form>

@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createUser, currentUser, listUsers, setDisabled, setPassword, unauthorized } from "@/lib/auth";
+import { isSameOrigin } from "@/lib/same-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 const forbidden = () => json({ error: "Only administrators can manage members.", code: "FORBIDDEN" }, 403);
-const sameOrigin = (request: NextRequest) => request.headers.get("origin") === new URL(request.url).origin;
 const password = z.string().min(8).max(200);
 const idSchema = z.string().regex(/^[a-f0-9-]{36}$/i);
 const createSchema = z.object({
@@ -25,7 +25,7 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  if (!sameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
+  if (!isSameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
   const auth = await currentUser();
   if (!auth) return unauthorized();
   if (auth.user.role !== "admin") return forbidden();
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  if (!sameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
+  if (!isSameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
   const auth = await currentUser();
   if (!auth) return unauthorized();
   if (auth.user.role !== "admin") return forbidden();

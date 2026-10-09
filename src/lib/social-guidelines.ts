@@ -64,6 +64,19 @@ export const GLOBAL_GUIDELINES: Record<Language, string> = {
     "- Icons/emoji must follow each article's content and context; pick meaningful ones, never a mechanical or repeated set.",
     "- Use icons sparingly; do not put emoji in every sentence.",
     "- For financial content, clearly separate information, opinion and forecast; never promise returns or assert certainty without evidence."
+  ].join("\n"),
+  th: [
+    "- เขียนภาษาไทยอย่างเป็นธรรมชาติ อ่านง่าย และเข้ากับบริบท หลีกเลี่ยงศัพท์เทคนิคที่หนักเกินไป คำขวัญกลวง หรือน้ำเสียงเป็นทางการจนเกินไป",
+    "- ไม่ต้องขึ้นบรรทัดใหม่ทุกประโยคหากไม่จำเป็น แบ่งย่อหน้าอย่างสมเหตุสมผล",
+    "- ห้ามแต่งตัวเลข แหล่งข้อมูล ราคา เวลา สถานที่ ฟีเจอร์ หรือข้อมูลใด ๆ ที่ต้นฉบับไม่มี",
+    "- อย่าทำให้ทุกแคปชันกลายเป็นโฆษณา CTA ต้องเหมาะกับเป้าหมายและแพลตฟอร์ม",
+    "- อย่าลอกวิธีเขียนแบบเดียวกันไปใช้ทุกแพลตฟอร์ม แต่ละแพลตฟอร์มต้องมีวิธีเล่าเป็นของตัวเอง",
+    "- อย่าใช้สูตรแคปชันเดิมซ้ำกับทุกบทความ อ่านเนื้อหาแล้วเลือกมุมที่เหมาะสม",
+    "- แคปชันแต่ละชิ้นโฟกัสหนึ่งมุมหลัก ไม่ยัดข้อมูลมากเกินไป",
+    "- เปิดด้วยรายละเอียดที่ชัดที่สุดของบทความ: ตัวเลข ความขัดแย้ง หรือชื่อที่ผูกกับเหตุการณ์สำคัญ ห้ามเปิดด้วยประโยคภาพรวมอย่าง “ตลาดสัปดาห์นี้มีความเคลื่อนไหวหลายอย่าง” หรือคำถามกว้าง ๆ อย่าง “โบรกเกอร์กำลังทำอะไรกันอยู่” — การเปิดแบบนั้นทำลายการมีส่วนร่วม",
+    "- ไอคอน/อีโมจิต้องอิงตามเนื้อหาและบริบทของแต่ละบทความ เลือกไอคอนที่มีความหมาย ไม่ใช้ซ้ำแบบกลไกหรือใช้ชุดเดิมกับทุกแคปชัน",
+    "- ใช้ไอคอนพอประมาณ อย่าใส่อีโมจิในทุกประโยค",
+    "- สำหรับเนื้อหาการเงิน ให้แยกข้อมูล ความเห็น และการคาดการณ์ออกจากกันอย่างชัดเจน ห้ามสัญญาผลตอบแทนหรือยืนยันความแน่นอนโดยไม่มีหลักฐาน"
   ].join("\n")
 };
 
@@ -137,7 +150,22 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- For content about a Forex broker or trading platform, stay neutral, objective and informational: a merit the source mentions must not turn the caption into promotion for that platform, and nothing may imply it is trustworthy or worth trading with.",
       "- Every caption must carry an emoji/icon, chosen for the specific content and used in moderation; never repeat one set of emoji across captions and never mechanically inject symbols such as 📉, 💰, 🔥 or 📈 just to “look like a Facebook caption”.",
       "- End with hashtags directly related to the content; do not pile on hashtags and never add political hashtags.",
-      "- The finished caption should read like a person briefly sharing one noteworthy piece of news on Facebook: the key information → a few necessary details → the end. Length, paragraphs and phrasing follow the source, but always keep it short, clear, focused and natural."
+    "- The finished caption should read like a person briefly sharing one noteworthy piece of news on Facebook: the key information → a few necessary details → the end. Length, paragraphs and phrasing follow the source, but always keep it short, clear, focused and natural."
+    ].join("\n"),
+    th: [
+      "- เขียนต้นฉบับใหม่ให้เป็นแคปชัน Facebook สั้น ๆ: ข้อมูลชัดเจน มีจุดโฟกัส อ่านง่าย",
+      "- แคปชันหนึ่งชิ้นมีสาระหลักเพียงเรื่องเดียว ห้ามยัดทั้งบทความลงไป เลือกส่วนที่น่าสนใจและมีคุณค่าด้านข้อมูลมากที่สุดของต้นฉบับเป็นจุดโฟกัส",
+      "- ประโยคแรกบอกประเด็นตรง ๆ: เกิดอะไรขึ้นและอะไรน่าสนใจที่สุด ห้ามเปิดด้วยประโยคเกริ่นที่ไม่มีข้อมูลจริง",
+      "- หลังประโยคแรก เพิ่มเฉพาะข้อมูลที่จำเป็น ปกติกระชับในหนึ่งถึงสองย่อหน้า ปรับตามปริมาณข้อมูลของต้นฉบับ ทุกประโยคต้องมีประโยชน์ เช่น ตัวเลขสำคัญ ความคืบหน้าใหม่ หรือบริบทที่จำเป็น",
+      "- ห้ามเล่าบทความทั้งหมดตามลำดับเดิมตั้งแต่บริบท สาเหตุ เหตุการณ์ ผลลัพธ์ ไปจนถึงผลกระทบ แคปชัน Facebook ไม่ใช่บทสรุปบทความหรือข่าวประชาสัมพันธ์",
+      "- ห้ามเขียนเป็นก้อนข้อความยาว ๆ รักษาจังหวะการอ่านให้โปร่ง เมื่อมีข้อมูลมากให้แบ่งเป็นไม่เกินสองย่อหน้าสั้น ๆ แทนที่จะยัดทั้งหมดไว้ในย่อหน้าเดียว",
+      "- ไม่ใช้สูตรตายตัว “ฮุก → เนื้อหา → CTA”: ไม่ใช่ทุกแคปชันต้องมี CTA คำถาม หรือบทสรุป เมื่อข้อมูลครบแล้วให้หยุด ไม่ต้องเพิ่มประโยคเพียงเพื่อให้โครงสร้างครบ",
+      "- เขียนภาษาไทยที่เป็นธรรมชาติ กระชับ ตามแบบที่คนอ่าน Facebook ในชีวิตประจำวัน: ตรงไปตรงมา เข้าใจง่าย ไม่ใช้ภาษาเชิงข่าวที่แข็งทื่อ ไม่เขียนเหมือนประกาศทางการ ไม่เปิดด้วยประโยคซ้ำซากจำเจ ไม่พยายามทำให้เรื่องดูเกินจริง และไม่เขียนเป็นโฆษณา",
+      "- เนื้อหาการเงิน (หุ้น ฟอเร็กซ์ ทองคำ ตลาด ฯลฯ) ต้องคงความเป็นข้อมูล ปรนัย และเป็นกลาง ห้ามเพิ่มความเห็น การประเมิน การคาดการณ์ คำแนะนำการลงทุน สาเหตุหรือผลกระทบที่ต้นฉบับไม่ได้กล่าวถึง และห้ามเพิ่มตัวเลขที่ไม่มีในต้นฉบับ ถ้าต้นฉบับให้เพียงข้อมูล แคปชันก็ทำหน้าที่เพียงส่งต่อข้อมูล",
+      "- เนื้อหาเกี่ยวกับ Forex Broker / แพลตฟอร์มซื้อขาย ให้คงความเป็นกลาง ปรนัย และเน้นข้อมูล: อย่าเปลี่ยนแคปชันเป็นโฆษณาให้แพลตฟอร์มเพียงเพราะต้นฉบับกล่าวถึงข้อดีข้อหนึ่ง และห้ามสื่อเป็นนัยว่าแพลตฟอร์มนั้นน่าเชื่อถือหรือน่าลงทุน",
+      "- ทุกแคปชันต้องมีอีโมจิ/ไอคอน แต่ต้องเลือกตามเนื้อหาเฉพาะและใช้พอประมาณ ห้ามใช้ชุดอีโมจิเดิมซ้ำทุกบทความ และห้ามยัดสัญลักษณ์อย่าง 📉 💰 🔥 📈 แบบกลไกเพียงเพื่อ “ให้ดูเป็นแคปชัน Facebook”",
+      "- ใส่แฮชแท็กที่เกี่ยวข้องโดยตรงกับเนื้อหาตอนท้ายแคปชัน ห้ามใส่แฮชแท็กมากเกินไป และห้ามเพิ่มแฮชแท็กเกี่ยวกับการเมือง",
+      "- ผลลัพธ์สุดท้ายต้องอ่านเหมือนคนแชร์ข้อมูลน่าสนใจสั้น ๆ บน Facebook: ข้อมูลหลัก → ประโยคเสริมเท่าที่จำเป็น → จบ ไม่ใช่การย่อทั้งบทความให้เหลือย่อหน้ายาว ๆ ความยาว การแบ่งย่อหน้า และการเรียบเรียงยืดหยุ่นตามเนื้อหา แต่ยึดหลักเสมอ: สั้น ชัด มีจุดโฟกัส และเป็นธรรมชาติ"
     ].join("\n")
   },
   threads: {
@@ -161,6 +189,13 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- The opening sentence must be engaging and tell readers immediately what the post is about.",
       "- The body keeps only the essential information — short, clear and continuous.",
       "- Every caption needs an icon/emoji chosen from the article content."
+    ].join("\n"),
+    th: [
+      "- เลือกข้อมูลที่น่าสนใจที่สุดจากต้นฉบับ อย่าพยายามยัดบทความทั้งเรื่องลงในแคปชัน",
+      "- ผลลัพธ์คือ 1 ประโยคเปิด + 1 ย่อหน้าหลัก",
+      "- ประโยคเปิดต้องดึงดูดและบอกผู้อ่านทันทีว่าโพสต์กำลังพูดถึงเรื่องอะไร",
+      "- ย่อหน้าหลักเก็บเฉพาะข้อมูลที่จำเป็นที่สุด เขียนสั้น ชัด และต่อเนื่อง",
+      "- ทุกแคปชันต้องมีไอคอน/อีโมจิ โดยเลือกจากเนื้อหาของบทความ"
     ].join("\n")
   },
   x: {
@@ -193,6 +228,16 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Icons/emoji are acceptable when they fit the content.",
       "- Use hashtags only when genuinely relevant; never stuff them.",
       "- If you link the article, the caption alone must tell readers what the news is without opening the link."
+    ].join("\n"),
+    th: [
+      "- เขียนในสไตล์ข่าวเร็ว นำข้อมูลสำคัญที่สุดขึ้นก่อน",
+      "- “ข่าวเร็ว” เป็นเพียงคำอธิบายโทน ไม่ใช่ป้ายที่ต้องพิมพ์: ห้ามเปิดด้วยคำนำอย่าง BREAKING หรือ FLASH ให้เริ่มที่ตัวข้อมูลเลย",
+      "- ประโยคสั้น ตรงประเด็น ข้อมูลแน่น เน้นเขียนให้เหมือน headline / news update",
+      "- เลือกจุดเน้นจากเนื้อหาจริง: ความคืบหน้า ตัวเลข คำกล่าว สาเหตุ ผลกระทบ หรือรายละเอียดใหม่ ไม่บังคับให้ทุกโพสต์มีครบทุกองค์ประกอบ",
+      "- ให้น้ำหนักกับความสดใหม่และข้อมูลใหม่ โดยเฉพาะเนื้อหาการเงินและตลาด",
+      "- ใช้ไอคอน/อีโมจิได้เมื่อเหมาะกับเนื้อหา",
+      "- ใช้แฮชแท็กเฉพาะเมื่อเกี่ยวข้องจริง ๆ ห้ามยัดแฮชแท็ก",
+      "- หากแนบลิงก์บทความ ตัวแคปชันต้องมีข้อมูลพอให้ผู้อ่านเข้าใจทันทีว่าเป็นข่าวอะไรโดยไม่ต้องเปิดลิงก์"
     ].join("\n")
   },
   instagram: {
@@ -219,6 +264,14 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Choose icons/emoji to match the content and context; use them in moderation.",
       "- CTA and hashtags must fit the content, the post's goal and Instagram's conventions.",
       "- Do not add information or turn the caption into advertising when the article has no such intent."
+    ].join("\n"),
+    th: [
+      "- เลือกวิธีเขียนแคปชันให้เหมาะกับเนื้อหาบทความและภาพที่แนบมา ไม่ใช้สูตรตายตัว",
+      "- แคปชันต้องสั้น อ่านง่าย มีจุดโฟกัส เสริมภาพ/วิดีโอแทนการพูดซ้ำทั้งหมด",
+      "- เน้นวิธีเขียนที่เข้ากับพฤติกรรมผู้ใช้ Instagram: อ่านง่าย มองเห็นเป็นภาพ ดึงดูด และกระตุ้นการมีส่วนร่วม",
+      "- ไอคอน/อีโมจิต้องเลือกให้ตรงกับเนื้อหาและบริบท ใช้พอประมาณ",
+      "- CTA และแฮชแท็กต้องเหมาะกับเนื้อหา เป้าหมายของโพสต์ และธรรมเนียมของ Instagram",
+      "- ห้ามเพิ่มข้อมูลเองหรือเปลี่ยนแคปชันเป็นโฆษณาเมื่อบทความไม่ได้มีเจตนานั้น"
     ].join("\n")
   },
 };

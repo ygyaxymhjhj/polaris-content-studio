@@ -162,6 +162,7 @@ try {
   };
   const projectDbModule = { databaseConfigured: () => true, database: () => fake };
   const socialAccountsModule = loadModule("src/lib/social-accounts.ts", { "@/lib/project-db": projectDbModule });
+  const sameOriginModule = loadModule("src/lib/same-origin.ts");
 
   // ---------- 1. Channels list: members see only their own; admins see everything with owners ----------
   const liveAccounts = [
@@ -256,7 +257,7 @@ try {
     }
   };
   const connectRoute = loadModule("src/app/api/social/connect/route.ts", {
-    "@/lib/postiz": connectPostiz, "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule
+    "@/lib/postiz": connectPostiz, "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule, "@/lib/same-origin": sameOriginModule
   });
   const startConnect = async (provider = "x") => {
     currentAuth = { user: anaUser };
@@ -328,7 +329,7 @@ try {
 
   // ---------- 4. Assignment API: admins only, validated targets ----------
   const assignRoute = loadModule("src/app/api/social/accounts/[integrationId]/route.ts", {
-    "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule
+    "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule, "@/lib/same-origin": sameOriginModule
   });
   const assignRequest = (integrationId, body, origin = "https://studio.example.test") => new NextRequest(`https://studio.example.test/api/social/accounts/${integrationId}`, {
     method: "PATCH", headers: { Origin: origin, "Content-Type": "application/json" },

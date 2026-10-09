@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser, findUserById, unauthorized } from "@/lib/auth";
 import { assignAccount, getSocialAccount } from "@/lib/social-accounts";
+import { isSameOrigin } from "@/lib/same-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 const forbidden = () => json({ error: "Only administrators can assign social accounts.", code: "FORBIDDEN" }, 403);
-const sameOrigin = (request: NextRequest) => request.headers.get("origin") === new URL(request.url).origin;
 // Postiz integration ids are opaque slugs; the same shape check as asset ids in the publishes route.
 const integrationIdPattern = /^[a-zA-Z0-9_-]{1,64}$/;
 const assignSchema = z.object({ ownerUserId: z.string().regex(/^[a-f0-9-]{36}$/i).nullable() }).strict();
@@ -19,7 +19,7 @@ const assignSchema = z.object({ ownerUserId: z.string().regex(/^[a-f0-9-]{36}$/i
  * is administrator-only and same-origin guarded, matching the member-management API.
  */
 export async function PATCH(request: NextRequest, context: { params: Promise<{ integrationId: string }> }) {
-  if (!sameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
+  if (!isSameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
   const auth = await currentUser();
   if (!auth) return unauthorized();
   if (auth.user.role !== "admin") return forbidden();

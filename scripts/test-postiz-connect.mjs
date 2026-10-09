@@ -32,9 +32,11 @@ const capturedRequests = [];
 let upstreamBody = JSON.stringify("https://twitter.com/i/oauth2/authorize?state=synthetic-provider-state");
 let upstreamStatus = 200;
 let currentAccount = null;
+const sameOriginModule = loadModule("src/lib/same-origin.ts");
 const routes = loadModule("src/app/api/social/connect/route.ts", {
   "@/lib/postiz": postiz,
   "@/lib/auth": { currentUser: async () => currentAccount, unauthorized: () => NextResponse.json({ code: "UNAUTHORIZED" }, { status: 401 }) },
+  "@/lib/same-origin": sameOriginModule,
   // The route records a best-effort connect attempt for ownership claiming; this regression has no
   // database, and the route must treat a missing database as "claim later, by an administrator".
   "@/lib/social-accounts": {

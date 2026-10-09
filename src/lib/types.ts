@@ -45,7 +45,7 @@ export interface ProjectConfig {
   name: string;
   title: string;
   category: string;
-  language: "en" | "vi" | "zh";
+  language: "en" | "vi" | "zh" | "th";
   audience: string;
   cta: string;
   websiteUrl: string;

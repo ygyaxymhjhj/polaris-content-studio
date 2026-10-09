@@ -4,11 +4,11 @@ import type { RowDataPacket } from "mysql2";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { database } from "@/lib/project-db";
 import { projectSchema, saveProjectSchema, type ProjectSnapshot } from "@/lib/project-schema";
+import { isSameOrigin } from "@/lib/same-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
-function sameOrigin(request: NextRequest) { return request.headers.get("origin") === new URL(request.url).origin; }
 function failure(error: unknown) {
   const code = (error as { code?: string })?.code;
   console.error("[projects] request failed", code || "INVALID_DATA_OR_STORAGE");
@@ -45,7 +45,7 @@ async function boundedJson(request: NextRequest) {
   return JSON.parse(Buffer.concat(buffers).toString("utf8"));
 }
 export async function PUT(request: NextRequest) {
-  if (!sameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
+  if (!isSameOrigin(request)) return json({ error: "Same-origin request required" }, 403);
   const auth = await currentUser();
   if (!auth) return unauthorized();
   let parsed;

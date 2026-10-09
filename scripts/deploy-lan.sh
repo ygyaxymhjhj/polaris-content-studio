@@ -137,6 +137,10 @@ fi
 # Every file in deploy/mysql/migrations is idempotent by convention (CREATE TABLE IF NOT EXISTS /
 # conditional ALTER / GRANT), so applying them on each deploy keeps the schema in step with the
 # code that is about to start. A failure aborts the deploy before the service is restarted.
+# The base schema goes first: init.sql is idempotent (CREATE TABLE IF NOT EXISTS + GRANT), so it
+# creates any tables a pre-existing volume is missing before the delta migrations reference them.
+echo "applying base schema (deploy/mysql/init.sql)"
+docker exec -i polaris-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' < "$APP_DIR/deploy/mysql/init.sql"
 for file in "$APP_DIR"/deploy/mysql/migrations/*.sql; do
   echo "applying $(basename "$file")"
   docker exec -i polaris-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' < "$file"

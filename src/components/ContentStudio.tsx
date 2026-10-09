@@ -161,12 +161,13 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   useEffect(() => {
     try {
       const saved = localStorage.getItem("polaris-ui-language");
-      if (saved === "zh" || saved === "vi" || saved === "en") setUiLanguage(saved);
+      if (saved === "zh" || saved === "vi" || saved === "th" || saved === "en") setUiLanguage(saved);
       else if (navigator.language.startsWith("zh")) setUiLanguage("zh");
       else if (navigator.language.startsWith("vi")) setUiLanguage("vi");
+      else if (navigator.language.startsWith("th")) setUiLanguage("th");
     } catch { /* Storage may be unavailable in private browsing. */ }
   }, []);
-  useEffect(() => { document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : uiLanguage; }, [uiLanguage]);
+  useEffect(() => { document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : uiLanguage === "th" ? "th-TH" : uiLanguage; }, [uiLanguage]);
   function changeUiLanguage(value: UiLanguage) {
     setUiLanguage(value);
     try { localStorage.setItem("polaris-ui-language", value); } catch { /* Optional preference. */ }
@@ -978,7 +979,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         <header className="topbar">
           <div className="breadcrumbs"><span>Growth OS</span><span className="slash">/</span><strong>{config.name || t("New project")}</strong></div>
           <div className="topbar-actions">
-            <label className="locale-switcher"><span>{t("Interface language")}</span><select aria-label={t("Interface language")} value={uiLanguage} onChange={(event) => changeUiLanguage(event.target.value as UiLanguage)}><option value="en">{t("English")}</option><option value="zh">简体中文</option><option value="vi">Tiếng Việt</option></select></label>
+            <label className="locale-switcher"><span>{t("Interface language")}</span><select aria-label={t("Interface language")} value={uiLanguage} onChange={(event) => changeUiLanguage(event.target.value as UiLanguage)}><option value="en">{t("English")}</option><option value="zh">简体中文</option><option value="vi">Tiếng Việt</option><option value="th">ไทย</option></select></label>
             <div className="system-status"><span className="status-dot" /> {t("All systems operational")}</div>
             <button className="icon-button"><Search size={17} /></button>
             <button className="icon-button"><Bell size={17} /></button>
@@ -1399,7 +1400,7 @@ function WorkspaceView({
               <label className="field-label">{t("Project name")}<input value={config.name} onChange={(event) => updateConfig("name", event.target.value)} placeholder={t("e.g. Gold regulation launch")} /></label>
               <label className="field-label">{t("Article title")}<input value={config.title} onChange={(event) => updateConfig("title", event.target.value)} placeholder={t("Working headline")} /></label>
               <label className="field-label">{t("Category")}<select aria-label={t("Category")} value={config.category} onChange={(event) => updateConfig("category", event.target.value)}><option value="">{t("Select category")}</option><option value="Market news">{t("Market news")}</option><option value="Commodities">{t("Commodities")}</option><option value="Gold">{t("Gold")}</option><option value="Forex">{t("Forex")}</option><option value="Broker">{t("Broker")}</option><option value="Scam alert">{t("Scam alert")}</option><option value="KOL LIVE">{t("KOL LIVE")}</option><option value="Point Mall">{t("Point Mall")}</option></select></label>
-              <label className="field-label">{t("Language")}<select aria-label={t("Language")} value={config.language} onChange={(event) => updateConfig("language", event.target.value as ProjectConfig["language"])}><option value="en">{t("English")}</option><option value="vi">{t("Vietnamese")}</option><option value="zh">{t("Chinese")}</option></select><span className="optional">{t("LinkedIn is always English")}</span></label>
+              <label className="field-label">{t("Language")}<select aria-label={t("Language")} value={config.language} onChange={(event) => updateConfig("language", event.target.value as ProjectConfig["language"])}><option value="en">{t("English")}</option><option value="vi">{t("Vietnamese")}</option><option value="zh">{t("Chinese")}</option><option value="th">{t("Thai")}</option></select><span className="optional">{t("LinkedIn is always English")}</span></label>
               <label className="field-label full-field">{t("Target audience")}<input value={config.audience} onChange={(event) => updateConfig("audience", event.target.value)} placeholder={t("Who should care about this?")} /></label>
               <label className="field-label full-field">{t("Primary CTA")}<input value={config.cta} onChange={(event) => updateConfig("cta", event.target.value)} placeholder={t("Read the full breakdown")} /></label>
               <label className="field-label full-field">{t("Website URL")} <span className="optional">{t("optional")}</span><input value={config.websiteUrl} onChange={(event) => updateConfig("websiteUrl", event.target.value)} placeholder={t("Add after the article goes live")} /></label>

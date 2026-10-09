@@ -69,17 +69,18 @@ function categoryFor(text: string): string {
 }
 
 const audiences: Record<string, Record<ProjectConfig["language"], string>> = {
-  "Market news": { zh: "关注财经要闻与全球市场动态的读者", vi: "Độc giả theo dõi tin tài chính và diễn biến thị trường toàn cầu", en: "Readers following financial news and global market developments" },
-  Commodities: { zh: "关注原油及大宗商品市场的读者", vi: "Độc giả quan tâm đến dầu thô và thị trường hàng hóa", en: "Readers following crude oil and commodity markets" },
-  Gold: { zh: "关注黄金市场与相关政策的读者", vi: "Độc giả quan tâm đến thị trường vàng và chính sách liên quan", en: "Readers following gold markets and related policy" },
-  Forex: { zh: "关注外汇市场与交易行业动态的读者", vi: "Độc giả theo dõi thị trường ngoại hối và ngành giao dịch", en: "Readers following foreign exchange markets and the trading industry" },
-  Broker: { zh: "关注交易商服务、监管与运营信息的读者", vi: "Độc giả quan tâm đến dịch vụ, quản lý và hoạt động của nhà môi giới", en: "Readers following broker services, regulation and operations" }
+  "Market news": { zh: "关注财经要闻与全球市场动态的读者", vi: "Độc giả theo dõi tin tài chính và diễn biến thị trường toàn cầu", en: "Readers following financial news and global market developments", th: "ผู้อ่านที่ติดตามข่าวการเงินและความเคลื่อนไหวของตลาดโลก" },
+  Commodities: { zh: "关注原油及大宗商品市场的读者", vi: "Độc giả quan tâm đến dầu thô và thị trường hàng hóa", en: "Readers following crude oil and commodity markets", th: "ผู้อ่านที่สนใจน้ำมันดิบและตลาดสินค้าโภคภัณฑ์" },
+  Gold: { zh: "关注黄金市场与相关政策的读者", vi: "Độc giả quan tâm đến thị trường vàng và chính sách liên quan", en: "Readers following gold markets and related policy", th: "ผู้อ่านที่ติดตามตลาดทองคำและนโยบายที่เกี่ยวข้อง" },
+  Forex: { zh: "关注外汇市场与交易行业动态的读者", vi: "Độc giả theo dõi thị trường ngoại hối và ngành giao dịch", en: "Readers following foreign exchange markets and the trading industry", th: "ผู้อ่านที่ติดตามตลาดปริวรรตเงินตราและอุตสาหกรรมการซื้อขาย" },
+  Broker: { zh: "关注交易商服务、监管与运营信息的读者", vi: "Độc giả quan tâm đến dịch vụ, quản lý và hoạt động của nhà môi giới", en: "Readers following broker services, regulation and operations", th: "ผู้อ่านที่สนใจบริการ การกำกับดูแล และการดำเนินงานของโบรกเกอร์" }
 };
 
 const defaults = {
   en: { audience: "Readers interested in this article’s topic", cta: "Read the full article" },
   zh: { audience: "关注本文主题的读者", cta: "阅读完整文章" },
-  vi: { audience: "Độc giả quan tâm đến chủ đề của bài viết", cta: "Đọc toàn bộ bài viết" }
+  vi: { audience: "Độc giả quan tâm đến chủ đề của bài viết", cta: "Đọc toàn bộ bài viết" },
+  th: { audience: "ผู้อ่านที่สนใจหัวข้อของบทความนี้", cta: "อ่านบทความฉบับเต็ม" }
 };
 
 /** Preserve editor overrides; replace previous automatic values on every import. */
