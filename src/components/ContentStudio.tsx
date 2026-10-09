@@ -50,6 +50,7 @@ import { normalizeAnalysis } from "@/lib/normalize-analysis";
 import ProjectStorage from "@/components/ProjectStorage";
 import MembersPanel from "@/components/MembersPanel";
 import ConnectAccountsDialog from "@/components/ConnectAccountsDialog";
+import SocialAccountsView from "@/components/SocialAccountsView";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
@@ -73,7 +74,7 @@ import {
 // Frozen public article snapshot for repeatable editorial tests; never fetched on page load.
 const sampleArticle = fixedArticle.text;
 
-type View = "workspace" | "facts" | "assets" | "export" | "settings";
+type View = "workspace" | "facts" | "assets" | "export" | "accounts" | "settings";
 
 /** "Alex Lee" -> "AL", a single CJK name -> its first character. */
 const initials = (name: string) => name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
@@ -82,7 +83,8 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "workspace", label: "Workspace", icon: LayoutDashboard },
   { id: "facts", label: "Source references", icon: ClipboardCheck },
   { id: "assets", label: "Content assets", icon: Layers3 },
-  { id: "export", label: "Export center", icon: Download }
+  { id: "export", label: "Export center", icon: Download },
+  { id: "accounts", label: "Social accounts", icon: Link2 }
 ];
 
 const platformGroups: { label: string; platforms: Platform[] }[] = [
@@ -204,6 +206,11 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const [socialAccounts, setSocialAccounts] = useState<SocialAccount[]>([]);
   const [postizConfigured, setPostizConfigured] = useState<boolean>(false);
   const [postizUiUrl, setPostizUiUrl] = useState<string>("");
+  const [postizOAuthConfigured, setPostizOAuthConfigured] = useState(false);
+  const [channelsLoading, setChannelsLoading] = useState(true);
+  const [channelsSyncedAt, setChannelsSyncedAt] = useState("");
+  const [connectionNotice, setConnectionNotice] = useState("");
+  const channelRequestSequence = useRef(0);
   const [connectOpen, setConnectOpen] = useState(false);
   // Distinguishes "Postiz is unreachable" from "no accounts connected yet"; the connect dialog
   // shows a different message for each, and swallowing the error made the two look identical.
@@ -225,26 +232,64 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const packSequence = useRef(0);
 
   const loadChannels = useCallback(async () => {
+    const requestSequence = ++channelRequestSequence.current;
+    setChannelsLoading(true);
     try {
-      const res = await fetch("/api/social/channels");
-      const data = await readJson<{ configured?: boolean; accounts?: SocialAccount[]; uiUrl?: string | null; error?: string }>(res);
-      if (data.configured) setPostizConfigured(true);
-      if (data.uiUrl) setPostizUiUrl(data.uiUrl);
-      setChannelsError(data.error || "");
+      const res = await fetch("/api/social/channels", { cache: "no-store" });
+      const data = await readJson<{ configured?: boolean; oauthConfigured?: boolean; accounts?: SocialAccount[]; uiUrl?: string | null; error?: string }>(res);
+      if (requestSequence !== channelRequestSequence.current) return;
+      if (res.status === 401 || res.status === 403) {
+        setSocialAccounts([]);
+        setSelectedAccountId("");
+        setPostizOAuthConfigured(false);
+        throw new Error(data.error || "Sign in to continue.");
+      }
+      if (!res.ok) throw new Error(data.error || "Could not reach the server.");
+      setPostizConfigured(Boolean(data.configured));
+      setPostizOAuthConfigured(Boolean(data.oauthConfigured));
+      setPostizUiUrl(data.uiUrl || "");
+      if (data.error) throw new Error(data.error);
+      setChannelsError("");
       const accounts = Array.isArray(data.accounts) ? data.accounts : null;
       if (accounts) {
         setSocialAccounts(accounts);
+        setChannelsSyncedAt(new Date().toISOString());
         // Keep the member's current pick across refreshes; only fall back to the first account when it vanished.
         setSelectedAccountId(current => (current && accounts.some(account => account.id === current) ? current : accounts[0]?.id || ""));
       }
     } catch (error) {
-      setChannelsError(error instanceof Error ? error.message : "Could not reach the server.");
+      if (requestSequence === channelRequestSequence.current) setChannelsError(error instanceof Error ? error.message : "Could not reach the server.");
+    } finally {
+      if (requestSequence === channelRequestSequence.current) setChannelsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadChannels();
   }, [loadChannels]);
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("view") === "accounts") setView("accounts");
+    const outcome = query.get("connection");
+    if (outcome !== "returned" && outcome !== "invalid") return;
+    setConnectionNotice(outcome === "returned"
+      ? "Authorisation returned. Check the refreshed account list; if an account is missing, finish selecting its page in Postiz."
+      : "The authorisation return expired or belongs to another session. Please start again.");
+    query.delete("connection");
+    window.history.replaceState(null, "", `${window.location.pathname}?${query.toString()}`);
+    if (window.opener) {
+      window.opener.postMessage({ type: "POLARIS_POSTIZ_RETURNED", outcome }, window.location.origin);
+      window.close();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view !== "accounts") return;
+    function refreshOnReturn() { void loadChannels(); }
+    window.addEventListener("focus", refreshOnReturn);
+    return () => window.removeEventListener("focus", refreshOnReturn);
+  }, [view, loadChannels]);
 
   // Channels are connected in Postiz, outside this app; refresh when the publish dialog opens so a
   // channel added moments ago shows up without a full page reload.
@@ -800,7 +845,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId
         })
       });
-      const data = await readJson<{ success?: boolean; error?: string; publishedUrl?: string; publishedAt?: string }>(res);
+      const data = await readJson<{ success?: boolean; error?: string; publishedUrl?: string; publishedAt?: string; queued?: boolean }>(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || "发布失败");
       }
@@ -814,7 +859,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (selectedAsset?.id === asset.id) {
         setSelectedAsset(cur => cur ? { ...cur, publishStatus: "published", publishedUrl: data.publishedUrl } : null);
       }
-      notify("发布成功，已提交至 Postiz 托管队列！");
+      notify(data.queued ? "已提交至发布队列，正在等待平台投递！" : "发布成功，推文已成功上线！");
       setPublishModalAsset(null);
     } catch (err) {
       setAssets(prev => prev.map(a => a.id === asset.id ? {
@@ -992,7 +1037,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onApprove={approveAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
           )}
           {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} onBatchPublish={batchPublish} loading={loading} socialAccountsCount={socialAccounts.length} />}
-          {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setConnectOpen(true)} />}
+          {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} oauthConfigured={postizOAuthConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
+          {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setView("accounts")} />}
         </div>
       </main>
 
@@ -1263,6 +1309,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         open={connectOpen}
         onClose={() => setConnectOpen(false)}
         configured={postizConfigured}
+        oauthConfigured={postizOAuthConfigured}
+        loading={channelsLoading}
         uiUrl={postizUiUrl}
         accounts={socialAccounts}
         error={channelsError}

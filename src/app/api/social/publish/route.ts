@@ -89,7 +89,8 @@ export async function POST(request: Request) {
       integrationId: body.integrationId,
       content: body.content.trim(),
       imageUrl: body.imageUrl?.trim() || undefined,
-      publishAt: body.publishAt
+      publishAt: body.publishAt,
+      platform
     });
 
     await writePublishAudit({
@@ -117,6 +118,7 @@ export async function POST(request: Request) {
       assetId: body.assetId,
       postId: result.postId,
       publishedUrl: result.url,
+      queued: Boolean(result.queued),
       publishedAt: new Date().toISOString()
     });
   } catch (error) {

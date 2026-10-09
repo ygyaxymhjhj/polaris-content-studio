@@ -16,8 +16,13 @@
 
 各平台 OAuth、token 加密存储与自动刷新全部由自托管 Postiz 承担，Polaris 不自研 OAuth。
 
-- 连接入口：发布弹窗的「连接新账号」按钮打开 `POSTIZ_UI_URL`（未配置时从 `POSTIZ_API_URL` 去掉 `/api` 后缀推导）。授权完成后点「刷新账号」即可看到新渠道；发布弹窗打开时也会自动刷新一次。
-- 连接渠道需要 Postiz 侧登录账号：给成员各开一个 Postiz User，或由管理员统一连接。
+- 独立入口：侧栏「社媒账号」展示账号列表、可用状态、刷新时间；「添加社媒账号」打开独立的平台选择界面。设置页和发布弹窗也保留入口。
+- 直连授权参考 `social-autopub` 的白标流程：登录成员选择平台 → `POST /api/social/connect` → 服务端用 HS256 JWT 调用 Postiz `/api/enterprise/url` → 新窗口打开平台官方授权页面 → Postiz 保存账号与令牌 → 返回 Polaris，刷新账号列表。支持 Facebook、Instagram、X、Threads、LinkedIn，前提是对应平台应用已在 Postiz 中正确配置。
+- 必须配置服务端 `POSTIZ_JWT_SECRET`，其值与自托管 Postiz 实例的 `JWT_SECRET` 一致。API Key 和签名 JWT 不返回浏览器；签名有效期 10 分钟。该密钥具有敏感权限，不要提供给浏览器、普通用户或提交到 Git。
+- Polaris 的返回状态使用 10 分钟有效的 HttpOnly / SameSite=Lax Cookie，绑定当前登录用户；过期、缺失或换账号后的返回不会视为有效。授权发生在新窗口，原工作区与未保存草稿保持打开。新窗口返回、关闭后会刷新；直接在 Postiz 中连接后可点「刷新账号」。
+- 本项目直接查询 Postiz 的账号列表，没有本地账号镜像或个人归属表，所以不复制参考项目中的 webhook / 个人负责人绑定。`webhookUrl` 留空；仅需浏览器能够访问返回地址，开发环境可以用 `localhost:3002`，不需要 Postiz 后端回拨本机。
+- 返回授权流程并不等于所有平台步骤都完成。Facebook 等平台可能还需要在 Postiz 中选主页；以刷新后的账号是否出现及状态为准，不用 URL 上的标记伪造连接成功。
+- 降级入口：「改用 Postiz 连接」打开 `POSTIZ_UI_URL`（未配置时从 `POSTIZ_API_URL` 去掉 API 后缀推导）。未配置签名密钥、Postiz 版本不支持 `/enterprise/url` 或平台配置有误时，会显示明确提示，不伪造授权成功。这个入口仍需登录 Postiz，可为成员创建 Postiz User 或由管理员统一连接。
 - 外部所有者（品牌方、KOL）可用 Postiz 的 invite link 自行授权，渠道落入团队组织，全程不接触团队密码，也不占席位。
 
 ## 3. 发布审计
@@ -96,4 +101,7 @@ publish_log (workspace_id, account_id, user_id, post_id)
 
 - **已有 MySQL 卷**：以管理员手动执行 `deploy/mysql/migrations/2026-10-08-social-publishes.sql`（文件头部有 docker exec 命令；幂等，可重复执行）。**新卷**由 `deploy/mysql/init.sql` 自动建表，无需迁移。
 - 服务器 `.env.local` 配置 `POSTIZ_UI_URL` 为浏览器可达地址（如 `http://192.168.220.109:5000`）；服务端调 Postiz API 仍走 `POSTIZ_API_URL`（可为 localhost），两者可以不同。
+- `POSTIZ_API_URL` 可填根地址、`/api` 或 `/api/public/v1`；项目统一规范化为 `/api` 后再拼接接口路径。直连授权新增 `POSTIZ_JWT_SECRET` 后需要重启应用；不要把它改成 `NEXT_PUBLIC_` 变量。
+- 平台 OAuth 的开发者应用回调仍是 Postiz 的 `{POSTIZ_UI_URL}/integrations/social/{provider}`，不是 Polaris 的返回接口。Polaris 返回地址由当前访问域名生成，请从同一个域名发起并完成流程。
+- 无真实平台凭证的回归：`node scripts/test-postiz-connect.mjs` 验证签名、密钥保护、匿名拦截、跨站拒绝、用户绑定的 state 和配置失败提示。真实 OAuth 仍需运维配置匹配的 JWT secret 与各平台应用后人工验收。
 - Token 失效的账号在 Postiz 侧显示红色感叹号（需重连），发布失败会留 `failed` 审计行并在弹窗记录中显示错误。
