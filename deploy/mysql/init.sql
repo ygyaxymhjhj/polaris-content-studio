@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS social_publishes (
   postiz_post_id VARCHAR(128) NULL,
   published_url VARCHAR(1024) NULL,
   scheduled_at DATETIME(3) NULL,
-  status ENUM('published','failed') NOT NULL,
+  status ENUM('published','queued','failed') NOT NULL,
   error VARCHAR(512) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   INDEX social_publishes_project (project_id, created_at),

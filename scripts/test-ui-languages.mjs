@@ -13,8 +13,12 @@ try {
   account = await signIn(page, process.env.TEST_BASE_URL || "http://localhost:3000");
   const language = page.locator('.locale-switcher select');
   await language.selectOption("zh");
-  await page.getByRole("button", { name: "生成社媒草稿", exact: true }).waitFor();
+  await page.getByRole("button", { name: "生成社媒文案全案", exact: true }).waitFor();
+  // The source panel opens on the URL tab and keeps advanced fields collapsed; switch to the
+  // text tab and expand the advanced section before touching those controls.
+  await page.locator('.segmented-tab').nth(1).click();
   await page.locator('.source-textarea').fill("测试来源：不得因切换界面语言而改变。");
+  await page.locator('.advanced-toggle-btn').click();
   const outputLanguage = page.locator('.input-grid select').nth(1);
   await outputLanguage.selectOption("vi");
   await language.selectOption("vi");

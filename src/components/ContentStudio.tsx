@@ -143,7 +143,7 @@ interface PublishHistoryEntry {
   publishedByName: string;
   publishedUrl: string | null;
   scheduledAt: string | null;
-  status: "published" | "failed";
+  status: "published" | "queued" | "failed";
   error: string | null;
   createdAt: string;
 }
@@ -820,7 +820,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       });
       const data = await readJson<{ success?: boolean; error?: string; publishedUrl?: string; publishedAt?: string; queued?: boolean }>(res);
       if (!res.ok || !data.success) {
-        throw new Error(data.error || "发布失败");
+        throw new Error(data.error || t("Publish failed"));
       }
       setAssets(prev => prev.map(a => a.id === asset.id ? {
         ...a,
@@ -832,15 +832,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (selectedAsset?.id === asset.id) {
         setSelectedAsset(cur => cur ? { ...cur, publishStatus: "published", publishedUrl: data.publishedUrl } : null);
       }
-      notify(data.queued ? "已提交至发布队列，正在等待平台投递！" : "发布成功，推文已成功上线！");
+      notify(data.queued ? t("Scheduled: the post was handed to Postiz for delivery.") : t("Published successfully."));
       setPublishModalAsset(null);
     } catch (err) {
       setAssets(prev => prev.map(a => a.id === asset.id ? {
         ...a,
         publishStatus: "failed",
-        publishError: err instanceof Error ? err.message : "发布失败"
+        publishError: err instanceof Error ? err.message : t("Publish failed")
       } : a));
-      notify(err instanceof Error ? err.message : "发布失败");
+      notify(err instanceof Error ? err.message : t("Publish failed"));
     } finally {
       setPublishing(false);
     }
@@ -849,17 +849,28 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   async function batchPublish() {
     const publishable = assets.filter(a => a.status === "approved" || a.status === "needs_review");
     if (!publishable.length) {
-      notify("没有可发布的文案资产");
+      notify(t("There are no publishable assets."));
       return;
     }
     if (!socialAccounts.length) {
-      notify("未检测到已绑定的 Postiz 社媒账号，请先在设置中查看连接");
+      notify(t("No social accounts are available. Connect one or ask an administrator to assign one."));
       return;
     }
+    // Match strictly by platform. Falling back to an arbitrary account could publish an X post to
+    // a Facebook channel, so assets whose platform has no connected account are skipped and reported.
+    const matches = publishable.map(asset => ({
+      asset,
+      account: socialAccounts.find(acc => acc.identifier.toLowerCase() === asset.platform.toLowerCase())
+    }));
+    const missingPlatforms = [...new Set(matches.filter(m => !m.account).map(m => m.asset.platform))];
+    if (missingPlatforms.length) {
+      notify(`${t("Skipped assets with no matching account")}: ${missingPlatforms.join(", ")}`);
+    }
+    const toPublish = matches.filter((m): m is { asset: ContentAsset; account: SocialAccount } => Boolean(m.account));
+    if (!toPublish.length) return;
     setLoading("export");
-    for (const asset of publishable) {
-      const account = socialAccounts.find(acc => acc.identifier.toLowerCase().includes(asset.platform.toLowerCase())) || socialAccounts[0];
-      if (account) await executePublish(asset, account.id);
+    for (const { asset, account } of toPublish) {
+      await executePublish(asset, account.id);
     }
     setLoading(null);
   }
@@ -1039,7 +1050,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               </span>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <span className={`publish-pill ${selectedAsset.publishStatus || "unpublished"}`}>
-                  {selectedAsset.publishStatus === "published" ? "✓ 已发布" : selectedAsset.publishStatus === "publishing" ? "发布中…" : "未发布"}
+                  {selectedAsset.publishStatus === "published" ? `✓ ${t("Published")}` : selectedAsset.publishStatus === "publishing" ? t("Publishing…") : t("Unpublished")}
                 </span>
                 <span className={`status-badge ${selectedAsset.status}`}>{t(selectedAsset.status.replace("_", " "))}</span>
               </div>
@@ -1047,10 +1058,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
             <div className="drawer-mode-tabs" style={{ marginTop: 12 }}>
               <button type="button" className={`drawer-mode-tab ${drawerMode === "edit" ? "active" : ""}`} onClick={() => setDrawerMode("edit")}>
-                ✍ 编辑草稿
+                ✍ {t("Edit draft")}
               </button>
               <button type="button" className={`drawer-mode-tab ${drawerMode === "preview" ? "active" : ""}`} disabled={imageUploading} onClick={() => setDrawerMode("preview")}>
-                👁 真实社媒仿真预览
+                👁 {t("Live social preview")}
               </button>
             </div>
 
@@ -1142,7 +1153,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <div className="drawer-footer">
               <button className="secondary-button" onClick={closeDrawer}>{t("Cancel")}</button>
               <button type="button" className="secondary-button" style={{ color: "#18181b", borderColor: "#d4d4d8", fontWeight: 700 }} disabled={imageUploading} onClick={() => setPublishModalAsset(viewAsset)}>
-                <Send size={14} /> 发布到 Postiz
+                <Send size={14} /> {t("Publish to Postiz")}
               </button>
               <button className="primary-button" onClick={saveAsset} disabled={imageUploading}><Check size={16} /> {t("Save changes")}</button>
             </div>
@@ -1155,15 +1166,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           <div className="publish-dialog">
             <div className="dialog-header">
               <div>
-                <span className="eyebrow">POSTIZ 托管发布</span>
-                <h3>{PLATFORM_META[publishModalAsset.platform].label} · 发布联调</h3>
+                <span className="eyebrow">{t("POSTIZ MANAGED PUBLISHING")}</span>
+                <h3>{PLATFORM_META[publishModalAsset.platform].label} · {t("Publish check")}</h3>
               </div>
-              <button className="icon-button" aria-label="关闭" onClick={() => setPublishModalAsset(null)}><X size={18} /></button>
+              <button className="icon-button" aria-label={t("Close")} onClick={() => setPublishModalAsset(null)}><X size={18} /></button>
             </div>
             <div className="dialog-body">
               <label className="field-label">
                 <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
-                  选择目标社媒账号
+                  {t("Select target social account")}
                   <span style={{ display: "inline-flex", gap: 6 }}>
                     <button type="button" className="small-button" onClick={() => setConnectOpen(true)} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                       <Plus size={13} /> {t("Manage accounts")}
@@ -1213,41 +1224,41 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               </label>
 
               <label className="field-label" style={{ marginTop: 8 }}>
-                发布排期模式
+                {t("Publish timing")}
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                   <button type="button" className={`small-button ${!scheduleTime ? "active" : ""}`} onClick={() => setScheduleTime("")} style={{ flex: 1, padding: "8px 12px" }}>
-                    🚀 立即发布
+                    🚀 {t("Publish now")}
                   </button>
                   <button type="button" className={`small-button ${scheduleTime ? "active" : ""}`} onClick={() => { const d = new Date(Date.now() + 3600 * 1000); setScheduleTime(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)); }} style={{ flex: 1, padding: "8px 12px" }}>
-                    📅 定时排期
+                    📅 {t("Schedule for later")}
                   </button>
                 </div>
               </label>
 
               {scheduleTime && (
                 <label className="field-label">
-                  排期时间
+                  {t("Schedule time")}
                   <input type="datetime-local" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} style={{ marginTop: 6 }} />
                 </label>
               )}
 
               {publishHistory.length > 0 && (
                 <label className="field-label" style={{ marginTop: 10 }}>
-                  此素材的发布记录
+                  {t("Publish history for this asset")}
                   <div style={{ marginTop: 6, display: "grid", gap: 6, fontSize: 12 }}>
                     {publishHistory.map((entry) => (
                       <div key={entry.id} style={{ border: "1px solid #e4e4e7", borderRadius: 8, padding: "8px 10px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                           <strong>{entry.accountName}</strong>
-                          <span style={{ color: entry.status === "published" ? "#166534" : "#b91c1c" }}>
-                            {entry.status === "published" ? "已发布" : "失败"}
+                          <span style={{ color: entry.status === "published" ? "#166534" : entry.status === "queued" ? "#b45309" : "#b91c1c" }}>
+                            {entry.status === "published" ? t("Published") : entry.status === "queued" ? t("Scheduled") : t("Failed")}
                           </span>
                         </div>
                         <div style={{ color: "#71717a" }}>
                           {new Date(entry.createdAt).toLocaleString()} · {entry.publishedByName}
-                          {entry.scheduledAt ? ` · 排期 ${new Date(entry.scheduledAt).toLocaleString()}` : ""}
+                          {entry.scheduledAt ? ` · ${t("Scheduled at")} ${new Date(entry.scheduledAt).toLocaleString()}` : ""}
                         </div>
-                        {entry.publishedUrl && <a href={entry.publishedUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>查看已发布内容</a>}
+                        {entry.publishedUrl && <a href={entry.publishedUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>{t("View published post")}</a>}
                         {entry.error && <div style={{ color: "#b91c1c" }}>{entry.error}</div>}
                       </div>
                     ))}
@@ -1256,9 +1267,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               )}
             </div>
             <div className="dialog-footer">
-              <button className="secondary-button" onClick={() => setPublishModalAsset(null)} disabled={publishing}>取消</button>
+              <button className="secondary-button" onClick={() => setPublishModalAsset(null)} disabled={publishing}>{t("Cancel")}</button>
               <button className="primary-button" disabled={publishing || !selectedAccountId} onClick={() => executePublish(publishModalAsset, selectedAccountId, scheduleTime)}>
-                {publishing ? <><Loader2 className="spin" size={15} /> 发布中…</> : <><Send size={15} /> 确认提交发布</>}
+                {publishing ? <><Loader2 className="spin" size={15} /> {t("Publishing…")}</> : <><Send size={15} /> {t("Confirm publish")}</>}
               </button>
             </div>
           </div>
@@ -1310,14 +1321,14 @@ function WorkspaceView({
       <div className="workspace-hero">
         <div className="workspace-hero-content">
           <div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} · V1</div>
-          <h1>{t("从一篇原创新闻，到全渠道社交媒体矩阵")}</h1>
-          <p>{t("自动提取关键信息与原头图，通过 Postiz 托管账号直接完成多渠道原生内容预览与发布。")}</p>
+          <h1>{t("From one original article to a full-channel social media matrix")}</h1>
+          <p>{t("Key points and the lead image are extracted automatically; connected Postiz accounts handle multi-channel preview and publishing.")}</p>
         </div>
       </div>
 
       <section className="panel source-panel">
         <div className="section-heading">
-          <div><span className="step-number">01</span><div className="heading-copy"><h2>{t("导入文章来源")}</h2><p>{t("支持公网文章 URL 链接抓取，或直接粘贴新闻正文及上传文档")}</p></div></div>
+          <div><span className="step-number">01</span><div className="heading-copy"><h2>{t("Import the source article")}</h2><p>{t("Fetch a public article URL, paste the article text, or upload a document.")}</p></div></div>
           <div className="heading-links">
             <a className="compact-tool-btn" href="/downloads/polaris-article-import.zip" download title={t("Install once, open the article in your own browser, preview and send it here. No server fetch required.")}>
               <Download size={11} /> <span>{t("Browser extension")}</span>
@@ -1331,17 +1342,17 @@ function WorkspaceView({
         <div style={{ marginBottom: 16 }}>
           <div className="segmented-tabs">
             <button type="button" className={`segmented-tab ${inputMode === "url" ? "active" : ""}`} onClick={() => setInputMode("url")}>
-              <Link2 size={14} /> 网页链接抓取
+              <Link2 size={14} /> {t("Fetch from URL")}
             </button>
             <button type="button" className={`segmented-tab ${inputMode === "text" ? "active" : ""}`} onClick={() => setInputMode("text")}>
-              <FileText size={14} /> 粘贴文本 / 上传文档
+              <FileText size={14} /> {t("Paste text / upload document")}
             </button>
           </div>
         </div>
         {inputMode === "url" ? (
           <div className="url-import">
             <div className="url-import-icon"><Link2 size={17} /></div>
-            <div className="url-import-body"><div className="url-import-label"><strong>{t("Fetch from an article URL")}</strong><span>{t("自动提取正文与原头图")}</span></div><div className="url-input-row"><input value={config.sourceUrl} onChange={(event) => updateConfig("sourceUrl", event.target.value)} placeholder="https://example.com/your-article" /><button className="primary-button" onClick={fetchArticle} disabled={loading === "fetch"}>{loading === "fetch" ? <><Loader2 className="spin" size={14} /> {t("Fetching…")}</> : <><Link2 size={14} /> {t("Fetch article")}</>}</button></div></div>
+            <div className="url-import-body"><div className="url-import-label"><strong>{t("Fetch from an article URL")}</strong><span>{t("Text and lead image extracted automatically")}</span></div><div className="url-input-row"><input value={config.sourceUrl} onChange={(event) => updateConfig("sourceUrl", event.target.value)} placeholder="https://example.com/your-article" /><button className="primary-button" onClick={fetchArticle} disabled={loading === "fetch"}>{loading === "fetch" ? <><Loader2 className="spin" size={14} /> {t("Fetching…")}</> : <><Link2 size={14} /> {t("Fetch article")}</>}</button></div></div>
           </div>
         ) : (
         <div className="source-grid">
@@ -1364,13 +1375,13 @@ function WorkspaceView({
           <div className="article-meta-card">
             <div className="article-meta-grid">
               <div className="article-meta-title-col">
-                <label className="field-label"><span>文章标题</span><input value={config.title} onChange={(e) => updateConfig("title", e.target.value)} placeholder="输入或核对文章标题" /></label>
+                <label className="field-label"><span>{t("Article title")}</span><input value={config.title} onChange={(e) => updateConfig("title", e.target.value)} placeholder={t("Enter or check the article title")} /></label>
               </div>
               {config.imageUrl && (
                 <div className="article-meta-image-col">
                   <div className="article-lead-thumb">
                     <img src={config.imageUrl} alt="Lead" referrerPolicy="no-referrer" />
-                    <span className="thumb-badge">文章原头图</span>
+                    <span className="thumb-badge">{t("Original lead image")}</span>
                   </div>
                 </div>
               )}
@@ -1378,7 +1389,7 @@ function WorkspaceView({
 
             <div className="article-meta-footer">
               <button type="button" className="advanced-toggle-btn" onClick={() => setShowAdvanced(!showAdvanced)}>
-                <Settings2 size={12} /> {showAdvanced ? "收起高级配置参数 ▲" : "展开高级配置参数 (分类、语言、受众、CTA) ▼"}
+                <Settings2 size={12} /> {t(showAdvanced ? "Collapse advanced settings ▲" : "Expand advanced settings (category, language, audience, CTA) ▼")}
               </button>
             </div>
 
@@ -1392,7 +1403,7 @@ function WorkspaceView({
               <label className="field-label full-field">{t("Target audience")}<input value={config.audience} onChange={(event) => updateConfig("audience", event.target.value)} placeholder={t("Who should care about this?")} /></label>
               <label className="field-label full-field">{t("Primary CTA")}<input value={config.cta} onChange={(event) => updateConfig("cta", event.target.value)} placeholder={t("Read the full breakdown")} /></label>
               <label className="field-label full-field">{t("Website URL")} <span className="optional">{t("optional")}</span><input value={config.websiteUrl} onChange={(event) => updateConfig("websiteUrl", event.target.value)} placeholder={t("Add after the article goes live")} /></label>
-              <label className="field-label full-field">配图 URL<input value={config.imageUrl || ""} onChange={e => updateConfig("imageUrl", e.target.value)} placeholder="https://..." /></label>
+              <label className="field-label full-field">{t("Image URL")}<input value={config.imageUrl || ""} onChange={e => updateConfig("imageUrl", e.target.value)} placeholder="https://..." /></label>
             </div>
           </div>
               )}
@@ -1401,11 +1412,11 @@ function WorkspaceView({
       </section>
 
       <section className="panel distribution-panel">
-        <div className="section-heading"><div><span className="step-number">02</span><div className="heading-copy"><h2>{t("选择发布平台")}</h2><p>{t("每个平台自动生成原生排版并挂载文章原头图")}</p></div></div><span className="selection-count">{selectedPlatforms.length} / {DEFAULT_PLATFORMS.length} {t("selected")}</span></div>
+        <div className="section-heading"><div><span className="step-number">02</span><div className="heading-copy"><h2>{t("Select publishing platforms")}</h2><p>{t("Every platform gets native formatting with the article's lead image.")}</p></div></div><span className="selection-count">{selectedPlatforms.length} / {DEFAULT_PLATFORMS.length} {t("selected")}</span></div>
         <div className="platform-selection">
           {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} type="button" aria-pressed={selected} className={`platform-option ${selected ? "selected" : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
         </div>
-        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> 审核机制保障真实事实，支持在抽屉中进行原生真实社媒仿真预览与 Postiz 联调</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
+        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> {t("Facts stay human-reviewed; preview the real social layout and run the Postiz hand-off from the drawer.")}</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
         {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
       </section>
 
@@ -1522,7 +1533,7 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onAppro
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ 已发布 {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title="查看帖子" onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "publishing" ? <>发布中…</> : asset.publishStatus === "failed" ? <>发布失败</> : <span>未发布</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title="点击预览真实社媒"><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>预览</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> 发布</button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ {t("Published")} {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "publishing" ? <>{t("Publishing…")}</> : asset.publishStatus === "failed" ? <>{t("Publish failed")}</> : <span>{t("Unpublished")}</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Publish")}</button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );
@@ -1531,10 +1542,10 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onAppro
 function ExportView({ assets, approvedCount, onExport, onBatchPublish, loading, socialAccountsCount }: { assets: ContentAsset[]; approvedCount: number; onExport: () => void; onBatchPublish: () => void; loading: string | null; socialAccountsCount: number }) {
   const t = useTranslation();
   const channels = new Set(assets.map((asset) => asset.platform)).size;
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("一键打包下载或批量提交至已绑定的 Postiz 社媒账号队列。")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchPublish} disabled={!assets.length || loading === "export"}><Send size={15} /> 批量同步发布至 Postiz</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>已托管账号</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Download a package or batch-submit to the connected Postiz accounts.")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchPublish} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Batch publish to Postiz")}</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
 }
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{canManageMembers ? "全部社媒账号" : "我的社媒账号"} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{canManageMembers ? "暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。" : "暂无可用账号，请先连接账号或联系管理员分配。"}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; authorised accounts deliver automatically.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
 }

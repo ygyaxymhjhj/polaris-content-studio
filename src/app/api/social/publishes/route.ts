@@ -22,14 +22,16 @@ interface PublishRow extends RowDataPacket {
   postiz_post_id: string | null;
   published_url: string | null;
   scheduled_at: string | null;
-  status: "published" | "failed";
+  status: "published" | "queued" | "failed";
   error: string | null;
   created_at: string;
 }
 
 /**
- * Publish history is visible to every signed-in member: in a shared-pool model the audit answers
- * "who published what, where, when" for the whole team, not just for the publisher.
+ * Publish history stays visible to every signed-in member, but scoped to their own projects: a row
+ * is readable only when its project belongs to the requester (or, for rows without a project, when
+ * the requester published it). Projects are private per account and asset ids like "local-x" are
+ * guessable, so ownership is enforced here rather than left to the caller.
  */
 export async function GET(request: Request) {
   const auth = await currentUser();
@@ -51,12 +53,18 @@ export async function GET(request: Request) {
   try {
     const [rows] = assetId
       ? await database().execute<PublishRow[]>(
-          "SELECT * FROM social_publishes WHERE asset_id=? ORDER BY created_at DESC LIMIT 50",
-          [assetId]
+          `SELECT p.* FROM social_publishes p
+             LEFT JOIN projects pr ON pr.id = p.project_id
+            WHERE p.asset_id = ? AND (pr.owner_hash = ? OR (p.project_id IS NULL AND p.published_by = ?))
+            ORDER BY p.created_at DESC LIMIT 50`,
+          [assetId, auth.ownerHash, auth.user.id]
         )
       : await database().execute<PublishRow[]>(
-          "SELECT * FROM social_publishes WHERE project_id=? ORDER BY created_at DESC LIMIT 50",
-          [projectId]
+          `SELECT p.* FROM social_publishes p
+             JOIN projects pr ON pr.id = p.project_id
+            WHERE p.project_id = ? AND pr.owner_hash = ?
+            ORDER BY p.created_at DESC LIMIT 50`,
+          [projectId, auth.ownerHash]
         );
     const publishes = (rows as unknown as PublishRow[]).map((row) => ({
       id: row.id,

@@ -151,7 +151,9 @@ try {
   await bobPage.getByRole("button", { name: "Manage accounts", exact: true }).waitFor();
   assert.equal(await bobPage.locator(".member-create, .member-list").count(), 0);
   await bobPage.getByRole("button", { name: "Manage accounts", exact: true }).click();
-  await bobPage.locator(".connect-dialog").waitFor();
+  // "Manage accounts" opens the standalone accounts view; a member must land there without any
+  // member-management UI and without the members API ever being fetched.
+  await bobPage.locator(".social-accounts-view").waitFor();
   assert.equal(bobMemberCalls, 0, "member settings must never fetch the members API");
   assert.equal((await bobContext.request.get(`${base}/api/social/channels`)).status(), 200);
 

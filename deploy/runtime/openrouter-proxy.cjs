@@ -1,5 +1,7 @@
 'use strict';
 // Service-scoped OpenRouter and WikiFX transport. Other destinations stay unchanged.
+// CommonJS by design: this file is installed as a systemd runtime shim, not bundled by Next.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { ProxyAgent } = require('/opt/polaris-content-studio/app/node_modules/undici');
 const proxyUrl = process.env.OPENROUTER_HTTP_PROXY;
 if (proxyUrl) {

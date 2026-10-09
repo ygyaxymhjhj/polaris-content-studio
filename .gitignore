@@ -10,3 +10,4 @@ out/
 .playwright-mcp
 .spec-workflow
 .server-credentials.local
+.serena/

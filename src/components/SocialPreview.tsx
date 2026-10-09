@@ -18,6 +18,7 @@ import {
   ImageOff
 } from "lucide-react";
 import type { ContentAsset } from "@/lib/types";
+import { useTranslation } from "@/lib/i18n";
 
 interface SocialPreviewProps {
   asset: ContentAsset;
@@ -34,6 +35,7 @@ export default function SocialPreview({
 }: SocialPreviewProps) {
   const currentImage = imageUrl ?? asset.imageUrl;
   const platform = asset.platform;
+  const t = useTranslation();
   const [slideIndex, setSlideIndex] = useState(0);
 
   // Extract slides if instagram carousel
@@ -44,9 +46,9 @@ export default function SocialPreview({
       <div className="preview-platform-bar">
         <span className="preview-indicator">
           <span className="preview-badge-dot" />
-          {platform.toUpperCase()} 真实社媒模拟预览
+          {platform.toUpperCase()} {t("Real social preview")}
         </span>
-        <span className="preview-char-count">{asset.content.length} 字符</span>
+        <span className="preview-char-count">{asset.content.length} {t("characters")}</span>
       </div>
 
       <div className="preview-card-viewport">
@@ -59,7 +61,7 @@ export default function SocialPreview({
                   <span className="mock-author-name">{authorName}</span>
                   <span className="mock-author-handle">@{authorHandle}</span>
                   <span className="mock-dot">·</span>
-                  <span className="mock-time">刚刚</span>
+                  <span className="mock-time">{t("Just now")}</span>
                 </div>
               </div>
               <MoreHorizontal size={16} className="mock-more" />
@@ -81,7 +83,7 @@ export default function SocialPreview({
                   }}
                 />
                 <div className="mock-image-fallback" style={{ display: "none" }}>
-                  <ImageOff size={16} /> <span>原图预览不可用</span>
+                  <ImageOff size={16} /> <span>{t("Image preview unavailable")}</span>
                 </div>
               </div>
             )}
@@ -101,8 +103,8 @@ export default function SocialPreview({
               <div className="mock-avatar in-avatar">P</div>
               <div className="mock-author-meta">
                 <span className="mock-author-name">{authorName}</span>
-                <span className="mock-author-desc">财经智库 · 深度市场观察</span>
-                <span className="mock-time-row">刚刚 · <Globe size={11} /></span>
+                <span className="mock-author-desc">{t("Finance desk · in-depth market commentary")}</span>
+                <span className="mock-time-row">{t("Just now")} · <Globe size={11} /></span>
               </div>
               <MoreHorizontal size={16} className="mock-more" />
             </div>
@@ -124,10 +126,10 @@ export default function SocialPreview({
             )}
 
             <div className="mock-actions-bar in-actions">
-              <div className="mock-action-item"><ThumbsUp size={15} /> <span>赞</span></div>
-              <div className="mock-action-item"><MessageSquare size={15} /> <span>评论</span></div>
-              <div className="mock-action-item"><Repeat2 size={16} /> <span>转发</span></div>
-              <div className="mock-action-item"><Send size={14} /> <span>发送</span></div>
+              <div className="mock-action-item"><ThumbsUp size={15} /> <span>{t("Like")}</span></div>
+              <div className="mock-action-item"><MessageSquare size={15} /> <span>{t("Comment")}</span></div>
+              <div className="mock-action-item"><Repeat2 size={16} /> <span>{t("Repost")}</span></div>
+              <div className="mock-action-item"><Send size={14} /> <span>{t("Send")}</span></div>
             </div>
           </div>
         )}
@@ -138,7 +140,7 @@ export default function SocialPreview({
               <div className="mock-avatar fb-avatar">f</div>
               <div className="mock-author-meta">
                 <span className="mock-author-name">{authorName}</span>
-                <span className="mock-time-row">刚刚 · <Globe size={11} /></span>
+                <span className="mock-time-row">{t("Just now")} · <Globe size={11} /></span>
               </div>
               <MoreHorizontal size={16} className="mock-more" />
             </div>
@@ -164,9 +166,9 @@ export default function SocialPreview({
             )}
 
             <div className="mock-actions-bar fb-actions">
-              <div className="mock-action-item"><ThumbsUp size={16} /> <span>赞</span></div>
-              <div className="mock-action-item"><MessageCircle size={16} /> <span>评论</span></div>
-              <div className="mock-action-item"><Share2 size={16} /> <span>分享</span></div>
+              <div className="mock-action-item"><ThumbsUp size={16} /> <span>{t("Like")}</span></div>
+              <div className="mock-action-item"><MessageCircle size={16} /> <span>{t("Comment")}</span></div>
+              <div className="mock-action-item"><Share2 size={16} /> <span>{t("Share")}</span></div>
             </div>
           </div>
         )}
@@ -183,7 +185,7 @@ export default function SocialPreview({
               {slides.length > 0 ? (
                 <div className="ig-slide-card">
                   <div className="ig-slide-head">
-                    <span className="slide-badge">幻灯片 {slideIndex + 1} / {slides.length}</span>
+                    <span className="slide-badge">{t("Slides")} {slideIndex + 1} / {slides.length}</span>
                   </div>
                   <div className="ig-slide-body">
                     <h4>{slides[slideIndex]?.title || asset.title}</h4>
@@ -216,7 +218,7 @@ export default function SocialPreview({
                 />
               ) : (
                 <div className="mock-image-fallback">
-                  <Sparkles size={20} /> <span>图文卡片效果</span>
+                  <Sparkles size={20} /> <span>{t("Carousel card preview")}</span>
                 </div>
               )}
             </div>
@@ -247,7 +249,7 @@ export default function SocialPreview({
               <div className="threads-body-col">
                 <div className="threads-user-row">
                   <span className="mock-author-name">{authorHandle}</span>
-                  <span className="mock-time">刚刚</span>
+                  <span className="mock-time">{t("Just now")}</span>
                   <MoreHorizontal size={14} className="mock-more" />
                 </div>
                 <div className="mock-content-text">{asset.content}</div>

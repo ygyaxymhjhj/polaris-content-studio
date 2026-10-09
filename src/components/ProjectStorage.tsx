@@ -12,8 +12,13 @@ function uuid() {
 const lastKey = "polaris-last-project";
 export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange, hidden = false }: { snapshot: ProjectSnapshot; busy: boolean; onRestore: (snapshot: ProjectSnapshot) => void; onProjectChange?: (projectId: string) => void; hidden?: boolean }) {
   const t = useTranslation();
-  const serialized = JSON.stringify(snapshot);
-  const latest = useRef(serialized); latest.current = serialized;
+  // Stringifying the whole snapshot (which can carry ~1MB image data URLs per asset) on every
+  // render made typing janky in image-heavy projects. The raw snapshot lives in a ref for saves,
+  // and the serialized form used for dirty checks refreshes on a short debounce, so a burst of
+  // keystrokes triggers at most one serialization once the edits settle.
+  const latestSnapshot = useRef(snapshot); latestSnapshot.current = snapshot;
+  const serialize = useCallback(() => JSON.stringify(latestSnapshot.current), []);
+  const [serialized, setSerialized] = useState(() => JSON.stringify(snapshot));
   const restore = useRef(onRestore); restore.current = onRestore;
   const saved = useRef(serialized);
   const project = useRef({ id: "", version: 0 });
@@ -48,7 +53,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController(); const initial = latest.current;
+    const controller = new AbortController(); const initial = serialize();
     (async () => {
       try {
         const response = await fetch("/api/projects", { signal: controller.signal, cache: "no-store" }); const data = await response.json();
@@ -63,8 +68,9 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
           const checked = parseSnapshot(item.snapshot);
           if (controller.signal.aborted) return;
           // Never replace edits entered while the storage connection was being established.
-          if (latest.current === initial) {
-            applyProject(item.id, item.version); saved.current = JSON.stringify(checked); latest.current = saved.current;
+          if (serialize() === initial) {
+            const restoredSerialized = JSON.stringify(checked);
+            applyProject(item.id, item.version); saved.current = restoredSerialized; setSerialized(restoredSerialized);
             restore.current(checked); setChoice(item.id);
           }
         }
@@ -81,14 +87,14 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
       setWorking(true); setError("");
       try {
         let mustSave = force;
-        while (mustSave || latest.current !== saved.current) {
+        while (mustSave || serialize() !== saved.current) {
           mustSave = false;
-          const value = latest.current; const current = { ...project.current };
+          const value = serialize(); const current = { ...project.current };
           setStatus("Saving to MySQL…");
           const response = await fetch("/api/projects", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...current, snapshot: JSON.parse(value) }) });
           const result = await response.json();
           if (!response.ok) { if (response.status === 409) conflict.current = true; throw new Error(result.error || "Save failed"); }
-          applyProject(result.id, result.version); saved.current = value;
+          applyProject(result.id, result.version); saved.current = value; setSerialized(value);
           remember(result.id); setChoice(result.id);
         }
         setStatus("Saved to MySQL"); refreshStatus(v => v + 1);
@@ -100,7 +106,17 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
     };
     flight.current = work().finally(() => { flight.current = null; });
     return flight.current;
-  }, [refreshHistory]);
+  }, [refreshHistory, serialize]);
+
+  // Debounced dirty-tracking: a burst of renders (keystrokes) resets this timer, so the snapshot
+  // is serialized once the edits settle instead of on every render.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const value = serialize();
+      setSerialized(current => (current === value ? current : value));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [snapshot, serialize]);
 
   useEffect(() => {
     if (!ready || serialized === saved.current) return;
@@ -109,22 +125,23 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
   }, [serialized, ready, save]);
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
-      if (latest.current !== saved.current || flight.current || busy) { event.preventDefault(); event.returnValue = ""; }
+      if (serialize() !== saved.current || flight.current || busy) { event.preventDefault(); event.returnValue = ""; }
     };
     window.addEventListener("beforeunload", preventLoss);
     return () => window.removeEventListener("beforeunload", preventLoss);
-  }, [busy]);
+  }, [busy, serialize]);
 
   async function loadProject() {
     if (!choice || working || busy) return;
-    if (latest.current !== saved.current && !window.confirm(t("Discard unsaved changes and load this project?"))) return;
-    const before = latest.current; switching.current = true; setWorking(true); setError("");
+    if (serialize() !== saved.current && !window.confirm(t("Discard unsaved changes and load this project?"))) return;
+    const before = serialize(); switching.current = true; setWorking(true); setError("");
     try {
       const response = await fetch(`/api/projects?id=${encodeURIComponent(choice)}`, { cache: "no-store" }); const item = await response.json();
       if (!response.ok) throw new Error(item.error || "Unable to restore project");
       const checked = parseSnapshot(item.snapshot);
-      if (latest.current !== before) throw new Error("The page changed while loading. Please try again.");
-      applyProject(item.id, item.version); saved.current = JSON.stringify(checked); latest.current = saved.current; conflict.current = false;
+      if (serialize() !== before) throw new Error("The page changed while loading. Please try again.");
+      const restoredSerialized = JSON.stringify(checked);
+      applyProject(item.id, item.version); saved.current = restoredSerialized; setSerialized(restoredSerialized); conflict.current = false;
       restore.current(checked); remember(item.id); setStatus("Saved to MySQL");
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to restore project"); }
     finally { switching.current = false; setWorking(false); }
@@ -132,7 +149,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
   async function copyProject() {
     if (working || busy) return;
     // A conflicted tab may save its work as a new project without overwriting the other tab.
-    if (!conflict.current && latest.current !== saved.current && !await save()) return;
+    if (!conflict.current && serialize() !== saved.current && !await save()) return;
     applyProject(uuid(), 0); conflict.current = false;
     await save(true);
   }

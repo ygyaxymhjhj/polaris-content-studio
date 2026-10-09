@@ -6,7 +6,7 @@
 #   scripts/deploy-lan.sh                # deploy current HEAD commit
 #   scripts/deploy-lan.sh --ref <sha>    # deploy a specific commit (also for rollback)
 #   scripts/deploy-lan.sh --worktree     # deploy the working tree as-is (includes uncommitted changes)
-#   scripts/deploy-lan.sh --no-db        # skip the database backup step
+#   scripts/deploy-lan.sh --no-db        # skip the database backup and migration steps
 #   scripts/deploy-lan.sh --dry-run      # show what rsync would change, touch nothing
 set -euo pipefail
 
@@ -73,10 +73,10 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-echo "==> 1/6 stop service"
+echo "==> 1/7 stop service"
 ssh "$SERVER" "systemctl stop $SERVICE"
 
-echo "==> 2/6 backup"
+echo "==> 2/7 backup"
 ssh "$SERVER" bash -s -- "$SHORT" "$APP_DIR" "$REMOTE_ROOT" "$WITH_DB" <<'REMOTE'
 set -euo pipefail
 SHORT=$1; APP_DIR=$2; ROOT=$3; WITH_DB=$4
@@ -99,10 +99,10 @@ fi
 echo "backup: $BK"
 REMOTE
 
-echo "==> 3/6 sync code"
+echo "==> 3/7 sync code"
 rsync "${RSYNC_FLAGS[@]}" "$SRC/" "$SERVER:$APP_DIR/"
 
-echo "==> 4/6 install runtime integration files"
+echo "==> 4/7 install runtime integration files"
 ssh "$SERVER" bash -s -- "$APP_DIR" "$REMOTE_ROOT" <<'REMOTE'
 set -euo pipefail
 APP_DIR=$1; ROOT=$2
@@ -114,7 +114,7 @@ systemctl daemon-reload
 echo "runtime files installed"
 REMOTE
 
-echo "==> 5/6 build (npm ci + next build)"
+echo "==> 5/7 build (npm ci + next build)"
 ssh "$SERVER" bash -s -- "$APP_DIR" "$RUN_USER" <<'REMOTE'
 set -euo pipefail
 APP_DIR=$1; RUN_USER=$2
@@ -122,7 +122,29 @@ chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH && npm ci && NEXT_TELEMETRY_DISABLED=1 npm run build"
 REMOTE
 
-echo "==> 6/6 record commit, start, verify"
+echo "==> 6/7 apply database migrations"
+ssh "$SERVER" bash -s -- "$APP_DIR" "$WITH_DB" <<'REMOTE'
+set -euo pipefail
+APP_DIR=$1; WITH_DB=$2
+if [ "$WITH_DB" != 1 ]; then
+  echo "note: --no-db given; skipping database migrations (apply deploy/mysql/migrations/*.sql manually)"
+  exit 0
+fi
+if ! command -v docker >/dev/null 2>&1 || ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'polaris-mysql'; then
+  echo "error: polaris-mysql container not found; cannot apply database migrations before starting the service" >&2
+  exit 1
+fi
+# Every file in deploy/mysql/migrations is idempotent by convention (CREATE TABLE IF NOT EXISTS /
+# conditional ALTER / GRANT), so applying them on each deploy keeps the schema in step with the
+# code that is about to start. A failure aborts the deploy before the service is restarted.
+for file in "$APP_DIR"/deploy/mysql/migrations/*.sql; do
+  echo "applying $(basename "$file")"
+  docker exec -i polaris-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' < "$file"
+done
+echo "database migrations applied"
+REMOTE
+
+echo "==> 7/7 record commit, start, verify"
 ssh "$SERVER" bash -s -- "$APP_DIR" "$RUN_USER" "$SERVICE" "$HEALTH_URL" "$COMMIT" <<'REMOTE'
 set -euo pipefail
 APP_DIR=$1; RUN_USER=$2; SERVICE=$3; HEALTH=$4; COMMIT=$5

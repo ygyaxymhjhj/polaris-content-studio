@@ -27,7 +27,7 @@ async function writePublishAudit(entry: {
   postizPostId?: string;
   publishedUrl?: string;
   scheduledAt?: string;
-  status: "published" | "failed";
+  status: "published" | "queued" | "failed";
   error?: string;
 }) {
   if (!databaseConfigured()) {
@@ -84,20 +84,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Post content cannot be empty" }, { status: 400 });
     }
 
+    // The registry is the server-side source of truth for the audit name and platform; the request
+    // body is only a fallback for channels that have not been synced into the registry yet.
+    const account = await getSocialAccount(body.integrationId);
+
     // Ownership gate: members may only publish to channels they own (unassigned channels included).
     // Administrators keep full access. Refusals never reach Postiz and never write an audit row.
-    if (auth.user.role !== "admin") {
-      const account = await getSocialAccount(body.integrationId);
-      if (!account || account.ownerUserId !== auth.user.id) {
-        return NextResponse.json(
-          { error: "This social account is not assigned to you. Ask an administrator to assign it.", code: "FORBIDDEN" },
-          { status: 403 }
-        );
-      }
+    if (auth.user.role !== "admin" && (!account || account.ownerUserId !== auth.user.id)) {
+      return NextResponse.json(
+        { error: "This social account is not assigned to you. Ask an administrator to assign it.", code: "FORBIDDEN" },
+        { status: 403 }
+      );
+    }
+    if (body.publishAt && Number.isNaN(Date.parse(body.publishAt))) {
+      return NextResponse.json({ error: "publishAt must be a valid date-time." }, { status: 400 });
     }
 
-    const platform = (body.platform || "").trim() || "unknown";
-    const accountName = (body.accountName || "").trim() || body.integrationId;
+    const platform = account?.provider || (body.platform || "").trim() || "unknown";
+    const accountName = account?.accountName || (body.accountName || "").trim() || body.integrationId;
 
     const result = await publishToPostiz({
       integrationId: body.integrationId,
@@ -119,7 +123,7 @@ export async function POST(request: Request) {
       postizPostId: result.postId,
       publishedUrl: result.url,
       scheduledAt: result.success && body.publishAt ? body.publishAt : undefined,
-      status: result.success ? "published" : "failed",
+      status: result.success ? (result.queued ? "queued" : "published") : "failed",
       error: result.error
     });
 

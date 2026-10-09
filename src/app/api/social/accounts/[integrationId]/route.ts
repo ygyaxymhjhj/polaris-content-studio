@@ -41,6 +41,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
   if (body.ownerUserId) {
     const member = await findUserById(body.ownerUserId);
     if (!member) return json({ error: "That member does not exist." }, 400);
+    if (member.disabled) return json({ error: "That member is disabled and cannot own accounts." }, 400);
   }
 
   await assignAccount(integrationId, body.ownerUserId, auth.user.id);
