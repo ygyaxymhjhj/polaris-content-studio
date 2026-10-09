@@ -12,7 +12,7 @@ try {
   // The schema module requires zod, and these files are transpiled into a temp directory, so the
   // project's own dependencies have to be reachable from there.
   await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(temp, "node_modules"), "dir");
-  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "normalize-analysis", "starter-assets", "ai", "project-schema"]) {
+  for (const file of ["types", "asset-specs", "context-budget", "source-config", "social-guidelines", "normalize-analysis", "starter-assets", "ai", "image-upload", "project-schema"]) {
     const source = await fs.readFile(`src/lib/${file}.ts`, "utf8");
     const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
     await fs.writeFile(path.join(temp, `${file}.js`), outputText);

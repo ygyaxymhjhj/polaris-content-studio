@@ -15,6 +15,9 @@ export interface SocialAccount {
   identifier: string;
   picture?: string;
   disabled?: boolean;
+  /** Local ownership: the member this channel belongs to; null/undefined means unassigned (admins only). */
+  ownerUserId?: string | null;
+  ownerName?: string | null;
 }
 
 export interface FactItem {

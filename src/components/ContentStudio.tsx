@@ -23,7 +23,6 @@ import {
   Loader2,
   LogOut,
   MoreHorizontal,
-  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -54,6 +53,7 @@ import SocialAccountsView from "@/components/SocialAccountsView";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
+import AssetImageEditor from "@/components/AssetImageEditor";
 import {
   ContentAsset,
   DEFAULT_PLATFORMS,
@@ -70,9 +70,6 @@ import {
   RewriteSnapshot,
   SourceAnalysis
 } from "@/lib/types";
-
-// Frozen public article snapshot for repeatable editorial tests; never fetched on page load.
-const sampleArticle = fixedArticle.text;
 
 type View = "workspace" | "facts" | "assets" | "export" | "accounts" | "settings";
 
@@ -188,6 +185,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(DEFAULT_PLATFORMS);
   const [selectedAsset, setSelectedAsset] = useState<ContentAsset | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
   const [deliveryDraft, setDeliveryDraft] = useState("{}");
   const [assetFilter, setAssetFilter] = useState<Platform | "all">("all");
   const [loading, setLoading] = useState<"parse" | "fetch" | "analyze" | "generate" | "export" | null>(null);
@@ -457,11 +455,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     }
   }
 
-  function loadSample() {
-    importSource(fixedArticle, "wikifx-202609079764964517.snapshot.json");
-    notify("Sample article loaded.");
-  }
-
   async function fetchArticle() {
     if (!config.sourceUrl.trim()) {
       notify("Add an article URL first.");
@@ -480,26 +473,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       const message = error instanceof Error ? error.message : "Unable to fetch article";
       setSourceError(message);
       notify(t(message));
-    } finally {
-      setLoading(null);
-    }
-  }
-
-  async function runDemo() {
-    const demoSource = fixedArticle;
-    const demoConfig = alignSourceConfig(config, demoSource, editedConfig.current);
-    importSource(demoSource, "wikifx-202609079764964517.snapshot.json");
-    setLoading("analyze");
-    try {
-      const analysisResponse = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ article: sampleArticle, title: demoConfig.title }) });
-      const rawAnalysis = await readJson<Record<string, unknown> & { error?: string }>(analysisResponse);
-      if (!analysisResponse.ok) throw new Error(rawAnalysis.error || "Demo analysis failed");
-      const sourceAnalysis = normalizeAnalysis(rawAnalysis, sampleArticle, demoConfig.title);
-      const confirmed = { ...sourceAnalysis, facts: sourceAnalysis.facts.map((fact) => ({ ...fact, verified: fact.usableOnSocial })) };
-      setAnalysis(confirmed);
-      await generatePack(demoConfig, confirmed, selectedPlatforms, "Demo content pack ready to inspect.");
-    } catch (error) {
-      notify(error instanceof Error ? error.message : t("Demo failed"));
     } finally {
       setLoading(null);
     }
@@ -789,7 +762,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   function saveAsset() {
-    if (!selectedAsset) return;
+    if (!selectedAsset || imageUploading) return;
     let meta: Record<string, unknown>;
     try {
       meta = JSON.parse(deliveryDraft);
@@ -838,7 +811,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           assetId: asset.id,
           integrationId: accountId,
           content: asset.content,
-          imageUrl: asset.imageUrl || config.imageUrl,
+          imageUrl: asset.imageUrl ?? config.imageUrl,
           publishAt: postAt || undefined,
           projectId: currentProjectId || undefined,
           platform: asset.platform,
@@ -1003,14 +976,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         </header>
 
         <div className="content-wrap">
-          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={setCurrentProjectId} />
-          {view === "workspace" && <>
-            {(sourceError || sourcePending) && <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>}
-            <a className="secondary-button" href="/downloads/polaris-article-import.zip" download><Download size={15} /> {t("Download browser extension")}</a>
-            <p className="config-source-note">{t("Install once, open the article in your own browser, preview and send it here. No server fetch required.")}</p>
-            <button className="secondary-button" onClick={downloadSource} disabled={!sourceText.trim() || sourcePending}><Download size={15} /> {t("Export article JSON")}</button>
-            <p className="config-source-note">{t("Export after a successful local fetch, then upload this JSON on the deployed site. This exports the source article, not generated assets.")}</p>
-          </>}
+          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={setCurrentProjectId} hidden={view === "export" || view === "accounts" || view === "settings"} />
+          {view === "workspace" && (sourceError || sourcePending) && (
+            <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>
+          )}
           {view === "workspace" && (
             <WorkspaceView
               config={config}
@@ -1022,12 +991,12 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               selectedPlatforms={selectedPlatforms}
               togglePlatform={togglePlatform}
               handleFile={handleFile}
-              loadSample={loadSample}
               analyzeArticle={analyzeArticle}
               hasAnalysis={Boolean(analysis)}
               goTo={goTo}
-              runDemo={runDemo}
               fetchArticle={fetchArticle}
+              downloadSource={downloadSource}
+              sourcePending={sourcePending}
             />
           )}
           {view === "facts" && analysis && (
@@ -1037,7 +1006,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onApprove={approveAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
           )}
           {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} onBatchPublish={batchPublish} loading={loading} socialAccountsCount={socialAccounts.length} />}
-          {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} oauthConfigured={postizOAuthConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
+          {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} oauthConfigured={postizOAuthConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} isAdmin={user.role === "admin"} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
           {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setView("accounts")} />}
         </div>
       </main>
@@ -1080,14 +1049,14 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               <button type="button" className={`drawer-mode-tab ${drawerMode === "edit" ? "active" : ""}`} onClick={() => setDrawerMode("edit")}>
                 ✍ 编辑草稿
               </button>
-              <button type="button" className={`drawer-mode-tab ${drawerMode === "preview" ? "active" : ""}`} onClick={() => setDrawerMode("preview")}>
+              <button type="button" className={`drawer-mode-tab ${drawerMode === "preview" ? "active" : ""}`} disabled={imageUploading} onClick={() => setDrawerMode("preview")}>
                 👁 真实社媒仿真预览
               </button>
             </div>
 
             {drawerMode === "preview" ? (
               <div style={{ padding: "16px 0", maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
-                <SocialPreview asset={viewAsset} imageUrl={viewAsset.imageUrl || config.imageUrl} />
+                <SocialPreview asset={viewAsset} imageUrl={viewAsset.imageUrl ?? config.imageUrl} />
               </div>
             ) : (
             <div className="drawer-columns" ref={columnsAnchor}>
@@ -1105,26 +1074,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 </div>}
                 <label className="field-label">{t("Title / internal name")}<input value={viewAsset.title} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("title", event.target.value)} /></label>
                 
-                <div className="drawer-section">
-                  <div className="field-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>{t("配图 (文章原头图)")}</span>
-                    {config.imageUrl && viewAsset.imageUrl !== config.imageUrl && (
-                      <button type="button" className="text-button" onClick={() => updateSelectedAsset("imageUrl", config.imageUrl || "")}>
-                        恢复文章原图
-                      </button>
-                    )}
-                  </div>
-                  {(viewAsset.imageUrl || config.imageUrl) ? (
-                    <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 4, padding: 8, background: "#f8f7f5", borderRadius: 8, border: "1px solid var(--line)" }}>
-                      <img src={viewAsset.imageUrl || config.imageUrl} alt="Lead" style={{ width: 84, height: 52, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} referrerPolicy="no-referrer" />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <input style={{ fontSize: 11, height: 30 }} value={viewAsset.imageUrl || config.imageUrl || ""} onChange={(e) => updateSelectedAsset("imageUrl", e.target.value)} placeholder="图片 URL (https://...)" />
-                      </div>
-                    </div>
-                  ) : (
-                    <input value={viewAsset.imageUrl || ""} onChange={(e) => updateSelectedAsset("imageUrl", e.target.value)} placeholder="输入配图 URL (https://...)" />
-                  )}
-                </div>
+                <AssetImageEditor
+                  key={`${selectedAsset.id}-${previewIndex ?? "draft"}`}
+                  value={viewAsset.imageUrl ?? config.imageUrl ?? ""}
+                  originalImageUrl={config.imageUrl}
+                  title={viewAsset.title}
+                  disabled={!!previewCandidate}
+                  onChange={(imageUrl) => updateSelectedAsset("imageUrl", imageUrl)}
+                  onBusyChange={setImageUploading}
+                />
 
                 <label className="field-label">{t("Content")}<textarea className="drawer-textarea" value={viewAsset.content} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("content", event.target.value)} /></label>
                 <label className="field-label">{t("CTA")}<input value={viewAsset.cta || ""} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("cta", event.target.value)} /></label>
@@ -1183,10 +1141,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
             <div className="drawer-footer">
               <button className="secondary-button" onClick={closeDrawer}>{t("Cancel")}</button>
-              <button type="button" className="secondary-button" style={{ color: "#18181b", borderColor: "#d4d4d8", fontWeight: 700 }} onClick={() => setPublishModalAsset(viewAsset)}>
+              <button type="button" className="secondary-button" style={{ color: "#18181b", borderColor: "#d4d4d8", fontWeight: 700 }} disabled={imageUploading} onClick={() => setPublishModalAsset(viewAsset)}>
                 <Send size={14} /> 发布到 Postiz
               </button>
-              <button className="primary-button" onClick={saveAsset}><Check size={16} /> {t("Save changes")}</button>
+              <button className="primary-button" onClick={saveAsset} disabled={imageUploading}><Check size={16} /> {t("Save changes")}</button>
             </div>
           </aside>
         </div>
@@ -1219,7 +1177,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                   <div className="info-banner" style={{ marginTop: 6 }}>
                     <span>
                       {postizConfigured
-                        ? t("No authorised accounts yet. Open Postiz, connect a platform, then press Refresh.")
+                        ? t(user.role === "admin"
+                          ? "No authorised accounts yet. Open Postiz, connect a platform, then press Refresh."
+                          : "No accounts available yet. Connect an account, or ask an administrator to assign one to you.")
                         : t("Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}
                     </span>
                   </div>
@@ -1315,6 +1275,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         accounts={socialAccounts}
         error={channelsError}
         onRefresh={loadChannels}
+        canUsePostizUi={user.role === "admin"}
       />
 
       {toast && <div className="toast"><CheckCircle2 size={17} /> {t(toast)}</div>}
@@ -1323,7 +1284,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 }
 
 function WorkspaceView({
-  config, updateConfig, sourceText, setSourceText, sourceName, loading, selectedPlatforms, togglePlatform, handleFile, loadSample, analyzeArticle, hasAnalysis, goTo, runDemo, fetchArticle
+  config, updateConfig, sourceText, setSourceText, sourceName, loading, selectedPlatforms, togglePlatform, handleFile, analyzeArticle, hasAnalysis, goTo, fetchArticle, downloadSource, sourcePending
 }: {
   config: ProjectConfig;
   updateConfig: (field: keyof ProjectConfig, value: string) => void;
@@ -1334,24 +1295,38 @@ function WorkspaceView({
   selectedPlatforms: Platform[];
   togglePlatform: (platform: Platform) => void;
   handleFile: (event: ChangeEvent<HTMLInputElement>) => void;
-  loadSample: () => void;
   analyzeArticle: () => void;
   hasAnalysis: boolean;
   goTo: (view: View) => void;
-  runDemo: () => void;
   fetchArticle: () => void;
+  downloadSource: () => void;
+  sourcePending: boolean;
 }) {
   const t = useTranslation();
   const [inputMode, setInputMode] = useState<"url" | "text">("url");
   const [showAdvanced, setShowAdvanced] = useState(false);
   return (
     <>
-      <div className="page-heading hero-heading">
-        <div><div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} · V1</div><h1 style={{ fontSize: 32, margin: "6px 0 10px" }}>{t("从一篇原创新闻，到全渠道社交媒体矩阵")}</h1><p style={{ maxWidth: 640 }}>{t("自动提取关键信息与原头图，通过 Postiz 托管账号直接完成多渠道原生内容预览与发布。")}</p></div>
+      <div className="workspace-hero">
+        <div className="workspace-hero-content">
+          <div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} · V1</div>
+          <h1>{t("从一篇原创新闻，到全渠道社交媒体矩阵")}</h1>
+          <p>{t("自动提取关键信息与原头图，通过 Postiz 托管账号直接完成多渠道原生内容预览与发布。")}</p>
+        </div>
       </div>
 
       <section className="panel source-panel">
-        <div className="section-heading"><div><span className="step-number">01</span><div className="heading-copy"><h2>{t("导入文章来源")}</h2><p>{t("支持公网文章 URL 链接抓取，或直接粘贴新闻正文及上传文档")}</p></div></div><div className="heading-links"><button className="text-button" onClick={loadSample}><Sparkles size={14} /> {t("Restore test article")}</button><button className="text-button demo-link" onClick={runDemo} disabled={loading !== null}><Play size={14} fill="currentColor" /> {t("Preview full demo")}</button></div></div>
+        <div className="section-heading">
+          <div><span className="step-number">01</span><div className="heading-copy"><h2>{t("导入文章来源")}</h2><p>{t("支持公网文章 URL 链接抓取，或直接粘贴新闻正文及上传文档")}</p></div></div>
+          <div className="heading-links">
+            <a className="compact-tool-btn" href="/downloads/polaris-article-import.zip" download title={t("Install once, open the article in your own browser, preview and send it here. No server fetch required.")}>
+              <Download size={11} /> <span>{t("Browser extension")}</span>
+            </a>
+            <button type="button" className="compact-tool-btn" onClick={downloadSource} disabled={!sourceText.trim() || sourcePending} title={t("Export after a successful local fetch, then upload this JSON on the deployed site. This exports the source article, not generated assets.")}>
+              <Download size={11} /> <span>{t("Export article JSON")}</span>
+            </button>
+          </div>
+        </div>
 
         <div style={{ marginBottom: 16 }}>
           <div className="segmented-tabs">
@@ -1366,7 +1341,7 @@ function WorkspaceView({
         {inputMode === "url" ? (
           <div className="url-import">
             <div className="url-import-icon"><Link2 size={17} /></div>
-            <div className="url-import-body"><div className="url-import-label"><strong>输入文章链接 (URL)</strong><span>自动提取正文与原头图</span></div><div className="url-input-row"><input value={config.sourceUrl} onChange={(event) => updateConfig("sourceUrl", event.target.value)} placeholder="https://example.com/your-article" /><button className="primary-button" onClick={fetchArticle} disabled={loading === "fetch"}>{loading === "fetch" ? <><Loader2 className="spin" size={14} /> 抓取中…</> : <><Link2 size={14} /> 抓取文章</>}</button></div></div>
+            <div className="url-import-body"><div className="url-import-label"><strong>{t("Fetch from an article URL")}</strong><span>{t("自动提取正文与原头图")}</span></div><div className="url-input-row"><input value={config.sourceUrl} onChange={(event) => updateConfig("sourceUrl", event.target.value)} placeholder="https://example.com/your-article" /><button className="primary-button" onClick={fetchArticle} disabled={loading === "fetch"}>{loading === "fetch" ? <><Loader2 className="spin" size={14} /> {t("Fetching…")}</> : <><Link2 size={14} /> {t("Fetch article")}</>}</button></div></div>
           </div>
         ) : (
         <div className="source-grid">
@@ -1386,23 +1361,26 @@ function WorkspaceView({
         )}
 
         {(config.title || config.imageUrl || sourceText) && (
-          <div style={{ marginTop: 18, padding: 16, background: "#fbfaf8", border: "1px solid var(--line)", borderRadius: 10 }}>
-            <div style={{ display: "grid", gridTemplateColumns: config.imageUrl ? "1fr 140px" : "1fr", gap: 16, alignItems: "center" }}>
-              <div>
-                <label className="field-label"><span>文章标题</span><input value={config.title} onChange={(e) => updateConfig("title", e.target.value)} placeholder="文章标题" /></label>
+          <div className="article-meta-card">
+            <div className="article-meta-grid">
+              <div className="article-meta-title-col">
+                <label className="field-label"><span>文章标题</span><input value={config.title} onChange={(e) => updateConfig("title", e.target.value)} placeholder="输入或核对文章标题" /></label>
               </div>
               {config.imageUrl && (
-                <div style={{ position: "relative", width: 140, height: 80, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)", background: "#eee" }}>
-                  <img src={config.imageUrl} alt="Lead" style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
-                  <span style={{ position: "absolute", bottom: 4, left: 4, background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 9, padding: "2px 5px", borderRadius: 4, fontFamily: "DM Mono" }}>文章原头图</span>
+                <div className="article-meta-image-col">
+                  <div className="article-lead-thumb">
+                    <img src={config.imageUrl} alt="Lead" referrerPolicy="no-referrer" />
+                    <span className="thumb-badge">文章原头图</span>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div style={{ marginTop: 12 }}>
+            <div className="article-meta-footer">
               <button type="button" className="advanced-toggle-btn" onClick={() => setShowAdvanced(!showAdvanced)}>
-                <Settings2 size={13} /> {showAdvanced ? "收起高级配置参数 ▲" : "展开高级配置参数 (分类、语言、受众、CTA) ▼"}
+                <Settings2 size={12} /> {showAdvanced ? "收起高级配置参数 ▲" : "展开高级配置参数 (分类、语言、受众、CTA) ▼"}
               </button>
+            </div>
 
               {showAdvanced && (
           <div className="config-column">
@@ -1418,7 +1396,6 @@ function WorkspaceView({
             </div>
           </div>
               )}
-            </div>
           </div>
         )}
       </section>
@@ -1428,7 +1405,7 @@ function WorkspaceView({
         <div className="platform-selection">
           {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} type="button" aria-pressed={selected} className={`platform-option ${selected ? "selected" : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
         </div>
-        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> 审核机制保障真实事实，支持在抽屉中进行原生真实社媒仿真预览与 Postiz 联调</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("生成社媒文案全案")} <ArrowRight size={16} /></>}</button></div>
+        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> 审核机制保障真实事实，支持在抽屉中进行原生真实社媒仿真预览与 Postiz 联调</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
         {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
       </section>
 
@@ -1532,7 +1509,7 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
 function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onApprove, onPublish, onGenerate, onExport, loading, usedFallback, pendingPlatforms, targetCount, config }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset, mode?: "edit" | "preview") => void; onApprove: (id: string) => void; onPublish: (asset: ContentAsset) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean; pendingPlatforms: Platform[]; targetCount: number; config: ProjectConfig }) {
   const t = useTranslation();
   const counts = assets.reduce<Record<string, number>>((result, asset) => { result[asset.platform] = (result[asset.platform] || 0) + 1; return result; }, {});
-  const cardImage = (asset: ContentAsset) => asset.imageUrl || config.imageUrl;
+  const cardImage = (asset: ContentAsset) => asset.imageUrl ?? config.imageUrl;
 
   const pendingForView = pendingPlatforms.filter((platform) => filter === "all" || platform === filter);
   const generating = pendingPlatforms.length > 0;
@@ -1559,5 +1536,5 @@ function ExportView({ assets, approvedCount, onExport, onBatchPublish, loading, 
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>已托管账号 ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("系统设置与第三方托管平台连接状态。")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>Postiz 社媒账号托管</h2><p>{postizConfigured ? "已连接到 Postiz 实例，系统将通过已授权的账号进行自动化投递。" : "请在环境变量中配置 POSTIZ_API_URL 与 POSTIZ_API_KEY。"}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{canManageMembers ? "全部社媒账号" : "我的社媒账号"} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{canManageMembers ? "暂无绑定的社媒账号，请在 Postiz 控制台中连接社交平台。" : "暂无可用账号，请先连接账号或联系管理员分配。"}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
 }

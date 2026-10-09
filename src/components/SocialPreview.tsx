@@ -32,7 +32,7 @@ export default function SocialPreview({
   authorName = "Polaris Insights",
   authorHandle = "polaris_insight"
 }: SocialPreviewProps) {
-  const currentImage = imageUrl || asset.imageUrl;
+  const currentImage = imageUrl ?? asset.imageUrl;
   const platform = asset.platform;
   const [slideIndex, setSlideIndex] = useState(0);
 

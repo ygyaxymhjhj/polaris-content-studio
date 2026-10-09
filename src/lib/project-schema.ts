@@ -1,25 +1,27 @@
 import { z } from "zod";
 import type { ContentAsset, Platform, ProjectConfig, RewriteMessage, SourceAnalysis } from "./types";
 import type { ImportedSource } from "./source-config";
+import { MAX_IMAGE_DATA_URL_LENGTH } from "./image-upload";
 
 const str = z.string().max(150000);
+const imageUrl = z.string().max(MAX_IMAGE_DATA_URL_LENGTH);
 const strings = z.array(str).max(1000);
 const platform = z.enum(["facebook", "threads", "linkedin", "x", "instagram"]);
-const config = z.object({ name: str, title: str, category: str, language: z.enum(["en", "vi", "zh"]), audience: str, cta: str, websiteUrl: str, sourceUrl: str, tone: str, publishDate: str, imageUrl: str.optional() });
+const config = z.object({ name: str, title: str, category: str, language: z.enum(["en", "vi", "zh"]), audience: str, cta: str, websiteUrl: str, sourceUrl: str, tone: str, publishDate: str, imageUrl: imageUrl.optional() });
 const fact = z.object({ id: str, type: z.enum(["claim", "number", "date", "entity", "quote"]), text: str, sourceExcerpt: str, sourceLocation: str, verified: z.boolean(), usableOnSocial: z.boolean(), riskLevel: z.enum(["low", "medium", "high"]) });
 const metadata = z.record(z.string(), z.unknown());
 const before = z.object({ title: str, content: str, cta: str.optional(), meta: metadata.optional(), factIds: strings });
 const asset = z.object({
   id: str, platform, assetType: str, generationMode: z.enum(["ai", "local"]).optional(), variant: str.optional(),
   title: str, hook: str.optional(), content: str, cta: str.optional(), deepLink: str.optional(),
-  imageUrl: str.optional(), publishStatus: z.enum(["unpublished", "publishing", "published", "failed"]).optional(),
+  imageUrl: imageUrl.optional(), publishStatus: z.enum(["unpublished", "publishing", "published", "failed"]).optional(),
   publishedUrl: str.optional(), publishedAt: str.optional(), publishError: str.optional(), targetAccountId: str.optional(),
   factIds: strings, riskFlags: strings, status: z.enum(["draft", "needs_review", "approved", "revision_required"]),
   meta: metadata.optional(), updatedAt: str, revisions: z.array(z.object({ at: str, instruction: str, before })).max(40).optional()
 });
 export const projectSchema = z.object({
   schemaVersion: z.literal(1), config, sourceText: str, sourceName: str, sourcePending: z.boolean(),
-  importedSource: z.object({ text: str, title: str.optional(), sourceUrl: str.optional(), canonical: str.optional(), imageUrl: str.optional() }).nullable(),
+  importedSource: z.object({ text: str, title: str.optional(), sourceUrl: str.optional(), canonical: str.optional(), imageUrl: imageUrl.optional() }).nullable(),
   editedConfig: z.array(z.enum(["name", "title", "category", "language", "audience", "cta", "websiteUrl", "sourceUrl", "tone", "publishDate", "imageUrl"])).max(20),
   analysis: z.object({ sourceReviewBasis: z.literal("team-reviewed-article").optional(), summaryShort: str, summaryLong: str, keyTerms: strings, riskFlags: strings, facts: z.array(fact).max(2000) }).nullable(),
   assets: z.array(asset).max(200), selectedPlatforms: z.array(platform).max(5),

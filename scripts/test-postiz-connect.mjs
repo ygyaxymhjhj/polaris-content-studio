@@ -22,6 +22,10 @@ function loadModule(path, mocks = {}) {
 const environmentNames = ["POSTIZ_API_URL", "POSTIZ_API_KEY", "POSTIZ_JWT_SECRET", "POSTIZ_UI_URL"];
 const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]));
 const previousFetch = globalThis.fetch;
+// The route logs expected best-effort failures (attempt record without a database) through
+// console.error; keep the regression output readable while assertion failures still surface.
+const originalConsoleError = console.error;
+console.error = () => {};
 const platformTypes = loadModule("src/lib/types.ts");
 const postiz = loadModule("src/lib/postiz.ts", { "./types": platformTypes });
 const capturedRequests = [];
@@ -30,7 +34,14 @@ let upstreamStatus = 200;
 let currentAccount = null;
 const routes = loadModule("src/app/api/social/connect/route.ts", {
   "@/lib/postiz": postiz,
-  "@/lib/auth": { currentUser: async () => currentAccount, unauthorized: () => NextResponse.json({ code: "UNAUTHORIZED" }, { status: 401 }) }
+  "@/lib/auth": { currentUser: async () => currentAccount, unauthorized: () => NextResponse.json({ code: "UNAUTHORIZED" }, { status: 401 }) },
+  // The route records a best-effort connect attempt for ownership claiming; this regression has no
+  // database, and the route must treat a missing database as "claim later, by an administrator".
+  "@/lib/social-accounts": {
+    createConnectAttempt: async () => { throw new Error("database is not configured in this regression"); },
+    consumeConnectAttempt: async () => null,
+    claimNewAccounts: async () => []
+  }
 });
 const baseUrl = "https://studio.example.test";
 function startRequest(body, origin = baseUrl) {
@@ -65,7 +76,7 @@ try {
   assert.equal(capturedRequests.length, 0, "Rejected requests must not contact Postiz");
 
   const startResponse = await routes.POST(startRequest({ provider: "x" }));
-  assert.equal(startResponse.status, 200, "Ordinary members can connect shared social accounts");
+  assert.equal(startResponse.status, 200, "Members can start connecting an account for themselves");
   const responseData = await startResponse.json();
   assert.deepEqual(responseData, { url: JSON.parse(upstreamBody) });
   const upstreamRequest = capturedRequests.at(-1);
@@ -125,9 +136,15 @@ try {
   assert.match(dialogMarkup, /role="dialog"/);
   assert.equal((dialogMarkup.match(/type="radio"/g) || []).length, 5);
   assert.ok(!dialogMarkup.includes('type="password"'), "The connection UI must never collect social passwords");
-  console.log("PASS: URL normalization; server-only JWT signature and expiry; authenticated member access; CSRF/input rejection; user-bound callback state; credential-safe errors; unsupported Postiz fallback; accessible translated platform picker.");
+  assert.ok(!dialogMarkup.includes("改用 Postiz 连接"), "Members must not be offered the direct Postiz hand-off");
+  const adminDialogMarkup = renderToStaticMarkup(createElement(translations.LocaleContext.Provider, { value: "zh" }, createElement(Dialog, {
+    open: true, configured: true, oauthConfigured: false, loading: false, uiUrl: "https://postiz.example.test", accounts: [], error: "", onClose() {}, async onRefresh() {}, canUsePostizUi: true
+  })));
+  assert.ok(adminDialogMarkup.includes("改用 Postiz 连接"), "Administrators keep the direct Postiz hand-off");
+  console.log("PASS: URL normalization; server-only JWT signature and expiry; authenticated member access; CSRF/input rejection; user-bound callback state; credential-safe errors; unsupported Postiz fallback; accessible translated platform picker; member Postiz hand-off hidden.");
 } finally {
   globalThis.fetch = previousFetch;
+  console.error = originalConsoleError;
   for (const name of environmentNames) {
     if (previousEnvironment[name] === undefined) delete process.env[name];
     else process.env[name] = previousEnvironment[name];

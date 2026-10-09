@@ -15,9 +15,11 @@ type Props = {
   accounts: SocialAccount[];
   error: string;
   onRefresh: () => Promise<void>;
+  /** Administrators keep the direct Postiz hand-off; members must not sign in to Postiz, where channels are not isolated. */
+  canUsePostizUi?: boolean;
 };
 
-export default function ConnectAccountsDialog({ open, onClose, configured, oauthConfigured, loading, uiUrl, accounts, error, onRefresh }: Props) {
+export default function ConnectAccountsDialog({ open, onClose, configured, oauthConfigured, loading, uiUrl, accounts, error, onRefresh, canUsePostizUi = false }: Props) {
   const translate = useTranslation();
   const [provider, setProvider] = useState<Platform>("x");
   const [creatingLink, setCreatingLink] = useState(false);
@@ -156,7 +158,7 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
             <span className="connection-step-number">02</span>
             <div><strong>{translate("Authorise on")} {selectedPlatform.label}</strong><p>{translate("Use your own platform account. Polaris never asks for your social password.")}</p></div>
           </div>
-          <p className="connection-security"><ShieldCheck size={15} /> {translate("Connected accounts are shared with your workspace team.")}</p>
+          <p className="connection-security"><ShieldCheck size={15} /> {translate("Only the owner and workspace administrators can see and use an account.")}</p>
           {!loading && !oauthConfigured && <div className="info-banner" role="status"><AlertTriangle size={18} /><div>{translate(configured
             ? "Direct authorisation requires POSTIZ_JWT_SECRET to match the Postiz server's JWT_SECRET."
             : "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}</div></div>}
@@ -165,9 +167,11 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
         </div>
 
         <div className="dialog-footer">
-          <button type="button" className="secondary-button" onClick={() => window.open(uiUrl, "_blank", "noopener,noreferrer")} disabled={!uiUrl}>
-            <ExternalLink size={14} /> {translate("Open Postiz instead")}
-          </button>
+          {canUsePostizUi && (
+            <button type="button" className="secondary-button" onClick={() => window.open(uiUrl, "_blank", "noopener,noreferrer")} disabled={!uiUrl}>
+              <ExternalLink size={14} /> {translate("Open Postiz instead")}
+            </button>
+          )}
           <button type="button" className="primary-button" onClick={() => void startAuthorization()} disabled={!oauthConfigured || creatingLink || authorizing}>
             {creatingLink ? <Loader2 size={15} className="spin" /> : <ArrowUpRight size={15} />}
             {translate(creatingLink ? "Preparing authorisation..." : authorizing ? "Waiting for authorisation..." : "Continue to authorisation")}

@@ -116,6 +116,24 @@ export async function listUsers(): Promise<Member[]> {
   }));
 }
 
+/** Single member lookup, used to validate assignment targets before writing them to a foreign key. */
+export async function findUserById(userId: string): Promise<Member | undefined> {
+  const [rows] = await database().execute<RowDataPacket[]>(
+    "SELECT id, username, display_name AS displayName, role, disabled, created_at AS createdAt FROM users WHERE id=?",
+    [userId]
+  );
+  if (!rows.length) return undefined;
+  const row = rows[0];
+  return {
+    id: String(row.id),
+    username: String(row.username),
+    displayName: String(row.displayName),
+    role: row.role === "admin" ? "admin" : "member",
+    disabled: Number(row.disabled) === 1,
+    createdAt: String(row.createdAt)
+  };
+}
+
 export async function createUser(username: string, displayName: string, password: string) {
   const id = randomUUID();
   await database().execute("INSERT INTO users (id, username, display_name, password_hash, role) VALUES (?,?,?,?,'member')", [

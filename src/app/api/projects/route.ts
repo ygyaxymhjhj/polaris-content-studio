@@ -39,7 +39,7 @@ async function boundedJson(request: NextRequest) {
   while (true) {
     const { done, value } = await reader.read(); if (done) break;
     size += value.byteLength;
-    if (size > 4 * 1024 * 1024) { await reader.cancel(); throw new Error("TOO_LARGE"); }
+    if (size > 16 * 1024 * 1024) { await reader.cancel(); throw new Error("TOO_LARGE"); }
     buffers.push(value);
   }
   return JSON.parse(Buffer.concat(buffers).toString("utf8"));

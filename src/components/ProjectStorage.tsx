@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Copy, HelpCircle, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { parseSnapshot, type ProjectSnapshot, type SavedProject } from "@/lib/project-schema";
 
@@ -9,7 +10,7 @@ function uuid() {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 const lastKey = "polaris-last-project";
-export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange }: { snapshot: ProjectSnapshot; busy: boolean; onRestore: (snapshot: ProjectSnapshot) => void; onProjectChange?: (projectId: string) => void }) {
+export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange, hidden = false }: { snapshot: ProjectSnapshot; busy: boolean; onRestore: (snapshot: ProjectSnapshot) => void; onProjectChange?: (projectId: string) => void; hidden?: boolean }) {
   const t = useTranslation();
   const serialized = JSON.stringify(snapshot);
   const latest = useRef(serialized); latest.current = serialized;
@@ -136,17 +137,86 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
     await save(true);
   }
   const dirty = serialized !== saved.current;
-  return <section className="project-storage" aria-label={t("Project storage")}>
-    <div><strong>{t("MySQL project history")}</strong><span role="status">{t(dirty && !working && !error && ready ? "Unsaved changes" : status)}</span>
-      <small>{project.current.version > 0 ? `ID: ${project.current.id}` : ""}</small></div>
-    <div className="storage-actions">
-      <button className="small-button" disabled={!ready || working} onClick={() => void save(true)}>{t("Save now")}</button>
-      <button className="small-button" disabled={!ready || working || busy} onClick={() => void copyProject()}>{t("Save as new project")}</button>
-      <select aria-label={t("Saved projects")} value={choice} onChange={e => setChoice(e.target.value)}><option value="">{t("Choose a saved project")}</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name.slice(0,75)} · {p.assetCount} · {p.updatedAt}</option>)}</select>
-      <button className="small-button" disabled={!choice || working || busy} onClick={() => void loadProject()}>{t("Restore project")}</button>
-      <button className="small-button" disabled={working} onClick={() => void refreshHistory().then(() => { enabled.current = true; if (!project.current.id) project.current.id = uuid(); setReady(true); setError(""); setStatus("Ready to save"); }).catch(e => setError(e.message))}>{t("Refresh history")}</button>
-    </div>
-    <p>{t("Projects are isolated by account, not by browser. Save editor changes before closing. Wait for Saved to MySQL before refreshing; running AI jobs do not resume automatically.")}</p>
-    {error && <p role="alert" className="storage-error">{t(error)}</p>}
-  </section>;
+  const statusText = dirty && !working && !error && ready ? "Unsaved changes" : status;
+  const isSaved = status === "Saved to MySQL" && !dirty;
+  const isSaving = working || status === "Saving to MySQL…";
+
+  return (
+    // Visibility only: the bar stays mounted on every view so autosave, the unsaved-changes
+    // guard and project bookkeeping keep running even while it is hidden.
+    <section className="project-storage" aria-label={t("Project storage")} style={hidden ? { display: "none" } : undefined}>
+      <div className="storage-status-group">
+        <span className={`storage-dot ${isSaved ? "saved" : isSaving || dirty ? "dirty" : error ? "error" : "connecting"}`} />
+        <span role="status" className="storage-status-text">{t(statusText)}</span>
+        {project.current.version > 0 && (
+          <span className="storage-id" title={`Project ID: ${project.current.id}`}>
+            ID: {project.current.id.slice(0, 8)}
+          </span>
+        )}
+      </div>
+
+      <div className="storage-controls">
+        <div className="storage-picker">
+          <select aria-label={t("Saved projects")} value={choice} onChange={e => setChoice(e.target.value)}>
+            <option value="">{t("Choose a saved project")}</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name.slice(0, 50)} · {p.assetCount} · {p.updatedAt}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="storage-btn"
+            disabled={!choice || working || busy}
+            onClick={() => void loadProject()}
+            title={t("Restore project")}
+          >
+            <RotateCcw size={11} /> <span>{t("Restore project")}</span>
+          </button>
+        </div>
+
+        <div className="storage-divider" />
+
+        <div className="storage-button-group">
+          <button
+            type="button"
+            className="storage-btn primary"
+            disabled={!ready || working}
+            onClick={() => void save(true)}
+            title={t("Save now")}
+          >
+            <Save size={11} /> <span>{t("Save now")}</span>
+          </button>
+          <button
+            type="button"
+            className="storage-btn"
+            disabled={!ready || working || busy}
+            onClick={() => void copyProject()}
+            title={t("Save as new project")}
+          >
+            <Copy size={11} /> <span>{t("Save as new project")}</span>
+          </button>
+          <button
+            type="button"
+            className="storage-btn icon-only"
+            disabled={working}
+            onClick={() => void refreshHistory().then(() => { enabled.current = true; if (!project.current.id) project.current.id = uuid(); setReady(true); setError(""); setStatus("Ready to save"); }).catch(e => setError(e.message))}
+            title={t("Refresh history")}
+            aria-label={t("Refresh history")}
+          >
+            <RefreshCw size={11} className={working ? "spin" : undefined} />
+          </button>
+          <span
+            className="storage-help-icon"
+            title={t("Projects are isolated by account, not by browser. Save editor changes before closing. Wait for Saved to MySQL before refreshing; running AI jobs do not resume automatically.")}
+          >
+            <HelpCircle size={13} />
+          </span>
+        </div>
+      </div>
+
+      {error && <p role="alert" className="storage-error">{t(error)}</p>}
+    </section>
+  );
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { publishToPostiz } from "@/lib/postiz";
 import { currentUser, unauthorized } from "@/lib/auth";
+import { getSocialAccount } from "@/lib/social-accounts";
 import { database, databaseConfigured } from "@/lib/project-db";
 
 export const dynamic = "force-dynamic";
@@ -82,6 +83,19 @@ export async function POST(request: Request) {
     if (!body.content || !body.content.trim()) {
       return NextResponse.json({ error: "Post content cannot be empty" }, { status: 400 });
     }
+
+    // Ownership gate: members may only publish to channels they own (unassigned channels included).
+    // Administrators keep full access. Refusals never reach Postiz and never write an audit row.
+    if (auth.user.role !== "admin") {
+      const account = await getSocialAccount(body.integrationId);
+      if (!account || account.ownerUserId !== auth.user.id) {
+        return NextResponse.json(
+          { error: "This social account is not assigned to you. Ask an administrator to assign it.", code: "FORBIDDEN" },
+          { status: 403 }
+        );
+      }
+    }
+
     const platform = (body.platform || "").trim() || "unknown";
     const accountName = (body.accountName || "").trim() || body.integrationId;
 

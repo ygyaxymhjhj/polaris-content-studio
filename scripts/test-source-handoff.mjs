@@ -10,15 +10,21 @@ try {
   page.on('request', r => { if (r.url().includes('/api/analyze')) analyzeRequests++; });
   await page.route('**/api/fetch-article', r => r.fulfill({ status: 424, json: { code: 'SOURCE_ACCESS_DENIED', error: 'Denied' } }));
   account = await signIn(page, process.env.TEST_BASE_URL || 'http://localhost:3002');
+  // The source panel opens on the URL tab; switch to paste/text tab to read textarea value
+  await page.locator('.segmented-tab').nth(1).click();
   const oldText = await page.locator('.source-textarea').inputValue();
+  await page.locator('.segmented-tab').nth(0).click();
   await page.locator('.url-input-row input').fill('https://example.com/new-article');
   await page.getByRole('button', { name: 'Fetch article', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'The website denied server access' }).waitFor();
+  await page.locator('.segmented-tab').nth(1).click();
   assert.equal(await page.locator('.source-textarea').inputValue(), oldText);
   await page.getByRole('button', { name: 'Generate social drafts', exact: true }).click();
   assert.equal(analyzeRequests, 0);
   assert(await page.getByRole('button', { name: 'Export article JSON', exact: true }).isDisabled());
-  await page.getByRole('button', { name: 'Restore test article', exact: true }).click();
+  // Editing or confirming the text clears the pending source error
+  await page.locator('.source-textarea').fill(oldText + ' ');
+  await page.locator('.source-textarea').fill(oldText);
   const downloadEvent = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export article JSON', exact: true }).click();
   const download = await downloadEvent;
