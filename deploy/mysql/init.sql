@@ -33,9 +33,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT sessions_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- Publish audit: one row per publish attempt (success or failure) so "who published what, where,
--- when" is answerable. account_name and published_by_name are point-in-time snapshots; Postiz
--- remains the source of truth for channels and posts.
+-- Publish audit: one row per submission attempt (success or failure) so "who handed what to which
+-- account, where, when" is answerable. Polaris only creates Postiz drafts, so a successful row is
+-- 'drafted'; 'published' and 'queued' are legacy values kept for rows written before that change.
+-- account_name and published_by_name are point-in-time snapshots; Postiz remains the source of
+-- truth for channels and posts.
 CREATE TABLE IF NOT EXISTS social_publishes (
   id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
   project_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -49,7 +51,7 @@ CREATE TABLE IF NOT EXISTS social_publishes (
   postiz_post_id VARCHAR(128) NULL,
   published_url VARCHAR(1024) NULL,
   scheduled_at DATETIME(3) NULL,
-  status ENUM('published','queued','failed') NOT NULL,
+  status ENUM('published','queued','drafted','failed') NOT NULL,
   error VARCHAR(512) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   INDEX social_publishes_project (project_id, created_at),

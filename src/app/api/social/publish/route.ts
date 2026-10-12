@@ -7,13 +7,13 @@ import { database, databaseConfigured } from "@/lib/project-db";
 
 export const dynamic = "force-dynamic";
 
-/** MySQL DATETIME values are written as explicit UTC strings; the pool sets timezone "Z". */
-const utc = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ");
-
 /**
- * Append one audit row per attempt so "who published what, where, when" stays answerable. The
- * audit never changes the publish outcome: once content has left for Postiz it cannot be rolled
- * back, so a failed audit write is logged and swallowed rather than reported as a publish failure.
+ * Append one audit row per submission attempt so "who handed what to which account, when" stays
+ * answerable. The audit never changes the outcome: once content has left for Postiz it cannot be
+ * rolled back, so a failed audit write is logged and swallowed rather than reported as a failure.
+ *
+ * Polaris only creates drafts, so a successful row is 'drafted'. published_url and scheduled_at
+ * belong to rows written before the hand-off became draft-only; new rows always leave them NULL.
  */
 async function writePublishAudit(entry: {
   projectId?: string;
@@ -25,9 +25,7 @@ async function writePublishAudit(entry: {
   publishedByName: string;
   contentPreview: string;
   postizPostId?: string;
-  publishedUrl?: string;
-  scheduledAt?: string;
-  status: "published" | "queued" | "failed";
+  status: "drafted" | "failed";
   error?: string;
 }) {
   if (!databaseConfigured()) {
@@ -51,8 +49,8 @@ async function writePublishAudit(entry: {
         entry.publishedByName,
         entry.contentPreview,
         entry.postizPostId || null,
-        entry.publishedUrl || null,
-        entry.scheduledAt ? utc(new Date(entry.scheduledAt)) : null,
+        null,
+        null,
         entry.status,
         entry.error || null
       ]
@@ -96,6 +94,8 @@ export async function POST(request: Request) {
         { status: 403 }
       );
     }
+    // publishAt is still accepted and validated so older clients get a clear error instead of a
+    // silent change of behaviour, but it no longer reaches Postiz: Polaris only creates drafts.
     if (body.publishAt && Number.isNaN(Date.parse(body.publishAt))) {
       return NextResponse.json({ error: "publishAt must be a valid date-time." }, { status: 400 });
     }
@@ -107,7 +107,6 @@ export async function POST(request: Request) {
       integrationId: body.integrationId,
       content: body.content.trim(),
       imageUrl: body.imageUrl?.trim() || undefined,
-      publishAt: body.publishAt,
       platform
     });
 
@@ -121,27 +120,25 @@ export async function POST(request: Request) {
       publishedByName: auth.user.displayName,
       contentPreview: body.content.trim().slice(0, 200),
       postizPostId: result.postId,
-      publishedUrl: result.url,
-      scheduledAt: result.success && body.publishAt ? body.publishAt : undefined,
-      status: result.success ? (result.queued ? "queued" : "published") : "failed",
+      status: result.success ? "drafted" : "failed",
       error: result.error
     });
 
     if (!result.success) {
-      return NextResponse.json({ error: result.error || "Failed to publish" }, { status: 502 });
+      return NextResponse.json({ error: result.error || "Failed to create the Postiz draft" }, { status: 502 });
     }
 
     return NextResponse.json({
       success: true,
       assetId: body.assetId,
       postId: result.postId,
-      publishedUrl: result.url,
-      queued: Boolean(result.queued),
+      // Kept under its original key for existing clients; it is the moment the draft was handed to
+      // Postiz, not a publish time.
       publishedAt: new Date().toISOString()
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Publish request failed" },
+      { error: error instanceof Error ? error.message : "Draft request failed" },
       { status: 500 }
     );
   }

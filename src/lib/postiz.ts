@@ -153,7 +153,6 @@ export interface PostizPublishRequest {
   integrationId: string;
   content: string;
   imageUrl?: string;
-  publishAt?: string;
   platform?: string;
 }
 
@@ -226,37 +225,16 @@ async function uploadMediaToPostiz(
   }
 }
 
-function extractPostizError(errorRaw: unknown): string {
-  if (!errorRaw) return "Postiz 投递失败，未返回具体原因";
-  try {
-    const str = typeof errorRaw === "string" ? errorRaw : JSON.stringify(errorRaw);
-    if (str.includes("credits-depleted") || str.includes("credits depleted")) {
-      return "X (Twitter) 开发者账号 API 额度已耗尽 (HTTP 402: credits depleted)，请在 X Developer Portal 检查或充值 API 额度";
-    }
-    if (str.includes("Status is a duplicate") || str.includes("duplicate")) {
-      return "推文内容重复，被平台风控拦截 (duplicate post)";
-    }
-    if (str.includes("User is over daily status update limit")) {
-      return "已达每日发帖频率上限 (daily status limit exceeded)";
-    }
-    const match = str.match(/"detail":"([^"]+)"/);
-    if (match) return `平台返回错误: ${match[1]}`;
-    const msgMatch = str.match(/"message":"([^"]+)"/);
-    if (msgMatch) return `投递错误: ${msgMatch[1]}`;
-    return `投递失败: ${str.slice(0, 150)}`;
-  } catch {
-    return String(errorRaw).slice(0, 150);
-  }
-}
-
-export async function publishToPostiz(req: PostizPublishRequest): Promise<{ success: boolean; postId?: string; url?: string; queued?: boolean; error?: string }> {
+/**
+ * Hands one asset to Postiz as a draft. Polaris never publishes or schedules: the returned post id
+ * points at a draft that an administrator reviews and promotes inside Postiz. The request carries
+ * no publish time, so nothing here can turn into a live post.
+ */
+export async function publishToPostiz(req: PostizPublishRequest): Promise<{ success: boolean; postId?: string; error?: string }> {
   const config = getPostizConfig();
   if (!config) {
     return { success: false, error: "Postiz is not configured. Please set POSTIZ_API_URL and POSTIZ_API_KEY in environment." };
   }
-
-  const isScheduled = Boolean(req.publishAt && new Date(req.publishAt).getTime() > Date.now());
-  const postDate = isScheduled && req.publishAt ? new Date(req.publishAt).toISOString() : new Date().toISOString();
 
   let images: Array<{ id: string; path: string }> = [];
   if (req.imageUrl) {
@@ -272,8 +250,10 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
   const settings = DEFAULT_POSTIZ_SETTINGS[normalizedPlatform] || { __type: normalizedPlatform };
 
   const payload = {
-    type: isScheduled ? "schedule" : "now",
-    date: postDate,
+    type: "draft",
+    // Postiz requires a date on every create call, drafts included. It is the moment the draft was
+    // written, not a publish time; promoting the draft in Postiz sets the real one.
+    date: new Date().toISOString(),
     shortLink: false,
     tags: [],
     posts: [
@@ -312,54 +292,13 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
     const firstItem = Array.isArray(resJson) ? resJson[0] : resJson;
     const postId = firstItem?.postId || firstItem?.id;
 
-    if (!postId) {
-      return { success: true, postId: "post-" + Date.now() };
-    }
-
-    // For scheduled posts, Postiz simply stores the schedule in its queue
-    if (isScheduled) {
-      return { success: true, postId: String(postId), queued: true };
-    }
-
-    // For immediate posts, poll Postiz for the execution state to ensure it actually went live
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await new Promise(r => setTimeout(r, 1500));
-      try {
-        const checkRes = await fetch(`${base}/public/posts/${encodeURIComponent(postId)}`, {
-          headers: { Authorization: config.apiKey, "x-api-key": config.apiKey },
-          signal: AbortSignal.timeout(8000)
-        });
-        if (!checkRes.ok) continue;
-        const checkData = await checkRes.json();
-        const postDetail = Array.isArray(checkData) ? checkData[0] : checkData;
-        if (!postDetail) continue;
-
-        if (postDetail.state === "PUBLISHED") {
-          return {
-            success: true,
-            postId: String(postId),
-            url: postDetail.releaseURL || undefined
-          };
-        }
-
-        if (postDetail.state === "ERROR") {
-          return {
-            success: false,
-            postId: String(postId),
-            error: extractPostizError(postDetail.error)
-          };
-        }
-      } catch {
-        // Continue polling if a single status check times out
-      }
-    }
-
-    // If still queued/processing after polling window, mark as queued
-    return { success: true, postId: String(postId), queued: true };
+    // A draft has no release URL and no publish state to poll, so the create response is the end
+    // of the hand-off. Postiz versions differ on the id field, hence the fallback.
+    return { success: true, postId: postId ? String(postId) : "post-" + Date.now() };
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Failed to publish post to Postiz"
+      error: error instanceof Error ? error.message : "Failed to create the Postiz draft"
     };
   }
 }

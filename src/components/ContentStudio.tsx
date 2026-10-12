@@ -143,7 +143,7 @@ interface PublishHistoryEntry {
   publishedByName: string;
   publishedUrl: string | null;
   scheduledAt: string | null;
-  status: "published" | "queued" | "failed";
+  status: "drafted" | "published" | "queued" | "failed";
   error: string | null;
   createdAt: string;
 }
@@ -221,7 +221,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   // so the audit can tie each post back to its content project.
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
-  const [scheduleTime, setScheduleTime] = useState<string>("");
   const [publishing, setPublishing] = useState<boolean>(false);
   // Conversations are kept per asset so reopening the drawer continues where the editor left off.
   const [threads, setThreads] = useState<Record<string, RewriteMessage[]>>({});
@@ -797,7 +796,12 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     notify("Asset changes saved.");
   }
 
-  async function executePublish(asset: ContentAsset, accountId: string, postAt?: string) {
+  /**
+   * Hands the asset to Postiz as a draft. Polaris never publishes or schedules, so there is no
+   * publish time to pass and no live URL to bring back; an administrator reviews and promotes the
+   * draft inside Postiz.
+   */
+  async function submitDraft(asset: ContentAsset, accountId: string) {
     if (!accountId) {
       notify(t("Select a social account first."));
       return;
@@ -813,27 +817,25 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           integrationId: accountId,
           content: asset.content,
           imageUrl: asset.imageUrl ?? config.imageUrl,
-          publishAt: postAt || undefined,
           projectId: currentProjectId || undefined,
           platform: asset.platform,
           accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId
         })
       });
-      const data = await readJson<{ success?: boolean; error?: string; publishedUrl?: string; publishedAt?: string; queued?: boolean }>(res);
+      const data = await readJson<{ success?: boolean; error?: string; publishedAt?: string }>(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || t("Publish failed"));
       }
       setAssets(prev => prev.map(a => a.id === asset.id ? {
         ...a,
-        publishStatus: "published",
-        publishedUrl: data.publishedUrl,
+        publishStatus: "drafted",
         publishedAt: data.publishedAt,
         targetAccountId: accountId
       } : a));
       if (selectedAsset?.id === asset.id) {
-        setSelectedAsset(cur => cur ? { ...cur, publishStatus: "published", publishedUrl: data.publishedUrl } : null);
+        setSelectedAsset(cur => cur ? { ...cur, publishStatus: "drafted" } : null);
       }
-      notify(data.queued ? t("Scheduled: the post was handed to Postiz for delivery.") : t("Published successfully."));
+      notify(t("Draft submitted to Postiz. An administrator reviews and publishes it there."));
       setPublishModalAsset(null);
     } catch (err) {
       setAssets(prev => prev.map(a => a.id === asset.id ? {
@@ -847,9 +849,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     }
   }
 
-  async function batchPublish() {
-    const publishable = assets.filter(a => a.status === "approved" || a.status === "needs_review");
-    if (!publishable.length) {
+  async function batchSubmitDrafts() {
+    const submittable = assets.filter(a => a.status === "approved" || a.status === "needs_review");
+    if (!submittable.length) {
       notify(t("There are no publishable assets."));
       return;
     }
@@ -857,9 +859,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       notify(t("No social accounts are available. Connect one or ask an administrator to assign one."));
       return;
     }
-    // Match strictly by platform. Falling back to an arbitrary account could publish an X post to
+    // Match strictly by platform. Falling back to an arbitrary account could hand an X post to
     // a Facebook channel, so assets whose platform has no connected account are skipped and reported.
-    const matches = publishable.map(asset => ({
+    const matches = submittable.map(asset => ({
       asset,
       account: socialAccounts.find(acc => acc.identifier.toLowerCase() === asset.platform.toLowerCase())
     }));
@@ -867,11 +869,11 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     if (missingPlatforms.length) {
       notify(`${t("Skipped assets with no matching account")}: ${missingPlatforms.join(", ")}`);
     }
-    const toPublish = matches.filter((m): m is { asset: ContentAsset; account: SocialAccount } => Boolean(m.account));
-    if (!toPublish.length) return;
+    const toSubmit = matches.filter((m): m is { asset: ContentAsset; account: SocialAccount } => Boolean(m.account));
+    if (!toSubmit.length) return;
     setLoading("export");
-    for (const { asset, account } of toPublish) {
-      await executePublish(asset, account.id);
+    for (const { asset, account } of toSubmit) {
+      await submitDraft(asset, account.id);
     }
     setLoading(null);
   }
@@ -1017,7 +1019,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           {view === "assets" && (
             <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onApprove={approveAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
           )}
-          {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} onBatchPublish={batchPublish} loading={loading} socialAccountsCount={socialAccounts.length} />}
+          {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} onBatchSubmitDrafts={batchSubmitDrafts} loading={loading} socialAccountsCount={socialAccounts.length} />}
           {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} oauthConfigured={postizOAuthConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} isAdmin={user.role === "admin"} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
           {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setView("accounts")} />}
         </div>
@@ -1051,7 +1053,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               </span>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <span className={`publish-pill ${selectedAsset.publishStatus || "unpublished"}`}>
-                  {selectedAsset.publishStatus === "published" ? `✓ ${t("Published")}` : selectedAsset.publishStatus === "publishing" ? t("Publishing…") : t("Unpublished")}
+                  {selectedAsset.publishStatus === "published" ? `✓ ${t("Published")}` : selectedAsset.publishStatus === "drafted" ? t("Postiz draft") : selectedAsset.publishStatus === "publishing" ? t("Submitting…") : t("Unpublished")}
                 </span>
                 <span className={`status-badge ${selectedAsset.status}`}>{t(selectedAsset.status.replace("_", " "))}</span>
               </div>
@@ -1154,7 +1156,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <div className="drawer-footer">
               <button className="secondary-button" onClick={closeDrawer}>{t("Cancel")}</button>
               <button type="button" className="secondary-button" style={{ color: "#18181b", borderColor: "#d4d4d8", fontWeight: 700 }} disabled={imageUploading} onClick={() => setPublishModalAsset(viewAsset)}>
-                <Send size={14} /> {t("Publish to Postiz")}
+                <Send size={14} /> {t("Submit to Postiz draft")}
               </button>
               <button className="primary-button" onClick={saveAsset} disabled={imageUploading}><Check size={16} /> {t("Save changes")}</button>
             </div>
@@ -1168,7 +1170,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <div className="dialog-header">
               <div>
                 <span className="eyebrow">{t("POSTIZ MANAGED PUBLISHING")}</span>
-                <h3>{PLATFORM_META[publishModalAsset.platform].label} · {t("Publish check")}</h3>
+                <h3>{PLATFORM_META[publishModalAsset.platform].label} · {t("Draft check")}</h3>
               </div>
               <button className="icon-button" aria-label={t("Close")} onClick={() => setPublishModalAsset(null)}><X size={18} /></button>
             </div>
@@ -1224,24 +1226,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 )}
               </label>
 
-              <label className="field-label" style={{ marginTop: 8 }}>
-                {t("Publish timing")}
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <button type="button" className={`small-button ${!scheduleTime ? "active" : ""}`} onClick={() => setScheduleTime("")} style={{ flex: 1, padding: "8px 12px" }}>
-                    🚀 {t("Publish now")}
-                  </button>
-                  <button type="button" className={`small-button ${scheduleTime ? "active" : ""}`} onClick={() => { const d = new Date(Date.now() + 3600 * 1000); setScheduleTime(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)); }} style={{ flex: 1, padding: "8px 12px" }}>
-                    📅 {t("Schedule for later")}
-                  </button>
-                </div>
-              </label>
-
-              {scheduleTime && (
-                <label className="field-label">
-                  {t("Schedule time")}
-                  <input type="datetime-local" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} style={{ marginTop: 6 }} />
-                </label>
-              )}
+              <div className="info-banner" style={{ marginTop: 8 }}>
+                <span>{t("This creates a Postiz draft only. An administrator reviews and publishes it inside Postiz.")}</span>
+              </div>
 
               {publishHistory.length > 0 && (
                 <label className="field-label" style={{ marginTop: 10 }}>
@@ -1251,8 +1238,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                       <div key={entry.id} style={{ border: "1px solid #e4e4e7", borderRadius: 8, padding: "8px 10px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                           <strong>{entry.accountName}</strong>
-                          <span style={{ color: entry.status === "published" ? "#166534" : entry.status === "queued" ? "#b45309" : "#b91c1c" }}>
-                            {entry.status === "published" ? t("Published") : entry.status === "queued" ? t("Scheduled") : t("Failed")}
+                          <span style={{ color: entry.status === "published" ? "#166534" : entry.status === "drafted" || entry.status === "queued" ? "#1d4ed8" : "#b91c1c" }}>
+                            {entry.status === "published" ? t("Published") : entry.status === "drafted" ? t("Postiz draft") : entry.status === "queued" ? t("Scheduled") : t("Failed")}
                           </span>
                         </div>
                         <div style={{ color: "#71717a" }}>
@@ -1269,8 +1256,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             </div>
             <div className="dialog-footer">
               <button className="secondary-button" onClick={() => setPublishModalAsset(null)} disabled={publishing}>{t("Cancel")}</button>
-              <button className="primary-button" disabled={publishing || !selectedAccountId} onClick={() => executePublish(publishModalAsset, selectedAccountId, scheduleTime)}>
-                {publishing ? <><Loader2 className="spin" size={15} /> {t("Publishing…")}</> : <><Send size={15} /> {t("Confirm publish")}</>}
+              <button className="primary-button" disabled={publishing || !selectedAccountId} onClick={() => submitDraft(publishModalAsset, selectedAccountId)}>
+                {publishing ? <><Loader2 className="spin" size={15} /> {t("Submitting…")}</> : <><Send size={15} /> {t("Confirm submit draft")}</>}
               </button>
             </div>
           </div>
@@ -1323,7 +1310,7 @@ function WorkspaceView({
         <div className="workspace-hero-content">
           <div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} · V1</div>
           <h1>{t("From one original article to a full-channel social media matrix")}</h1>
-          <p>{t("Key points and the lead image are extracted automatically; connected Postiz accounts handle multi-channel preview and publishing.")}</p>
+          <p>{t("Key points and the lead image are extracted automatically; connected Postiz accounts receive each draft for review before anything goes live.")}</p>
         </div>
       </div>
 
@@ -1534,19 +1521,19 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onAppro
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ {t("Published")} {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "publishing" ? <>{t("Publishing…")}</> : asset.publishStatus === "failed" ? <>{t("Publish failed")}</> : <span>{t("Unpublished")}</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Publish")}</button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ {t("Published")} {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "drafted" ? <>{t("Postiz draft")}</> : asset.publishStatus === "publishing" ? <>{t("Submitting…")}</> : asset.publishStatus === "failed" ? <>{t("Publish failed")}</> : <span>{t("Unpublished")}</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );
 }
 
-function ExportView({ assets, approvedCount, onExport, onBatchPublish, loading, socialAccountsCount }: { assets: ContentAsset[]; approvedCount: number; onExport: () => void; onBatchPublish: () => void; loading: string | null; socialAccountsCount: number }) {
+function ExportView({ assets, approvedCount, onExport, onBatchSubmitDrafts, loading, socialAccountsCount }: { assets: ContentAsset[]; approvedCount: number; onExport: () => void; onBatchSubmitDrafts: () => void; loading: string | null; socialAccountsCount: number }) {
   const t = useTranslation();
   const channels = new Set(assets.map((asset) => asset.platform)).size;
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Download a package or batch-submit to the connected Postiz accounts.")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchPublish} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Batch publish to Postiz")}</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Download a package or batch-submit to the connected Postiz accounts.")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchSubmitDrafts} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Submit all as Postiz drafts")}</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
 }
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; authorised accounts deliver automatically.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; submitted drafts wait there for review.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
 }

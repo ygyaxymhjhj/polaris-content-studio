@@ -7,7 +7,12 @@ export type Platform =
 
 export type AssetStatus = "draft" | "needs_review" | "approved" | "revision_required";
 export type RiskLevel = "low" | "medium" | "high";
-export type PublishStatus = "unpublished" | "publishing" | "published" | "failed";
+/**
+ * Postiz hand-off state. Polaris only creates drafts, so a new submission ends in "drafted".
+ * "published" and "queued" are legacy: projects saved and audit rows written before the hand-off
+ * became draft-only still carry them, and the UI keeps rendering them as they were.
+ */
+export type PublishStatus = "unpublished" | "publishing" | "drafted" | "published" | "failed";
 
 export interface SocialAccount {
   id: string;

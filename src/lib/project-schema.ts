@@ -14,7 +14,7 @@ const before = z.object({ title: str, content: str, cta: str.optional(), meta: m
 const asset = z.object({
   id: str, platform, assetType: str, generationMode: z.enum(["ai", "local"]).optional(), variant: str.optional(),
   title: str, hook: str.optional(), content: str, cta: str.optional(), deepLink: str.optional(),
-  imageUrl: imageUrl.optional(), publishStatus: z.enum(["unpublished", "publishing", "published", "failed"]).optional(),
+  imageUrl: imageUrl.optional(), publishStatus: z.enum(["unpublished", "publishing", "drafted", "published", "failed"]).optional(),
   publishedUrl: str.optional(), publishedAt: str.optional(), publishError: str.optional(), targetAccountId: str.optional(),
   factIds: strings, riskFlags: strings, status: z.enum(["draft", "needs_review", "approved", "revision_required"]),
   meta: metadata.optional(), updatedAt: str, revisions: z.array(z.object({ at: str, instruction: str, before })).max(40).optional()

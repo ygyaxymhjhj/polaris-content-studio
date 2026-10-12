@@ -73,8 +73,8 @@ export default function SocialAccountsView({ accounts, configured, oauthConfigur
           <div className="eyebrow">{translate("ACCOUNT CONNECTIONS")}</div>
           <h1 id="social-accounts-title">{translate("Social accounts")}</h1>
           <p>{translate(isAdmin
-            ? "Every workspace account is listed here. Assign channels to members so they can view and publish to them."
-            : "Only accounts you authorised or an administrator assigned to you are shown. Publishing uses your own accounts only.")}</p>
+            ? "Every workspace account is listed here. Assign channels to members so they can view them and submit drafts to them."
+            : "Only accounts you authorised or an administrator assigned to you are shown. Submitting a draft uses your own accounts only.")}</p>
         </div>
         <button type="button" className="primary-button" onClick={onAddAccount}><Plus size={16} /> {translate("Add social account")}</button>
       </div>
@@ -140,7 +140,7 @@ export default function SocialAccountsView({ accounts, configured, oauthConfigur
           <ol>
             <li><span>01</span><div><strong>{translate("Choose a platform")}</strong><p>{translate("Facebook, Instagram, X, Threads or LinkedIn.")}</p></div></li>
             <li><span>02</span><div><strong>{translate("Approve access")}</strong><p>{translate("Sign in on the platform's official page. Postiz handles authorisation and token refresh.")}</p></div></li>
-            <li><span>03</span><div><strong>{translate("Return and publish")}</strong><p>{translate("The account list refreshes when you return. Select the account in the publish dialog.")}</p></div></li>
+            <li><span>03</span><div><strong>{translate("Return and submit a draft")}</strong><p>{translate("The account list refreshes when you return. Select the account in the draft dialog.")}</p></div></li>
           </ol>
           <div className="accounts-trust-note"><ShieldCheck size={18} /><p>{translate("Only the owner and workspace administrators can see and use an account.")}</p></div>
           {!loading && !oauthConfigured && <p className="accounts-config-note">{translate("Direct authorisation needs the Postiz JWT secret. You can still connect from Postiz and refresh this list.")}</p>}
