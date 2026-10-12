@@ -1275,6 +1275,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         error={channelsError}
         onRefresh={loadChannels}
         canUsePostizUi={user.role === "admin"}
+        currentView={view}
       />
 
       {toast && <div className="toast"><CheckCircle2 size={17} /> {t(toast)}</div>}

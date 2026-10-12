@@ -10,7 +10,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const stateCookie = "polaris-postiz-connect";
-const connectSchema = z.object({ provider: z.enum(["facebook", "threads", "linkedin", "x", "instagram"]) }).strict();
+const connectSchema = z.object({ 
+  provider: z.enum(["facebook", "threads", "linkedin", "x", "instagram"]),
+  returnView: z.string().optional()
+}).strict();
 const hashState = (userId: string, state: string) => createHash("sha256").update(`${userId}:${state}`).digest("hex");
 const cookieOptions = (request: NextRequest) => ({
   httpOnly: true, sameSite: "lax" as const, secure: request.nextUrl.protocol === "https:",
@@ -33,10 +36,8 @@ export async function POST(request: NextRequest) {
   const redirectUrl = new URL("/api/social/connect", request.nextUrl.origin);
   redirectUrl.searchParams.set("state", state);
 
-  // Capture the view the user is currently on so we can return them there after authorization
-  const referer = request.headers.get("referer") || "";
-  const refererUrl = new URL(referer || request.nextUrl.origin);
-  const returnView = refererUrl.searchParams.get("view") || "workspace";
+  // Use the returnView from the request body if provided, otherwise default to workspace
+  const returnView = body.data.returnView || "workspace";
 
   // The snapshot is taken before the authorisation URL exists, so any channel created later in this
   // flow is "new" and can be claimed for this member on return. Both the snapshot and the attempt

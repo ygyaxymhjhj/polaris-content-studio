@@ -17,9 +17,11 @@ type Props = {
   onRefresh: () => Promise<void>;
   /** Administrators keep the direct Postiz hand-off; members must not sign in to Postiz, where channels are not isolated. */
   canUsePostizUi?: boolean;
+  /** Current view to return to after authorization */
+  currentView?: string;
 };
 
-export default function ConnectAccountsDialog({ open, onClose, configured, oauthConfigured, loading, uiUrl, accounts, error, onRefresh, canUsePostizUi = false }: Props) {
+export default function ConnectAccountsDialog({ open, onClose, configured, oauthConfigured, loading, uiUrl, accounts, error, onRefresh, canUsePostizUi = false, currentView = "workspace" }: Props) {
   const translate = useTranslation();
   const [provider, setProvider] = useState<Platform>("x");
   const [creatingLink, setCreatingLink] = useState(false);
@@ -93,7 +95,7 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
     setCreatingLink(true);
     try {
       const response = await fetch("/api/social/connect", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider })
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider, returnView: currentView })
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "Could not reach Postiz to start authorisation. Please try again.");
