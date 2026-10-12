@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS social_connect_attempts (
   user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   provider VARCHAR(32) NOT NULL,
   snapshot_ids JSON NULL,
+  return_view VARCHAR(20) DEFAULT 'accounts' COMMENT 'View to return to after authorization completes',
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   expires_at DATETIME(3) NOT NULL,
   consumed_at DATETIME(3) NULL,

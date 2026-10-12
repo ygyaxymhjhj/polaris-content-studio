@@ -33,6 +33,11 @@ export async function POST(request: NextRequest) {
   const redirectUrl = new URL("/api/social/connect", request.nextUrl.origin);
   redirectUrl.searchParams.set("state", state);
 
+  // Capture the view the user is currently on so we can return them there after authorization
+  const referer = request.headers.get("referer") || "";
+  const refererUrl = new URL(referer || request.nextUrl.origin);
+  const returnView = refererUrl.searchParams.get("view") || "workspace";
+
   // The snapshot is taken before the authorisation URL exists, so any channel created later in this
   // flow is "new" and can be claimed for this member on return. Both the snapshot and the attempt
   // record are best-effort: a failure only means the new channel needs an administrator's assignment.
@@ -44,7 +49,7 @@ export async function POST(request: NextRequest) {
     console.error("[social/connect] snapshot failed; a new channel will need admin assignment", snapshotError);
   }
   try {
-    await createConnectAttempt({ stateHash, userId: auth.user.id, provider: body.data.provider, snapshotIds });
+    await createConnectAttempt({ stateHash, userId: auth.user.id, provider: body.data.provider, snapshotIds, returnView });
   } catch (attemptError) {
     console.error("[social/connect] attempt record failed; a new channel will need admin assignment", attemptError);
   }
@@ -73,9 +78,11 @@ export async function GET(request: NextRequest) {
   if (validState && auth) {
     // Claiming is best-effort: the return redirect must land even when Postiz or the database hiccups,
     // and a failed claim only means the new channel stays unassigned until an administrator places it.
+    let returnView = "accounts";
     try {
       const attempt = await consumeConnectAttempt(expectedState, auth.user.id);
       if (attempt) {
+        returnView = attempt.returnView;
         const current = await fetchPostizIntegrations();
         if (current.configured && !current.error) {
           await claimNewAccounts({
@@ -89,10 +96,17 @@ export async function GET(request: NextRequest) {
     } catch (error) {
       console.error("[social/connect] claim failed; a new channel will need admin assignment", error);
     }
+
+    const destination = new URL(`/?view=${returnView}`, request.nextUrl.origin);
+    destination.searchParams.set("connection", "returned");
+    const response = NextResponse.redirect(destination, 303);
+    response.headers.set("Cache-Control", "no-store");
+    response.headers.set("Referrer-Policy", "no-referrer");
+    response.cookies.set(stateCookie, "", { ...cookieOptions(request), maxAge: 0 });
+    return response;
   }
 
-  const destination = new URL(auth ? "/?view=accounts" : "/login", request.nextUrl.origin);
-  if (auth) destination.searchParams.set("connection", validState ? "returned" : "invalid");
+  const destination = new URL(auth ? "/?view=accounts&connection=invalid" : "/login", request.nextUrl.origin);
   const response = NextResponse.redirect(destination, 303);
   response.headers.set("Cache-Control", "no-store");
   response.headers.set("Referrer-Policy", "no-referrer");

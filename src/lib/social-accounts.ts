@@ -83,14 +83,16 @@ export async function createConnectAttempt(entry: {
   userId: string;
   provider: string;
   snapshotIds: string[] | null;
+  returnView?: string;
 }): Promise<void> {
   await database().execute(
-    "INSERT INTO social_connect_attempts (state_hash, user_id, provider, snapshot_ids, expires_at) VALUES (?,?,?,?,?)",
+    "INSERT INTO social_connect_attempts (state_hash, user_id, provider, snapshot_ids, return_view, expires_at) VALUES (?,?,?,?,?,?)",
     [
       entry.stateHash,
       entry.userId,
       entry.provider,
       entry.snapshotIds ? JSON.stringify(entry.snapshotIds) : null,
+      entry.returnView || "accounts",
       utc(new Date(Date.now() + CONNECT_ATTEMPT_TTL_MS))
     ]
   );
@@ -114,7 +116,7 @@ function parseSnapshot(value: unknown): string[] | null {
 export async function consumeConnectAttempt(
   stateHash: string,
   userId: string
-): Promise<{ provider: string; snapshotIds: string[] | null } | null> {
+): Promise<{ provider: string; snapshotIds: string[] | null; returnView: string } | null> {
   const now = utc(new Date());
   const [result] = await database().execute<ResultSetHeader>(
     "UPDATE social_connect_attempts SET consumed_at=? WHERE state_hash=? AND user_id=? AND consumed_at IS NULL AND expires_at>?",
@@ -122,10 +124,14 @@ export async function consumeConnectAttempt(
   );
   if (result.affectedRows !== 1) return null;
   const [rows] = await database().execute<RowDataPacket[]>(
-    "SELECT provider, snapshot_ids FROM social_connect_attempts WHERE state_hash=?",
+    "SELECT provider, snapshot_ids, return_view FROM social_connect_attempts WHERE state_hash=?",
     [stateHash]
   );
-  return { provider: String(rows[0]?.provider || ""), snapshotIds: parseSnapshot(rows[0]?.snapshot_ids) };
+  return {
+    provider: String(rows[0]?.provider || ""),
+    snapshotIds: parseSnapshot(rows[0]?.snapshot_ids),
+    returnView: String(rows[0]?.return_view || "accounts")
+  };
 }
 
 /**
