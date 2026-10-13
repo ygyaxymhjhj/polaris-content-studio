@@ -5,7 +5,6 @@ export type Platform =
   | "x"
   | "instagram";
 
-export type AssetStatus = "draft" | "needs_review" | "approved" | "revision_required";
 export type RiskLevel = "low" | "medium" | "high";
 /**
  * Postiz hand-off state. Polaris only creates drafts, so a new submission ends in "drafted".
@@ -79,7 +78,6 @@ export interface ContentAsset {
   targetAccountId?: string;
   factIds: string[];
   riskFlags: string[];
-  status: AssetStatus;
   meta?: Record<string, unknown>;
   updatedAt: string;
   /** Adopted AI revisions, newest last. The UI keeps this capped at MAX_REVISIONS. */

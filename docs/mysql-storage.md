@@ -12,7 +12,7 @@
 
 ## Saved data and workflow
 
-Snapshots include original source, imported URL/configuration/manual overrides, source references, selected platforms, generated assets, saved edits, adopted rewrite history/conversations and approval status. No API credentials are included.
+Snapshots include original source, imported URL/configuration/manual overrides, source references, selected platforms, generated assets, saved edits, adopted rewrite history/conversations. No API credentials are included.
 
 Changes are autosaved after a 1.2-second debounce, including partial generation results. Users can also save immediately, save a separate project, or restore one of the latest 100 history entries. Reload restores the last project for this browser when available. Wait for **Saved to MySQL** before refreshing/closing. Changes in an open editor only persist after its existing Save/Apply action. Running AI jobs are not durable background tasks and do not resume after reload; saved partial assets remain available.
 
@@ -68,12 +68,15 @@ Restore is destructive to this app's database and is not part of normal deployme
 ```sh
 TEST_BASE_URL=http://localhost:3002 node scripts/test-auth.mjs
 TEST_BASE_URL=http://localhost:3002 node scripts/test-project-storage.mjs
+TEST_BASE_URL=http://localhost:3002 node scripts/test-publish-dialog.mjs
 ```
 
 `test-auth.mjs` covers anonymous access, sign-in, one-time legacy project adoption, logout and throttling. Its administrator fixture exercises member creation, password reset, disable and enable; its ordinary-member fixture receives 403 for GET/POST/PATCH without changing the target account or its sessions. Member settings still expose social-account connections but never mount or fetch the member panel. Administrator self-disable returns 400; an ordinary member is refused with 403 before that check. `node scripts/test-user-roles.mjs` also checks API authorization and default-member creation without a database.
 
-`test-project-storage.mjs` exercises a real database with mocked AI: autosave, reload restoration, source/assets/approval preservation, account isolation, origin checks, malformed snapshot rejection, version conflicts, and generation archiving.
+`test-project-storage.mjs` exercises a real database with mocked AI: autosave, reload restoration, source/assets preservation, account isolation, origin checks, malformed snapshot rejection, version conflicts, and generation archiving.
 
-Both delete only the rows they create. Every browser test signs in first, so all of them need a reachable MySQL and the `MYSQL_*` variables in `.env.local`; `scripts/_login.mjs` creates a throwaway account per run and removes it, along with its projects, afterwards. Normal workflow regressions should mock `/api/projects` when persistence is irrelevant, to avoid leaving test fixtures in real history.
+`test-publish-dialog.mjs` drives the draft dialog with mocked channels, and asserts that selecting an account only selects it: it must not open the connect dialog, while the Manage accounts button still must.
+
+These scripts delete only the rows they create. Every browser test signs in first, so all of them need a reachable MySQL and the `MYSQL_*` variables in `.env.local`; `scripts/_login.mjs` creates a throwaway account per run and removes it, along with its projects, afterwards. Normal workflow regressions should mock `/api/projects` when persistence is irrelevant, to avoid leaving test fixtures in real history.
 
 Note: `scripts/test-fact-review.mjs`, `test-ui-languages.mjs`, `test-source-handoff.mjs` and `test-source-config.mjs` still address UI that has since been restructured (the source panel now splits URL and paste into tabs, and generation moved behind confirmed facts), so they fail on stale selectors. They sign in correctly; repairing them is a separate task.

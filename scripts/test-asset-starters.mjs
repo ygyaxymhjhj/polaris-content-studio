@@ -261,7 +261,7 @@ try {
 
   // Rewrite: replaces the asset in place, keeps the summary, strips revisions and trims history.
   const longCopy = 'The regulator set out clearer disclosure duties for platforms serving retail traders, covering fees, order execution and withdrawal conditions. '.repeat(3);
-  const baseAsset = { id: 'ai-facebook-1', platform: 'facebook', assetType: 'short_post', title: 'Original title', content: longCopy, cta: 'Read the full article', factIds: ['F001'], riskFlags: [], status: 'needs_review', meta: { visualBrief: 'Neutral fact card', imageText: 'Regulator update', firstComment: 'Details in the article' }, updatedAt: '2026-01-01T00:00:00.000Z' };
+  const baseAsset = { id: 'ai-facebook-1', platform: 'facebook', assetType: 'short_post', title: 'Original title', content: longCopy, cta: 'Read the full article', factIds: ['F001'], riskFlags: [], meta: { visualBrief: 'Neutral fact card', imageText: 'Regulator update', firstComment: 'Details in the article' }, updatedAt: '2026-01-01T00:00:00.000Z' };
   const turns = Array.from({ length: 30 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', text: `第 ${index} 轮：这一段改写得更口语一些，同时保留全部数字与日期。`, at: '2026-01-01T00:00:00.000Z' }));
   const rewriteRequests = [];
   globalThis.fetch = async (_url, options) => {
@@ -435,9 +435,9 @@ try {
     schemaVersion: 1, config, sourceText: 'Fictional source text', sourceName: 'saved.json', sourcePending: false, importedSource: null,
     editedConfig: [], analysis: null,
     assets: [
-      { id: 'old-website', platform: 'website', assetType: 'seo_package', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'needs_review', updatedAt: '2026-01-01T00:00:00.000Z' },
-      { id: 'old-push', platform: 'push', assetType: 'push_notification', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'needs_review', updatedAt: '2026-01-01T00:00:00.000Z' },
-      { id: 'keep-facebook', platform: 'facebook', assetType: 'short_post', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'needs_review', updatedAt: '2026-01-01T00:00:00.000Z' }
+      { id: 'old-website', platform: 'website', assetType: 'seo_package', title: 't', content: 'c', factIds: [], riskFlags: [], updatedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'old-push', platform: 'push', assetType: 'push_notification', title: 't', content: 'c', factIds: [], riskFlags: [], updatedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'keep-facebook', platform: 'facebook', assetType: 'short_post', title: 't', content: 'c', factIds: [], riskFlags: [], updatedAt: '2026-01-01T00:00:00.000Z' }
     ],
     selectedPlatforms: ['website', 'facebook', 'push'], threads: { 'keep-facebook': [{ role: 'user', text: 'Shorten it', at: '2026-01-01T00:00:00.000Z' }] },
     usedFallback: false, generationRun: 'saved-run'
@@ -448,8 +448,13 @@ try {
   assert.equal(restored.threads['keep-facebook'].length, 1, 'Revision threads for retained channels survive the migration');
   assert.throws(() => projectSchema.parse(oldSnapshot), 'The strict schema still rejects a retired channel, which is why the filter runs first');
   assert.throws(() => parseSnapshot({ ...oldSnapshot, assets: 'not-an-array' }), 'A malformed snapshot still fails validation');
+  // Snapshots saved before in-asset review state was removed still carry asset.status. Zod strips
+  // unknown keys, so the project must keep loading — and the parsed asset must not resurrect the field.
+  const legacyStatusSnapshot = parseSnapshot({ ...oldSnapshot, assets: [{ id: 'legacy-facebook', platform: 'facebook', assetType: 'short_post', title: 't', content: 'c', factIds: [], riskFlags: [], status: 'approved', updatedAt: '2026-01-01T00:00:00.000Z' }] });
+  assert.equal(legacyStatusSnapshot.assets.length, 1, 'An asset carrying the removed status field still parses');
+  assert(!Object.hasOwn(legacyStatusSnapshot.assets[0], 'status'), 'The removed status field is stripped instead of reaching the app');
 
-  console.log('PASS: 5 starter assets in 3 languages, delivery fields, source filtering, channel voice rules on every retained channel, Facebook single-post rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, retired-channel migration for saved projects, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
+  console.log('PASS: 5 starter assets in 3 languages, delivery fields, source filtering, channel voice rules on every retained channel, Facebook single-post rules in 3 languages, Facebook revision, provider fallback with transient-error retries, English-only LinkedIn prompts with config.language elsewhere, offline LinkedIn language warning, guarded draft-language conversion, retired-channel migration and legacy status-field stripping for saved projects, model-aware context trimming, grounded single-asset rewriting, partial analyze degradation and provider-outage fail-fast. No paid API requests.');
 } finally {
   globalThis.fetch = originalFetch;
   if (originalKey === undefined) delete process.env.AI_API_KEY; else process.env.AI_API_KEY = originalKey;

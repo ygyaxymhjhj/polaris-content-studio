@@ -25,7 +25,7 @@ try {
  const id=list.projects.find(p=>p.assetCount===5)?.id;assert(id);
  await page.reload(); await page.waitForFunction(()=>document.querySelectorAll('.asset-card:not(.skeleton)').length===5);
  assert.equal(await page.locator('.asset-preview').first().innerText(),'Persisted fictional content.');
- assert.equal(await page.locator('.status-badge.approved').count(),0,'Persistence must not auto-approve assets');
+ assert.equal(await page.locator('.asset-card .publish-pill').first().innerText(),'Unpublished','Reload must not change the hand-off state');
  const detail=await (await context.request.get(base+`/api/projects?id=${id}`)).json();
  assert.equal(detail.snapshot.sourceText,source);assert.equal(detail.snapshot.assets.length,5);
  const anonymous=await browser.newContext();
@@ -42,7 +42,7 @@ try {
  const conflict=await context.request.put(base+'/api/projects',{headers:{Origin:base},data:next});assert.equal(conflict.status(),409);
  const history=await (await context.request.get(base+'/api/projects')).json();assert(history.projects.some(p=>p.id!==id&&p.assetCount===5),'A new run must archive previous generated content');
  assert.deepEqual(errors,[]);
- console.log('PASS: real MySQL autosave, generated assets/source restored after reload, no automatic approval, account isolation, CSRF rejection, schema validation, optimistic conflicts and generation archiving. AI mocked; no paid requests.');
+ console.log('PASS: real MySQL autosave, generated assets/source restored after reload, hand-off state preserved across reload, account isolation, CSRF rejection, schema validation, optimistic conflicts and generation archiving. AI mocked; no paid requests.');
 } finally {
  await browser.close();
  if (alice) await alice.cleanup();

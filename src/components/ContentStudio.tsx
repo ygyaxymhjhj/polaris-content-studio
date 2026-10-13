@@ -13,7 +13,6 @@ import {
   Download,
   ExternalLink,
   FileText,
-  Filter,
   Hash,
   History,
   Layers3,
@@ -139,8 +138,10 @@ async function readJson<T>(response: Response): Promise<T> {
 /** One row of the publish audit as returned by GET /api/social/publishes. */
 interface PublishHistoryEntry {
   id: string;
+  assetId: string;
   accountName: string;
   publishedByName: string;
+  postizPostId: string | null;
   publishedUrl: string | null;
   scheduledAt: string | null;
   status: "drafted" | "published" | "queued" | "failed";
@@ -309,6 +310,65 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     if (publishModalAsset) void loadPublishHistory(publishModalAsset.id);
   }, [publishModalAsset, loadPublishHistory]);
 
+  // Poll Postiz for draft status updates: if a draft was submitted and the admin published it in
+  // Postiz, sync that state back so the badge changes from "Postiz draft" to "Published".
+  useEffect(() => {
+    const draftedAssets = assets.filter(asset => asset.publishStatus === "drafted");
+    if (draftedAssets.length === 0) return;
+
+    async function syncPostizStatus() {
+      try {
+        const res = await fetch(`/api/social/publishes?projectId=${encodeURIComponent(currentProjectId)}`);
+        if (!res.ok) return;
+        const data = await readJson<{ publishes?: PublishHistoryEntry[] }>(res);
+        if (!Array.isArray(data.publishes)) return;
+
+        const postIdToAssetId = new Map<string, string>();
+        data.publishes.forEach(entry => {
+          if (entry.postizPostId && entry.assetId) {
+            postIdToAssetId.set(entry.postizPostId, entry.assetId);
+          }
+        });
+
+        const postIds = Array.from(postIdToAssetId.keys());
+        if (postIds.length === 0) return;
+
+        const statusRes = await fetch(`/api/social/post-status?postIds=${postIds.join(",")}`);
+        if (!statusRes.ok) return;
+
+        const statusData = await readJson<{ statuses?: Record<string, string | null> }>(statusRes);
+        if (!statusData.statuses) return;
+
+        const updates: Array<{ assetId: string; newStatus: "published" }> = [];
+        Object.entries(statusData.statuses).forEach(([postId, state]) => {
+          if (state === "PUBLISHED") {
+            const assetId = postIdToAssetId.get(postId);
+            if (assetId) updates.push({ assetId, newStatus: "published" });
+          }
+        });
+
+        if (updates.length > 0) {
+          setAssets(current => 
+            current.map(asset => {
+              const update = updates.find(u => u.assetId === asset.id);
+              return update ? { ...asset, publishStatus: update.newStatus } : asset;
+            })
+          );
+          if (selectedAsset) {
+            const selectedUpdate = updates.find(u => u.assetId === selectedAsset.id);
+            if (selectedUpdate) {
+              setSelectedAsset(cur => cur ? { ...cur, publishStatus: selectedUpdate.newStatus } : null);
+            }
+          }
+        }
+      } catch { /* Polling is best-effort; failures are silent. */ }
+    }
+
+    void syncPostizStatus();
+    const interval = setInterval(syncPostizStatus, 30000);
+    return () => clearInterval(interval);
+  }, [assets, currentProjectId, selectedAsset]);
+
   useEffect(() => {
     document.documentElement.dataset.polarisArticleImport = "v1";
     function receiveArticle(event: MessageEvent) {
@@ -344,7 +404,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const viewAsset = previewCandidate?.asset ?? selectedAsset;
   const viewRiskFlags = previewCandidate ? [...new Set([...previewCandidate.asset.riskFlags, ...previewCandidate.issues])] : selectedAsset?.riskFlags ?? [];
 
-  const approvedCount = assets.filter((asset) => asset.status === "approved").length;
   const filteredAssets = useMemo(() => {
     const list = assetFilter === "all" ? assets : assets.filter((asset) => asset.platform === assetFilter);
     // Channels arrive out of order, so sort back into the canonical channel order to stop the grid
@@ -724,7 +783,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       meta,
       factIds: candidate.asset.factIds,
       riskFlags: [...new Set([...candidate.asset.riskFlags, ...candidate.issues])],
-      status: "needs_review",
       updatedAt: at,
       revisions: [...(selectedAsset.revisions || []), record].slice(-MAX_REVISIONS)
     });
@@ -753,7 +811,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       cta: snapshot.cta,
       meta,
       factIds: snapshot.factIds,
-      status: "needs_review",
       updatedAt: new Date().toISOString(),
       revisions: selectedAsset.revisions.slice(0, index)
     });
@@ -788,7 +845,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       riskFlags: draft.riskFlags,
       revisions: draft.revisions,
       meta,
-      status: "needs_review",
       updatedAt: new Date().toISOString()
     } : asset));
     setSelectedAsset(null);
@@ -850,8 +906,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   async function batchSubmitDrafts() {
-    const submittable = assets.filter(a => a.status === "approved" || a.status === "needs_review");
-    if (!submittable.length) {
+    if (!assets.length) {
       notify(t("There are no publishable assets."));
       return;
     }
@@ -861,7 +916,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     }
     // Match strictly by platform. Falling back to an arbitrary account could hand an X post to
     // a Facebook channel, so assets whose platform has no connected account are skipped and reported.
-    const matches = submittable.map(asset => ({
+    const matches = assets.map(asset => ({
       asset,
       account: socialAccounts.find(acc => acc.identifier.toLowerCase() === asset.platform.toLowerCase())
     }));
@@ -882,12 +937,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setSelectedAsset((asset) => asset ? { ...asset, [field]: value } : asset);
   }
 
-  function approveAsset(id: string) {
-    setAssets((current) => current.map((asset) => asset.id === id ? { ...asset, status: "approved" } : asset));
-    if (selectedAsset?.id === id) setSelectedAsset((asset) => asset ? { ...asset, status: "approved" } : asset);
-    notify("Asset approved.");
-  }
-
   function togglePlatform(platform: Platform) {
     setSelectedPlatforms((current) => current.includes(platform) ? current.filter((item) => item !== platform) : [...current, platform]);
   }
@@ -895,10 +944,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   async function exportPackage() {
     if (!assets.length) {
       notify("Generate content before exporting.");
-      return;
-    }
-    if (assets.some(asset => asset.status !== "approved")) {
-      notify(t("Approve every asset before export."));
       return;
     }
     setLoading("export");
@@ -1017,9 +1062,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <FactsView analysis={analysis} sourceText={sourceText} updateFact={updateFact} onGenerate={approveFactsAndGenerate} loading={loading} />
           )}
           {view === "assets" && (
-            <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onApprove={approveAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
+            <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
           )}
-          {view === "export" && <ExportView assets={assets} approvedCount={approvedCount} onExport={exportPackage} onBatchSubmitDrafts={batchSubmitDrafts} loading={loading} socialAccountsCount={socialAccounts.length} />}
+          {view === "export" && <ExportView assets={assets} submittedCount={assets.filter(asset => asset.publishStatus === "drafted").length} onExport={exportPackage} onBatchSubmitDrafts={batchSubmitDrafts} loading={loading} socialAccountsCount={socialAccounts.length} />}
           {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} oauthConfigured={postizOAuthConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} isAdmin={user.role === "admin"} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
           {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setView("accounts")} />}
         </div>
@@ -1055,7 +1100,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 <span className={`publish-pill ${selectedAsset.publishStatus || "unpublished"}`}>
                   {selectedAsset.publishStatus === "published" ? `✓ ${t("Published")}` : selectedAsset.publishStatus === "drafted" ? t("Postiz draft") : selectedAsset.publishStatus === "publishing" ? t("Submitting…") : t("Unpublished")}
                 </span>
-                <span className={`status-badge ${selectedAsset.status}`}>{t(selectedAsset.status.replace("_", " "))}</span>
               </div>
             </div>
 
@@ -1175,7 +1219,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               <button className="icon-button" aria-label={t("Close")} onClick={() => setPublishModalAsset(null)}><X size={18} /></button>
             </div>
             <div className="dialog-body">
-              <label className="field-label">
+              {/* A div, not a label: a label forwards activation clicks from its non-interactive
+                  contents to its first labelable child, so the account cards would press the
+                  "Manage accounts" button instead of selecting an account. */}
+              <div className="field-label">
                 <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
                   {t("Select target social account")}
                   <span style={{ display: "inline-flex", gap: 6 }}>
@@ -1224,7 +1271,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                     })}
                   </div>
                 )}
-              </label>
+              </div>
 
               <div className="info-banner" style={{ marginTop: 8 }}>
                 <span>{t("This creates a Postiz draft only. An administrator reviews and publishes it inside Postiz.")}</span>
@@ -1506,7 +1553,7 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
   );
 }
 
-function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onApprove, onPublish, onGenerate, onExport, loading, usedFallback, pendingPlatforms, targetCount, config }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset, mode?: "edit" | "preview") => void; onApprove: (id: string) => void; onPublish: (asset: ContentAsset) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean; pendingPlatforms: Platform[]; targetCount: number; config: ProjectConfig }) {
+function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPublish, onGenerate, onExport, loading, usedFallback, pendingPlatforms, targetCount, config }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset, mode?: "edit" | "preview") => void; onPublish: (asset: ContentAsset) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean; pendingPlatforms: Platform[]; targetCount: number; config: ProjectConfig }) {
   const t = useTranslation();
   const counts = assets.reduce<Record<string, number>>((result, asset) => { result[asset.platform] = (result[asset.platform] || 0) + 1; return result; }, {});
   const cardImage = (asset: ContentAsset) => asset.imageUrl ?? config.imageUrl;
@@ -1518,20 +1565,20 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onAppro
       <div className="page-heading compact-heading assets-heading"><div><div className="eyebrow">{t("STEP 02 / DISTRIBUTION PACK")}</div><h1>{t("Your content")} <em>{t("orbit.")}</em></h1><p>{t("One source, multiple native formats. Review each asset before your team takes it live.")}</p></div><div className="heading-actions"><button className="secondary-button" onClick={onGenerate} disabled={loading === "generate"}>{loading === "generate" ? <><Loader2 className="spin" size={15} /> {t("Generating…")}</> : <><RefreshCw size={15} /> {t("Regenerate")}</>}</button><button className="primary-button" onClick={onExport}><Download size={15} /> {t("Export pack")}</button></div></div>
       {generating && <div className="info-banner generating-banner"><Loader2 className="spin" size={16} /><span><strong>{t("Generating…")}</strong> {pendingPlatforms.length} / {targetCount} {t("channels remaining")}</span></div>}
       {usedFallback && !generating && <div className="info-banner"><Sparkles size={16} /><span><strong>{t("Pack completed with safe local templates.")}</strong> {t("The model was unavailable or returned fewer formats than requested, so missing assets were filled locally. All assets remain editable and require review.")}</span></div>}
-      <div className="asset-toolbar"><div className="asset-tabs"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>{t("All assets")} <span>{assets.length}</span></button>{Object.entries(counts).map(([platform, count]) => <button key={platform} className={filter === platform ? "active" : ""} onClick={() => setFilter(platform as Platform)}>{t(PLATFORM_META[platform as Platform].short)} <span>{count}</span></button>)}</div><button className="filter-button"><Filter size={15} /> {t("Needs review")} <ChevronDown size={14} /></button></div>
+      <div className="asset-toolbar"><div className="asset-tabs"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>{t("All assets")} <span>{assets.length}</span></button>{Object.entries(counts).map(([platform, count]) => <button key={platform} className={filter === platform ? "active" : ""} onClick={() => setFilter(platform as Platform)}>{t(PLATFORM_META[platform as Platform].short)} <span>{count}</span></button>)}</div></div>
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ {t("Published")} {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "drafted" ? <>{t("Postiz draft")}</> : asset.publishStatus === "publishing" ? <>{t("Submitting…")}</> : asset.publishStatus === "failed" ? <>{t("Publish failed")}</> : <span>{t("Unpublished")}</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3><span className={`status-badge ${asset.status}`}>{asset.status === "needs_review" ? t("Review") : t(asset.status.replace("_", " "))}</span></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button>{asset.status !== "approved" && <button className="approve-button" aria-label={t("Approve asset")} onClick={() => onApprove(asset.id)}><Check size={15} /></button>}</div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ {t("Published")} {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "drafted" ? <>{t("Postiz draft")}</> : asset.publishStatus === "publishing" ? <>{t("Submitting…")}</> : asset.publishStatus === "failed" ? <>{t("Publish failed")}</> : <span>{t("Unpublished")}</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );
 }
 
-function ExportView({ assets, approvedCount, onExport, onBatchSubmitDrafts, loading, socialAccountsCount }: { assets: ContentAsset[]; approvedCount: number; onExport: () => void; onBatchSubmitDrafts: () => void; loading: string | null; socialAccountsCount: number }) {
+function ExportView({ assets, submittedCount, onExport, onBatchSubmitDrafts, loading, socialAccountsCount }: { assets: ContentAsset[]; submittedCount: number; onExport: () => void; onBatchSubmitDrafts: () => void; loading: string | null; socialAccountsCount: number }) {
   const t = useTranslation();
   const channels = new Set(assets.map((asset) => asset.platform)).size;
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Download a package or batch-submit to the connected Postiz accounts.")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchSubmitDrafts} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Submit all as Postiz drafts")}</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{approvedCount}</strong><span>{t("approved")}</span></div><div><strong>{assets.length - approvedCount}</strong><span>{t("in review")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Download a package or batch-submit to the connected Postiz accounts.")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchSubmitDrafts} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Submit all as Postiz drafts")}</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{submittedCount}</strong><span>{t("Postiz draft")}</span></div><div><strong>{assets.length - submittedCount}</strong><span>{t("Unpublished")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
 }
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {

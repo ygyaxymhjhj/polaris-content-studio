@@ -226,6 +226,70 @@ async function uploadMediaToPostiz(
 }
 
 /**
+ * Fetches the current state of multiple posts from Postiz. Returns a map of postId → state.
+ * Possible states: DRAFT, PUBLISHED, SCHEDULED, ERROR, or null if not found.
+ * 
+ * This queries the last 30 days of posts. Posts older than that won't be found and will return null.
+ */
+export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<string, string | null>> {
+  const result = new Map<string, string | null>();
+  if (postIds.length === 0) return result;
+
+  const config = getPostizConfig();
+  if (!config) {
+    // If Postiz is not configured, return null for all
+    postIds.forEach(id => result.set(id, null));
+    return result;
+  }
+
+  try {
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setDate(startDate.getDate() - 30);
+
+    const base = getPostizApiBaseUrl(config.apiUrl);
+    const listUrl = `${base}/public/v1/posts?startDate=${startDate.toISOString()}&endDate=${endDate.toISOString()}`;
+
+    const response = await fetch(listUrl, {
+      method: "GET",
+      headers: {
+        Authorization: config.apiKey,
+        "x-api-key": config.apiKey
+      },
+      signal: AbortSignal.timeout(15000)
+    });
+
+    if (!response.ok) {
+      console.error(`[postiz] fetchPostStatus failed with status ${response.status}`);
+      postIds.forEach(id => result.set(id, null));
+      return result;
+    }
+
+    const data = (await response.json()) as { posts?: Array<{ id: string; state?: string }> };
+    const posts = data.posts || [];
+
+    // Build a map of all found posts
+    const statusMap = new Map<string, string>();
+    posts.forEach(post => {
+      if (post.id && post.state) {
+        statusMap.set(post.id, post.state);
+      }
+    });
+
+    // Fill result for requested IDs
+    postIds.forEach(id => {
+      result.set(id, statusMap.get(id) || null);
+    });
+
+    return result;
+  } catch (error) {
+    console.error("[postiz] fetchPostStatus error", error);
+    postIds.forEach(id => result.set(id, null));
+    return result;
+  }
+}
+
+/**
  * Hands one asset to Postiz as a draft. Polaris never publishes or schedules: the returned post id
  * points at a draft that an administrator reviews and promotes inside Postiz. The request carries
  * no publish time, so nothing here can turn into a live post.
