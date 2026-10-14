@@ -1,0 +1,20 @@
+[Unit]
+Description=Polaris social notification synchronization
+After=network-online.target polaris-studio.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=polaris-studio
+Group=polaris-studio
+WorkingDirectory=/opt/polaris-content-studio/app
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=SOCIAL_NOTIFICATIONS_INTERNAL_URL=http://192.168.220.109:13300/api/internal/social-notifications
+ExecStart=/usr/local/bin/node scripts/run-social-notifications.mjs
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

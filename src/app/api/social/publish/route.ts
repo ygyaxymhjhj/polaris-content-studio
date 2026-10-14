@@ -1,92 +1,66 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
 import { publishToPostiz } from "@/lib/postiz";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { getSocialAccount } from "@/lib/social-accounts";
 import { database, databaseConfigured } from "@/lib/project-db";
+import { deliverSocialNotifications, recordSocialSubmission } from "@/lib/social-notifications";
+import type { RowDataPacket } from "mysql2";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/**
- * Append one audit row per submission attempt so "who handed what to which account, when" stays
- * answerable. The audit never changes the outcome: once content has left for Postiz it cannot be
- * rolled back, so a failed audit write is logged and swallowed rather than reported as a failure.
- *
- * Polaris only creates drafts, so a successful row is 'drafted'. published_url and scheduled_at
- * belong to rows written before the hand-off became draft-only; new rows always leave them NULL.
- */
-async function writePublishAudit(entry: {
-  projectId?: string;
-  assetId: string;
-  platform: string;
-  integrationId: string;
-  accountName: string;
-  publishedBy: string;
-  publishedByName: string;
-  contentPreview: string;
-  postizPostId?: string;
-  status: "drafted" | "failed";
-  error?: string;
-}) {
-  if (!databaseConfigured()) {
-    console.error("[social/publish] audit skipped: database is not configured");
-    return;
-  }
-  try {
-    await database().execute(
-      `INSERT INTO social_publishes
-         (id, project_id, asset_id, platform, integration_id, account_name, published_by, published_by_name,
-          content_preview, postiz_post_id, published_url, scheduled_at, status, error)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [
-        randomUUID(),
-        entry.projectId || null,
-        entry.assetId,
-        entry.platform,
-        entry.integrationId,
-        entry.accountName,
-        entry.publishedBy,
-        entry.publishedByName,
-        entry.contentPreview,
-        entry.postizPostId || null,
-        null,
-        null,
-        entry.status,
-        entry.error || null
-      ]
-    );
-  } catch (error) {
-    console.error("[social/publish] audit write failed", error);
-  }
-}
+const notificationPendingWarning = "Draft submitted, but notification delivery is pending. Do not submit again.";
+const registrationWarning = "Draft submitted, but submission tracking could not be saved. Do not submit again.";
+const projectIdPattern = /^[a-f0-9-]{36}$/i;
 
 export async function POST(request: Request) {
   const auth = await currentUser();
   if (!auth) return unauthorized();
   try {
-    const body = (await request.json()) as {
-      assetId?: string;
-      integrationId?: string;
-      content?: string;
-      imageUrl?: string;
-      publishAt?: string;
-      projectId?: string;
-      platform?: string;
-      accountName?: string;
-    };
+    let payload: unknown;
+    try { payload = await request.json(); } catch {
+      return NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 });
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+    }
+    const body = payload as Record<string, unknown>;
+    const stringFields = ["assetId", "integrationId", "content", "imageUrl", "publishAt", "projectId", "platform", "accountName"];
+    if (stringFields.some((field) => body[field] !== undefined && typeof body[field] !== "string")) {
+      return NextResponse.json({ error: "Submission fields must be strings." }, { status: 400 });
+    }
+    const integrationId = (body.integrationId as string | undefined)?.trim();
+    const content = (body.content as string | undefined)?.trim();
+    const projectId = body.projectId as string | undefined;
+    const assetId = body.assetId as string | undefined;
+    const publishAt = body.publishAt as string | undefined;
 
-    if (!body.integrationId) {
+    if (!integrationId) {
       return NextResponse.json({ error: "Target social channel integration ID is required" }, { status: 400 });
     }
-    if (!body.content || !body.content.trim()) {
+    if (!content) {
       return NextResponse.json({ error: "Post content cannot be empty" }, { status: 400 });
+    }
+    if (projectId !== undefined) {
+      if (!projectIdPattern.test(projectId)) {
+        return NextResponse.json({ error: "Invalid project identifier." }, { status: 400 });
+      }
+      if (!databaseConfigured()) {
+        return NextResponse.json({ error: "Project storage is unavailable." }, { status: 503 });
+      }
+      const [projects] = await database().execute<RowDataPacket[]>(
+        "SELECT id FROM projects WHERE id=? AND owner_hash=?", [projectId, auth.ownerHash]
+      );
+      if (!projects.length) {
+        return NextResponse.json({ error: "This project does not belong to you.", code: "FORBIDDEN" }, { status: 403 });
+      }
     }
 
     // The registry is the server-side source of truth for the audit name and platform; the request
     // body is only a fallback for channels that have not been synced into the registry yet.
-    const account = await getSocialAccount(body.integrationId);
+    const account = await getSocialAccount(integrationId);
 
-    // Ownership gate: members may only publish to channels they own (unassigned channels included).
+    // Ownership gate: members may only publish to channels assigned to them.
     // Administrators keep full access. Refusals never reach Postiz and never write an audit row.
     if (auth.user.role !== "admin" && (!account || account.ownerUserId !== auth.user.id)) {
       return NextResponse.json(
@@ -96,42 +70,65 @@ export async function POST(request: Request) {
     }
     // publishAt is still accepted and validated so older clients get a clear error instead of a
     // silent change of behaviour, but it no longer reaches Postiz: Polaris only creates drafts.
-    if (body.publishAt && Number.isNaN(Date.parse(body.publishAt))) {
+    if (publishAt && Number.isNaN(Date.parse(publishAt))) {
       return NextResponse.json({ error: "publishAt must be a valid date-time." }, { status: 400 });
     }
 
-    const platform = account?.provider || (body.platform || "").trim() || "unknown";
-    const accountName = account?.accountName || (body.accountName || "").trim() || body.integrationId;
+    const platform = account?.provider || (body.platform as string | undefined)?.trim() || "unknown";
+    const accountName = account?.accountName || (body.accountName as string | undefined)?.trim() || integrationId;
 
     const result = await publishToPostiz({
-      integrationId: body.integrationId,
-      content: body.content.trim(),
-      imageUrl: body.imageUrl?.trim() || undefined,
+      integrationId,
+      content,
+      imageUrl: (body.imageUrl as string | undefined)?.trim() || undefined,
       platform
     });
 
-    await writePublishAudit({
-      projectId: body.projectId,
-      assetId: body.assetId || "unknown",
-      platform,
-      integrationId: body.integrationId,
-      accountName,
-      publishedBy: auth.user.id,
-      publishedByName: auth.user.displayName,
-      contentPreview: body.content.trim().slice(0, 200),
-      postizPostId: result.postId,
-      status: result.success ? "drafted" : "failed",
-      error: result.error
-    });
+    const warnings: string[] = [];
+    if (result.warning) warnings.push(result.warning);
+    if (result.success && !result.postId && !result.warning) {
+      warnings.push("Draft submitted, but Postiz returned no post ID. Publication tracking is unavailable. Do not submit again.");
+    }
+    let auditId: string | undefined;
+    try {
+      const registration = await recordSocialSubmission({
+        projectId,
+        assetId: assetId || "unknown",
+        platform,
+        integrationId,
+        accountName,
+        publishedBy: auth.user.id,
+        publishedByName: auth.user.displayName,
+        contentPreview: content.slice(0, 200),
+        postizPostId: result.postId,
+        status: result.success ? "drafted" : "failed",
+        error: result.error
+      });
+      auditId = registration.auditId;
+      if (registration.warning) warnings.push(registration.warning);
+      if (result.success && !auditId && !registration.warning) warnings.push(registrationWarning);
+    } catch {
+      console.error("[social/publish] submission registration failed");
+      if (result.success) warnings.push(registrationWarning);
+    }
 
     if (!result.success) {
       return NextResponse.json({ error: result.error || "Failed to create the Postiz draft" }, { status: 502 });
     }
+    if (auditId) {
+      try {
+        const delivery = await deliverSocialNotifications({ auditId, limit: 1 });
+        if (delivery.failed > 0) warnings.push(notificationPendingWarning);
+      } catch {
+        warnings.push(notificationPendingWarning);
+      }
+    }
 
     return NextResponse.json({
       success: true,
-      assetId: body.assetId,
+      assetId,
       postId: result.postId,
+      ...(warnings.length ? { warning: [...new Set(warnings)].join(" ") } : {}),
       // Kept under its original key for existing clients; it is the moment the draft was handed to
       // Postiz, not a publish time.
       publishedAt: new Date().toISOString()

@@ -4,6 +4,55 @@ import { createContext, useContext } from "react";
 
 export type UiLanguage = "en" | "zh" | "vi" | "th";
 export const LocaleContext = createContext<UiLanguage>("en");
+// Feishu administration currently supports Chinese and English; other locales use English.
+const feishuChineseMessages: Record<string, string> = {
+  "Feishu group notifications": "飞书群通知",
+  "The shared group receives submission summaries from all members. Confirm that everyone in the group may see them. Messages do not mention @all by default.": "共享群会收到所有成员的提交摘要，请确认群内所有人都有权限查看。通知默认不会 @all。",
+  "Loading Feishu settings...": "正在加载飞书设置…",
+  "Webhook": "Webhook",
+  "Signing secret": "签名密钥",
+  "Encryption": "加密环境",
+  "Configured": "已配置",
+  "Not configured": "未配置",
+  "Ready": "已就绪",
+  "Not ready": "未就绪",
+  "Saving is disabled until the server administrator configures FEISHU_ENCRYPTION_KEY. Never enter this environment key here.": "服务器管理员配置 FEISHU_ENCRYPTION_KEY 后才能保存。该环境密钥由服务器配置，请勿在此输入。",
+  "Notification preferences": "通知偏好",
+  "Enable Feishu notifications": "启用飞书通知",
+  "Notify when a draft is submitted": "草稿提交时通知",
+  "Notify when a post is published": "贴文发布时通知",
+  "Existing credentials are never displayed. Leave a field blank to keep its saved value. Use the separate clear checkboxes to remove credentials.": "已有凭据不会回填或显示。输入框留空表示保留已保存值；只有勾选对应的清除选项才会删除凭据。",
+  "New webhook URL": "新的 Webhook URL",
+  "New signing secret": "新的签名密钥",
+  "Clear the saved webhook URL": "清除已保存的 Webhook URL",
+  "Clear the saved signing secret": "清除已保存的签名密钥",
+  "Save Feishu settings": "保存飞书设置",
+  "Send test message": "发送测试消息",
+  "Save your changes before testing. Only the saved configuration is tested.": "请先保存修改，再发送测试消息。测试只使用已保存的配置。",
+  "Save a webhook URL before sending a test message.": "请先保存 Webhook URL，再发送测试消息。",
+  "Testing sends a real message to the saved group, even when automatic notifications are disabled.": "测试会向已保存配置对应的群发送真实消息，即使自动通知已关闭。",
+  "Configuration updated": "配置更新时间",
+  "Version": "版本",
+  "Last test": "最近测试",
+  "Last worker update": "最近 Worker 更新时间",
+  "Last test error": "最近测试错误",
+  "Last delivery error (redacted)": "最近投递错误（已脱敏）",
+  "Never": "暂无记录",
+  "Unknown": "未知",
+  "Successful": "成功",
+  "Failed": "失败",
+  "Not tested": "尚未测试",
+  "Could not load Feishu settings. Refresh and try again.": "无法加载飞书设置，请刷新并重试。",
+  "Could not save Feishu settings.": "飞书设置保存失败。",
+  "Feishu settings saved.": "飞书设置已保存。",
+  "Feishu test message sent using the saved configuration.": "已使用保存的配置发送飞书测试消息。",
+  "Feishu test failed. Check the saved configuration.": "飞书测试失败，请检查已保存的配置。",
+  "Too many Feishu tests. Wait before trying again.": "飞书测试过于频繁，请稍后重试。",
+  "Draft submitted, but notifications or status tracking need attention. Do not submit it again.": "草稿已提交，但通知或状态跟踪需检查。请勿重复提交。",
+  "Drafts submitted": "已提交草稿",
+  "Notifications or status tracking need attention": "通知或状态跟踪需检查",
+  "Do not resubmit successful drafts.": "请勿重复提交已成功的草稿。"
+};
 const messages: Record<string, [string, string]> = {
   "Post image": ["贴文配图", "Ảnh bài đăng"],
   "Restore article image": ["恢复文章原图", "Khôi phục ảnh bài viết"],
@@ -876,6 +925,7 @@ const thMessages: Record<string, string> = {
 
 export function translate(language: UiLanguage, text: string): string {
   if (language === "en") return text;
+  if (language === "zh" && feishuChineseMessages[text]) return feishuChineseMessages[text];
   if (language === "th") return thMessages[text] || text;
   return messages[text]?.[language === "zh" ? 0 : 1] || text;
 }

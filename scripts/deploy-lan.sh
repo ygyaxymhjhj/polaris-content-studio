@@ -74,7 +74,15 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 echo "==> 1/7 stop service"
-ssh "$SERVER" "systemctl stop $SERVICE"
+ssh "$SERVER" bash -s -- "$SERVICE" <<'REMOTE'
+set -euo pipefail
+SERVICE=$1
+# Stop the trigger and any current run before replacing code or migrating tables.
+for UNIT in polaris-notifications.timer polaris-notifications.service; do
+  if systemctl cat "$UNIT" >/dev/null 2>&1; then systemctl stop "$UNIT"; fi
+done
+systemctl stop "$SERVICE"
+REMOTE
 
 echo "==> 2/7 backup"
 ssh "$SERVER" bash -s -- "$SHORT" "$APP_DIR" "$REMOTE_ROOT" "$WITH_DB" <<'REMOTE'
@@ -88,6 +96,8 @@ cp -a "$APP_DIR/.env.local" "$BK/env-before" 2>/dev/null || true
 cp -a "$ROOT/runtime" "$BK/runtime" 2>/dev/null || true
 cp -a /etc/systemd/system/polaris-studio.service "$BK/" 2>/dev/null || true
 cp -a /etc/systemd/system/polaris-studio.service.d "$BK/" 2>/dev/null || true
+cp -a /etc/systemd/system/polaris-notifications.service "$BK/" 2>/dev/null || true
+cp -a /etc/systemd/system/polaris-notifications.timer "$BK/" 2>/dev/null || true
 tar -C "$APP_DIR" --exclude=node_modules --exclude=.next --exclude=.next-dev --exclude=.env.local -czf "$BK/app-source.tgz" .
 if [ "$WITH_DB" = 1 ]; then
   if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'polaris-mysql'; then
@@ -110,6 +120,8 @@ install -d -m 755 "$ROOT/runtime"
 install -m 644 "$APP_DIR/deploy/runtime/openrouter-proxy.cjs" "$ROOT/runtime/openrouter-proxy.cjs"
 install -d -m 755 /etc/systemd/system/polaris-studio.service.d
 install -m 644 "$APP_DIR/deploy/40-openrouter-proxy.conf" /etc/systemd/system/polaris-studio.service.d/40-openrouter-proxy.conf
+install -m 644 "$APP_DIR/deploy/polaris-notifications.service" /etc/systemd/system/polaris-notifications.service
+install -m 644 "$APP_DIR/deploy/polaris-notifications.timer" /etc/systemd/system/polaris-notifications.timer
 systemctl daemon-reload
 echo "runtime files installed"
 REMOTE
@@ -154,17 +166,30 @@ set -euo pipefail
 APP_DIR=$1; RUN_USER=$2; SERVICE=$3; HEALTH=$4; COMMIT=$5
 # Anonymous /login does not query users, so HTTP 200 alone cannot verify a role migration.
 runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH && node scripts/check-user-roles.mjs"
+# Disabled/unconfigured notifications do not require a key or token to deploy the existing UI.
+runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH NODE_ENV=production SOCIAL_NOTIFICATIONS_INTERNAL_URL=http://192.168.220.109:13300/api/internal/social-notifications && node scripts/check-feishu-notifications.mjs"
 printf '%s\n' "$COMMIT" > "$APP_DIR/DEPLOYED_COMMIT"
 chown "$RUN_USER:$RUN_USER" "$APP_DIR/DEPLOYED_COMMIT"
 systemctl start "$SERVICE"
 systemctl is-active "$SERVICE"
+HEALTHY=0
 for i in {1..10}; do
   CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH" || true)
-  if [ "$CODE" = "200" ]; then echo "health: 200"; exit 0; fi
+  if [ "$CODE" = "200" ]; then echo "health: 200"; HEALTHY=1; break; fi
   sleep 2
 done
-echo "health: $CODE"
-exit 1
+if [ "$HEALTHY" != 1 ]; then
+  echo "health: $CODE"
+  exit 1
+fi
+if runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH NODE_ENV=production SOCIAL_NOTIFICATIONS_INTERNAL_URL=http://192.168.220.109:13300/api/internal/social-notifications && node scripts/check-feishu-notifications.mjs --require-worker"; then
+  systemctl enable --now polaris-notifications.timer
+  systemctl is-active polaris-notifications.timer
+  echo "notification timer: active"
+else
+  systemctl disable --now polaris-notifications.timer
+  echo "note: notification units installed but timer stopped; configure SOCIAL_NOTIFICATIONS_TOKEN and rerun worker preflight before enabling it."
+fi
 REMOTE
 
 echo "==> done: $SHORT deployed to $SERVER"

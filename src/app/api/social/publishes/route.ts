@@ -22,9 +22,24 @@ interface PublishRow extends RowDataPacket {
   postiz_post_id: string | null;
   published_url: string | null;
   scheduled_at: string | null;
-  status: "published" | "queued" | "failed";
+  status: "drafted" | "published" | "queued" | "failed";
+  tracking_state: "DRAFT" | "QUEUE" | "PUBLISHED" | "ERROR" | null;
+  release_url: string | null;
+  postiz_publish_date: string | Date | null;
+  confirmed_at: string | Date | null;
   error: string | null;
   created_at: string;
+}
+
+function formatTrackingTimestamp(timestamp: string | Date | null): string | null {
+  if (!timestamp) return null;
+  if (timestamp instanceof Date) {
+    return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+  }
+  const normalizedTimestamp = timestamp.replace(" ", "T");
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(normalizedTimestamp);
+  const parsedDate = new Date(hasTimezone ? normalizedTimestamp : `${normalizedTimestamp}Z`);
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate.toISOString();
 }
 
 /**
@@ -53,14 +68,16 @@ export async function GET(request: Request) {
   try {
     const [rows] = assetId
       ? await database().execute<PublishRow[]>(
-          `SELECT p.* FROM social_publishes p
+          `SELECT p.*, t.state AS tracking_state, t.release_url, t.postiz_publish_date, t.confirmed_at FROM social_publishes p
+             LEFT JOIN social_post_tracking t ON t.publish_audit_id = p.id
              LEFT JOIN projects pr ON pr.id = p.project_id
             WHERE p.asset_id = ? AND (pr.owner_hash = ? OR (p.project_id IS NULL AND p.published_by = ?))
             ORDER BY p.created_at DESC LIMIT 50`,
           [assetId, auth.ownerHash, auth.user.id]
         )
       : await database().execute<PublishRow[]>(
-          `SELECT p.* FROM social_publishes p
+          `SELECT p.*, t.state AS tracking_state, t.release_url, t.postiz_publish_date, t.confirmed_at FROM social_publishes p
+             LEFT JOIN social_post_tracking t ON t.publish_audit_id = p.id
              JOIN projects pr ON pr.id = p.project_id
             WHERE p.project_id = ? AND pr.owner_hash = ?
             ORDER BY p.created_at DESC LIMIT 50`,
@@ -77,9 +94,12 @@ export async function GET(request: Request) {
       publishedByName: row.published_by_name,
       contentPreview: row.content_preview,
       postizPostId: row.postiz_post_id,
-      publishedUrl: row.published_url,
+      publishedUrl: row.tracking_state === "PUBLISHED" ? row.release_url || row.published_url : row.published_url,
+      publishedAt: row.tracking_state === "PUBLISHED"
+        ? formatTrackingTimestamp(row.postiz_publish_date || row.confirmed_at)
+        : null,
       scheduledAt: row.scheduled_at,
-      status: row.status,
+      status: row.tracking_state === "PUBLISHED" ? "published" : row.status,
       error: row.error,
       createdAt: new Date(row.created_at).toISOString()
     }));

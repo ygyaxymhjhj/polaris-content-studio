@@ -231,8 +231,32 @@ try {
       return { success: true, postId: "post-1", url: "https://x.example/p1" };
     }
   };
+  const submissionCalls = [];
+  const deliveryCalls = [];
+  const notificationsMock = {
+    recordSocialSubmission: async (entry) => {
+      submissionCalls.push(entry);
+      const auditId = `synthetic-audit-${submissionCalls.length}`;
+      // Preserve the existing fake SQL audit contract; notification internals are tested separately.
+      await fake.execute(
+        `INSERT INTO social_publishes
+          (id, project_id, asset_id, platform, integration_id, account_name, published_by,
+           published_by_name, content_preview, postiz_post_id, published_url, scheduled_at, status, error)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [auditId, entry.projectId || null, entry.assetId, entry.platform, entry.integrationId,
+          entry.accountName, entry.publishedBy, entry.publishedByName, entry.contentPreview,
+          entry.postizPostId || null, null, null, entry.status, entry.error || null]
+      );
+      return { auditId };
+    },
+    deliverSocialNotifications: async (options) => {
+      deliveryCalls.push(options);
+      return { sent: 0, failed: 0, skipped: 0 };
+    }
+  };
   const publishRoute = loadModule("src/app/api/social/publish/route.ts", {
-    "@/lib/postiz": publishPostiz, "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule, "@/lib/project-db": projectDbModule
+    "@/lib/postiz": publishPostiz, "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule,
+    "@/lib/project-db": projectDbModule, "@/lib/social-notifications": notificationsMock
   });
   const publishRequest = (integrationId) => new Request("https://studio.example.test/api/social/publish", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -246,6 +270,8 @@ try {
   }
   assert.equal(publishCalls.length, 0, "Refused publishes must never reach Postiz");
   assert.equal(fake.state.publishes.length, 0, "Refused publishes must never write an audit row");
+  assert.equal(submissionCalls.length, 0, "Refused publishes must never register notifications");
+  assert.equal(deliveryCalls.length, 0, "Refused publishes must never invoke notification delivery");
 
   const ownPublish = await publishRoute.POST(publishRequest("acct-ana"));
   assert.equal(ownPublish.status, 200);
@@ -253,10 +279,15 @@ try {
   assert.equal(publishCalls.length, 1);
   assert.equal(fake.state.publishes.length, 1);
   assert.equal(fake.state.publishes[0].publishedBy, anaUser.id);
+  assert.equal(fake.state.publishes[0].status, "drafted");
+  assert.equal(submissionCalls[0].publishedByName, anaUser.displayName);
+  assert.deepEqual(deliveryCalls, [{ auditId: "synthetic-audit-1", limit: 1 }]);
 
   currentAuth = { user: adminUser };
   assert.equal((await publishRoute.POST(publishRequest("acct-old"))).status, 200, "Admins may publish to unassigned channels");
   assert.equal(publishCalls.length, 2);
+  assert.equal(fake.state.publishes.length, 2);
+  assert.equal(deliveryCalls.length, 2, "An empty notification queue leaves successful submissions unchanged");
 
   // ---------- 3. Connect return: claim only channels that appeared after the snapshot ----------
   let capturedRedirect = "";

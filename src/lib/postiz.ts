@@ -225,30 +225,103 @@ async function uploadMediaToPostiz(
   }
 }
 
+export interface PostizPostDetails {
+  id: string;
+  state: "DRAFT" | "QUEUE" | "PUBLISHED" | "ERROR";
+  releaseUrl?: string;
+  publishDate?: string;
+}
+
+const MAX_POSTIZ_POST_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+function isPostizRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPostizPostState(state: unknown): state is PostizPostDetails["state"] {
+  return state === "DRAFT" || state === "QUEUE" || state === "PUBLISHED" || state === "ERROR";
+}
+
+function validatePostizReleaseUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return undefined;
+  try {
+    const releaseUrl = new URL(value);
+    if ((releaseUrl.protocol !== "http:" && releaseUrl.protocol !== "https:") || releaseUrl.username || releaseUrl.password) {
+      return undefined;
+    }
+    return releaseUrl.href;
+  } catch {
+    return undefined;
+  }
+}
+
+function validatePostizPublishDate(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const isoDateTime = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+  const dateMatch = value.match(isoDateTime);
+  if (!dateMatch || !Number.isFinite(Date.parse(value))) return undefined;
+  // Date.parse normalizes impossible calendar dates such as February 30.
+  const calendarDate = new Date(`${dateMatch[1]}T00:00:00Z`);
+  if (calendarDate.toISOString().slice(0, 10) !== dateMatch[1]) return undefined;
+  return value;
+}
+
+async function readPostizPostsResponse(response: Response): Promise<unknown> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (contentLength > MAX_POSTIZ_POST_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new PostizConnectionError("Postiz returned too many posts. Retry with a smaller date range.");
+  }
+  if (!response.body) throw new PostizConnectionError("Postiz returned an invalid posts response.");
+
+  const reader = response.body.getReader();
+  const responseChunks: Uint8Array[] = [];
+  let responseBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      responseBytes += value.byteLength;
+      if (responseBytes > MAX_POSTIZ_POST_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new PostizConnectionError("Postiz returned too many posts. Retry with a smaller date range.");
+      }
+      responseChunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(Buffer.concat(responseChunks, responseBytes).toString("utf8"));
+}
+
 /**
- * Fetches the current state of multiple posts from Postiz. Returns a map of postId → state.
- * Possible states: DRAFT, PUBLISHED, SCHEDULED, ERROR, or null if not found.
- * 
- * This queries the last 30 days of posts. Posts older than that won't be found and will return null.
+ * Lists requested posts in the caller's complete date range; missing/unknown posts are omitted.
+ * GET /posts has no pagination: docs.postiz.com/public-api/posts/list and upstream GetPostsDto /
+ * PostsRepository.getPosts expose only date range/customer, with no take/skip/cursor. Callers may
+ * split large ranges into weeks; this function never silently truncates to the last 30 days.
  */
-export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<string, string | null>> {
-  const result = new Map<string, string | null>();
-  if (postIds.length === 0) return result;
+export async function fetchPostizPostDetails(
+  postIds: string[],
+  range: { startDate: Date; endDate: Date }
+): Promise<Map<string, PostizPostDetails>> {
+  const detailsById = new Map<string, PostizPostDetails>();
+  if (postIds.length === 0) return detailsById;
+
+  if (!(range.startDate instanceof Date) || !(range.endDate instanceof Date)
+    || !Number.isFinite(range.startDate.getTime()) || !Number.isFinite(range.endDate.getTime())
+    || range.startDate > range.endDate) {
+    throw new PostizConnectionError("Select a valid Postiz post date range.", 400);
+  }
 
   const config = getPostizConfig();
   if (!config) {
-    // If Postiz is not configured, return null for all
-    postIds.forEach(id => result.set(id, null));
-    return result;
+    throw new PostizConnectionError("Postiz is not configured on the server.", 503);
   }
 
   try {
-    const endDate = new Date();
-    const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 30);
-
-    const base = getPostizApiBaseUrl(config.apiUrl);
-    const listUrl = `${base}/public/v1/posts?startDate=${startDate.toISOString()}&endDate=${endDate.toISOString()}`;
+    const listUrl = new URL(`${getPostizApiBaseUrl(config.apiUrl)}/public/v1/posts`);
+    listUrl.searchParams.set("startDate", range.startDate.toISOString());
+    listUrl.searchParams.set("endDate", range.endDate.toISOString());
 
     const response = await fetch(listUrl, {
       method: "GET",
@@ -256,37 +329,53 @@ export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<stri
         Authorization: config.apiKey,
         "x-api-key": config.apiKey
       },
+      cache: "no-store",
+      redirect: "error",
       signal: AbortSignal.timeout(15000)
     });
 
     if (!response.ok) {
-      console.error(`[postiz] fetchPostStatus failed with status ${response.status}`);
-      postIds.forEach(id => result.set(id, null));
-      return result;
+      await response.body?.cancel().catch(() => undefined);
+      throw new PostizConnectionError(`Postiz could not list posts (HTTP ${response.status}). Please try again.`);
     }
 
-    const data = (await response.json()) as { posts?: Array<{ id: string; state?: string }> };
-    const posts = data.posts || [];
+    const data = await readPostizPostsResponse(response);
+    if (!isPostizRecord(data) || !Array.isArray(data.posts)) {
+      throw new PostizConnectionError("Postiz returned an invalid posts response.");
+    }
 
-    // Build a map of all found posts
-    const statusMap = new Map<string, string>();
-    posts.forEach(post => {
-      if (post.id && post.state) {
-        statusMap.set(post.id, post.state);
-      }
-    });
-
-    // Fill result for requested IDs
-    postIds.forEach(id => {
-      result.set(id, statusMap.get(id) || null);
-    });
-
-    return result;
+    const requestedIds = new Set(postIds);
+    for (const post of data.posts) {
+      if (!isPostizRecord(post) || typeof post.id !== "string" || !post.id.trim()
+        || !requestedIds.has(post.id) || !isPostizPostState(post.state)) continue;
+      const details: PostizPostDetails = { id: post.id, state: post.state };
+      const releaseUrl = validatePostizReleaseUrl(post.releaseURL);
+      const publishDate = validatePostizPublishDate(post.publishDate);
+      if (releaseUrl) details.releaseUrl = releaseUrl;
+      if (publishDate) details.publishDate = publishDate;
+      detailsById.set(post.id, details);
+    }
+    return detailsById;
   } catch (error) {
-    console.error("[postiz] fetchPostStatus error", error);
-    postIds.forEach(id => result.set(id, null));
-    return result;
+    if (error instanceof PostizConnectionError) throw error;
+    // Provider bodies and transport errors can contain credentials or private account details.
+    throw new PostizConnectionError("Could not read posts from Postiz. Please try again.");
   }
+}
+
+/** Legacy status client: the last 30 days only; missing posts or connection errors return null. */
+export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<string, string | null>> {
+  const statuses = new Map<string, string | null>(postIds.map(postId => [postId, null]));
+  if (postIds.length === 0) return statuses;
+  const endDate = new Date();
+  const startDate = new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+  try {
+    const details = await fetchPostizPostDetails(postIds, { startDate, endDate });
+    for (const postId of postIds) statuses.set(postId, details.get(postId)?.state ?? null);
+  } catch {
+    // Existing browser clients depend on null-on-error; workers must use the throwing details API.
+  }
+  return statuses;
 }
 
 /**
@@ -294,7 +383,7 @@ export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<stri
  * points at a draft that an administrator reviews and promotes inside Postiz. The request carries
  * no publish time, so nothing here can turn into a live post.
  */
-export async function publishToPostiz(req: PostizPublishRequest): Promise<{ success: boolean; postId?: string; error?: string }> {
+export async function publishToPostiz(req: PostizPublishRequest): Promise<{ success: boolean; postId?: string; error?: string; warning?: string }> {
   const config = getPostizConfig();
   if (!config) {
     return { success: false, error: "Postiz is not configured. Please set POSTIZ_API_URL and POSTIZ_API_KEY in environment." };
@@ -352,13 +441,17 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
       return { success: false, error: `Postiz API error (${response.status}): ${errText.slice(0, 300)}` };
     }
 
-    const resJson = await response.json().catch(() => ({}));
-    const firstItem = Array.isArray(resJson) ? resJson[0] : resJson;
-    const postId = firstItem?.postId || firstItem?.id;
-
-    // A draft has no release URL and no publish state to poll, so the create response is the end
-    // of the hand-off. Postiz versions differ on the id field, hence the fallback.
-    return { success: true, postId: postId ? String(postId) : "post-" + Date.now() };
+    const responseData: unknown = await response.json().catch(() => null);
+    const firstItem: unknown = Array.isArray(responseData) ? responseData[0] : responseData;
+    if (isPostizRecord(firstItem)) {
+      for (const upstreamId of [firstItem.postId, firstItem.id]) {
+        if (typeof upstreamId === "string" && upstreamId.trim()) {
+          return { success: true, postId: upstreamId };
+        }
+      }
+    }
+    // Acceptance and tracking are separate: never invent an ID or invite a duplicate submission.
+    return { success: true, warning: "Postiz accepted the draft, but post tracking is unavailable because it returned no post ID." };
   } catch (error) {
     return {
       success: false,

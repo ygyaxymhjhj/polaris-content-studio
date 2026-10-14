@@ -47,6 +47,7 @@ import { validateBrowserArticle } from "@/lib/browser-import";
 import { normalizeAnalysis } from "@/lib/normalize-analysis";
 import ProjectStorage from "@/components/ProjectStorage";
 import MembersPanel from "@/components/MembersPanel";
+import FeishuSettingsPanel from "@/components/FeishuSettingsPanel";
 import ConnectAccountsDialog from "@/components/ConnectAccountsDialog";
 import SocialAccountsView from "@/components/SocialAccountsView";
 import type { ProjectSnapshot } from "@/lib/project-schema";
@@ -192,6 +193,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const [assetFilter, setAssetFilter] = useState<Platform | "all">("all");
   const [loading, setLoading] = useState<"parse" | "fetch" | "analyze" | "generate" | "export" | null>(null);
   const [toast, setToast] = useState("");
+  const [submissionNotice, setSubmissionNotice] = useState("");
   const [usedFallback, setUsedFallback] = useState(false);
   const [generationRun, setGenerationRun] = useState("");
   const [pendingPlatforms, setPendingPlatforms] = useState<Platform[]>([]);
@@ -859,10 +861,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
    * publish time to pass and no live URL to bring back; an administrator reviews and promotes the
    * draft inside Postiz.
    */
-  async function submitDraft(asset: ContentAsset, accountId: string) {
+  async function submitDraft(asset: ContentAsset, accountId: string, announceResult = true) {
     if (!accountId) {
-      notify(t("Select a social account first."));
-      return;
+      if (announceResult) notify(t("Select a social account first."));
+      return { success: false, warning: false };
     }
     setPublishing(true);
     setAssets(prev => prev.map(a => a.id === asset.id ? { ...a, publishStatus: "publishing" } : a));
@@ -880,7 +882,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId
         })
       });
-      const data = await readJson<{ success?: boolean; error?: string; publishedAt?: string }>(res);
+      const data = await readJson<{ success?: boolean; error?: string; publishedAt?: string; warning?: string }>(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || t("Publish failed"));
       }
@@ -893,15 +895,23 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (selectedAsset?.id === asset.id) {
         setSelectedAsset(cur => cur ? { ...cur, publishStatus: "drafted" } : null);
       }
-      notify(t("Draft submitted to Postiz. An administrator reviews and publishes it there."));
+      const hasWarning = typeof data.warning === "string" && Boolean(data.warning.trim());
+      if (announceResult) {
+        const message = t(hasWarning ? "Draft submitted, but notifications or status tracking need attention. Do not submit it again."
+          : "Draft submitted to Postiz. An administrator reviews and publishes it there.");
+        setSubmissionNotice(hasWarning ? message : "");
+        notify(message);
+      }
       setPublishModalAsset(null);
+      return { success: true, warning: hasWarning };
     } catch (err) {
       setAssets(prev => prev.map(a => a.id === asset.id ? {
         ...a,
         publishStatus: "failed",
         publishError: err instanceof Error ? err.message : t("Publish failed")
       } : a));
-      notify(err instanceof Error ? err.message : t("Publish failed"));
+      if (announceResult) notify(err instanceof Error ? err.message : t("Publish failed"));
+      return { success: false, warning: false };
     } finally {
       setPublishing(false);
     }
@@ -929,10 +939,19 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     const toSubmit = matches.filter((m): m is { asset: ContentAsset; account: SocialAccount } => Boolean(m.account));
     if (!toSubmit.length) return;
     setLoading("export");
+    let submittedCount = 0;
+    let warningCount = 0;
+    let failedCount = 0;
     for (const { asset, account } of toSubmit) {
-      await submitDraft(asset, account.id);
+      const result = await submitDraft(asset, account.id, false);
+      if (result.success) submittedCount += 1;
+      else failedCount += 1;
+      if (result.warning) warningCount += 1;
     }
     setLoading(null);
+    const summary = `${t("Drafts submitted")}: ${submittedCount}. ${t("Failed")}: ${failedCount}. ${t("Skipped assets with no matching account")}: ${matches.length - toSubmit.length}. ${t("Notifications or status tracking need attention")}: ${warningCount}.`;
+    setSubmissionNotice(warningCount ? `${summary} ${t("Do not resubmit successful drafts.")}` : "");
+    notify(summary);
   }
 
   function updateSelectedAsset(field: keyof ContentAsset, value: string) {
@@ -1037,6 +1056,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         </header>
 
         <div className="content-wrap">
+          {submissionNotice && <div className="info-banner" role="status"><TriangleAlert size={16} aria-hidden="true" /><span>{submissionNotice}</span></div>}
           <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={setCurrentProjectId} hidden={view === "export" || view === "accounts" || view === "settings"} />
           {view === "workspace" && (sourceError || sourcePending) && (
             <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>
@@ -1585,5 +1605,5 @@ function ExportView({ assets, submittedCount, onExport, onBatchSubmitDrafts, loa
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; submitted drafts wait there for review.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; submitted drafts wait there for review.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}{canManageMembers === true && <FeishuSettingsPanel canManageMembers={canManageMembers} />}</div></>;
 }
