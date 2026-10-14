@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
+import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 import { collectArticle, CollectionError } from "@/lib/article-collector";
@@ -10,6 +11,20 @@ export const runtime = "nodejs";
 export const maxDuration = 180;
 
 const MAX_ARTICLE_CHARS = 120_000;
+
+function describeFetchError(error: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (!error || typeof error !== "object" || depth >= 4) return undefined;
+  const details = error as { name?: unknown; code?: unknown; errno?: unknown; syscall?: unknown; cause?: unknown; errors?: unknown };
+  const description: Record<string, unknown> = {};
+  // Only diagnostic identifiers: error messages and stacks can contain URLs or credentials.
+  for (const field of ["name", "code", "errno", "syscall"] as const) {
+    const value = details[field];
+    if (typeof value === "number" || (typeof value === "string" && /^[\w.:-]{1,80}$/.test(value))) description[field] = value;
+  }
+  if (details.cause) description.cause = describeFetchError(details.cause, depth + 1);
+  if (Array.isArray(details.errors)) description.errors = details.errors.slice(0, 4).map(nestedError => describeFetchError(nestedError, depth + 1));
+  return description;
+}
 
 function isPrivateIpv4(hostname: string) {
   const parts = hostname.split(".").map(Number);
@@ -130,34 +145,62 @@ async function fetchPublicPage(initialUrl: URL, options: { cookie?: string; user
 export async function POST(request: Request) {
   const auth = await currentUser();
   if (!auth) return unauthorized();
+  const startedAt = Date.now();
+  const requestId = randomUUID();
+  let hostname: string | undefined;
+  let stage = "request";
+  let upstreamStatus: number | undefined;
+  const failure = (body: { error: string; code?: string; upstreamStatus?: number }, status: number, error?: unknown) => {
+    console.error("[fetch-article] failure", JSON.stringify({
+      timestamp: new Date().toISOString(),
+      requestId,
+      hostname,
+      stage,
+      durationMs: Date.now() - startedAt,
+      status,
+      upstreamStatus,
+      code: body.code,
+      error: describeFetchError(error)
+    }));
+    return NextResponse.json(body, { status, headers: { "X-Request-ID": requestId } });
+  };
   try {
     const body = await request.json() as { url?: string };
     const rawUrl = String(body.url || "").trim();
+    try { hostname = new URL(rawUrl).hostname; } catch { /* Never log the raw input. */ }
     // Opt-in rollout: keep the existing local workflow until the target site passes server acceptance.
-    if (process.env.ARTICLE_COLLECTOR_V2 === "true") return NextResponse.json(await collectArticle(rawUrl));
+    if (process.env.ARTICLE_COLLECTOR_V2 === "true") {
+      stage = "collector";
+      return NextResponse.json(await collectArticle(rawUrl));
+    }
     let url: URL;
     try {
       url = new URL(rawUrl);
     } catch {
-      return NextResponse.json({ error: "Please enter a valid article URL" }, { status: 400 });
+      return failure({ error: "Please enter a valid article URL" }, 400);
     }
-    if (!["http:", "https:"].includes(url.protocol)) return NextResponse.json({ error: "Only HTTP and HTTPS URLs are supported" }, { status: 400 });
-    if (url.username || url.password || isPrivateHost(url)) return NextResponse.json({ error: "This URL is not allowed" }, { status: 400 });
+    if (!["http:", "https:"].includes(url.protocol)) return failure({ error: "Only HTTP and HTTPS URLs are supported" }, 400);
+    if (url.username || url.password || isPrivateHost(url)) return failure({ error: "This URL is not allowed" }, 400);
 
+    stage = "fetch";
     const cachedCookie = getCachedAcwCookie(url.host);
     const { response, url: finalUrl } = await fetchPublicPage(url, cachedCookie ? { cookie: cachedCookie } : {});
-    if (response.status === 401 || response.status === 403) return NextResponse.json({
+    hostname = finalUrl.hostname;
+    upstreamStatus = response.status;
+    if (response.status === 401 || response.status === 403) return failure({
       error: "The source website denied access from this server. Open the article normally and paste its text, or import article JSON exported from a working local instance. The previous article has not been replaced.",
       code: "SOURCE_ACCESS_DENIED",
       upstreamStatus: response.status
-    }, { status: 424 });
-    if (!response.ok) return NextResponse.json({ error: `The page returned HTTP ${response.status}` }, { status: 502 });
+    }, 424);
+    if (!response.ok) return failure({ error: `The page returned HTTP ${response.status}` }, 502);
     const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) return NextResponse.json({ error: "This URL does not contain an HTML article" }, { status: 415 });
+    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) return failure({ error: "This URL does not contain an HTML article" }, 415);
 
+    stage = "read-body";
     let html = await response.text();
     let effectiveUrl = finalUrl;
     if (isAcwChallengePage(html)) {
+      stage = "anti-bot";
       try {
         // Aliyun WAF challenge: run the page's own script in a VM sandbox to
         // obtain the acw_sc__v2 cookie, then re-request with the session pair.
@@ -167,19 +210,20 @@ export async function POST(request: Request) {
         });
         html = bypassed.html;
         effectiveUrl = new URL(bypassed.finalUrl);
-      } catch {
-        return NextResponse.json({ error: "This page is protected by an anti-bot verification that could not be solved. Paste the article or use the browser extension instead.", code: "ANTI_BOT_VERIFICATION" }, { status: 424 });
+      } catch (error) {
+        return failure({ error: "This page is protected by an anti-bot verification that could not be solved. Paste the article or use the browser extension instead.", code: "ANTI_BOT_VERIFICATION" }, 424, error);
       }
     }
+    stage = "extract";
     const protection = protectionMessage(html);
-    if (protection) return NextResponse.json({ error: protection, code: "ANTI_BOT_VERIFICATION" }, { status: 424 });
+    if (protection) return failure({ error: protection, code: "ANTI_BOT_VERIFICATION" }, 424);
     const article = extractArticle(html, effectiveUrl.toString());
     const isNewsDetail = /\/newsdetail\//i.test(effectiveUrl.pathname);
-    if (article.text.length < (isNewsDetail ? 300 : 80)) return NextResponse.json({ error: "Could not find enough article text on this page. Try the browser crawler or paste the article instead.", code: "ARTICLE_CONTENT_INCOMPLETE" }, { status: 422 });
+    if (article.text.length < (isNewsDetail ? 300 : 80)) return failure({ error: "Could not find enough article text on this page. Try the browser crawler or paste the article instead.", code: "ARTICLE_CONTENT_INCOMPLETE" }, 422);
     return NextResponse.json({ ...article, sourceUrl: effectiveUrl.toString() });
   } catch (error) {
-    if (error instanceof CollectionError) return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+    if (error instanceof CollectionError) return failure({ error: error.message, code: error.code }, error.status, error);
     const message = error instanceof Error && error.name === "TimeoutError" ? "The page took too long to respond" : error instanceof Error ? error.message : "Could not fetch article";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return failure({ error: message }, 500, error);
   }
 }
