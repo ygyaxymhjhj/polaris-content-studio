@@ -269,11 +269,13 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
-    if (query.get("view") === "accounts") setView("accounts");
+    const requestedView = query.get("view");
+    const allowedViews: View[] = ["workspace", "facts", "assets", "export", "accounts", "settings"];
+    if (requestedView && allowedViews.includes(requestedView as View)) setView(requestedView as View);
     const outcome = query.get("connection");
     if (outcome !== "returned" && outcome !== "invalid") return;
     setConnectionNotice(outcome === "returned"
-      ? "Authorisation returned. Check the refreshed account list; if an account is missing, finish selecting its page in Postiz."
+      ? "Authorisation completed. Your social account is connected to your Polaris user."
       : "The authorisation return expired or belongs to another session. Please start again.");
     query.delete("connection");
     window.history.replaceState(null, "", `${window.location.pathname}?${query.toString()}`);

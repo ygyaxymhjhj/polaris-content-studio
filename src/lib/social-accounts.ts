@@ -109,56 +109,46 @@ function parseSnapshot(value: unknown): string[] | null {
   }
 }
 
-/**
- * Atomically consumes the attempt matching this browser's connect cookie. The single conditional
- * UPDATE is the gate: a replayed return (or a second tab) finds consumed_at already set and gets null.
- */
-export async function consumeConnectAttempt(
-  stateHash: string,
-  userId: string
-): Promise<{ provider: string; snapshotIds: string[] | null; returnView: string } | null> {
-  const now = utc(new Date());
-  const [result] = await database().execute<ResultSetHeader>(
-    "UPDATE social_connect_attempts SET consumed_at=? WHERE state_hash=? AND user_id=? AND consumed_at IS NULL AND expires_at>?",
-    [now, stateHash, userId, now]
-  );
-  if (result.affectedRows !== 1) return null;
-  const [rows] = await database().execute<RowDataPacket[]>(
-    "SELECT provider, snapshot_ids, return_view FROM social_connect_attempts WHERE state_hash=?",
-    [stateHash]
-  );
-  return {
-    provider: String(rows[0]?.provider || ""),
-    snapshotIds: parseSnapshot(rows[0]?.snapshot_ids),
-    returnView: String(rows[0]?.return_view || "accounts")
-  };
+export interface ConnectCompletion {
+  outcome: "returned" | "invalid" | "unconfirmed" | "conflict";
+  returnView: string;
 }
 
-/**
- * Attributes channels that appeared after the snapshot to the member who started the flow.
- * Only ids absent from the snapshot and matching the requested provider are considered, and the
- * conditional upsert assigns ownership only while owner_user_id is still NULL — so when two
- * members authorise at the same time, the first return claims and the second lands unassigned
- * for an administrator to place. Rows already owned by anyone are never overwritten.
- */
-export async function claimNewAccounts(entry: {
-  userId: string;
-  provider: string;
-  snapshotIds: string[] | null;
-  liveAccounts: SocialAccount[];
-}): Promise<string[]> {
-  // Without a snapshot the pre-authorisation state is unknown; claiming could take a colleague's account.
-  if (!entry.snapshotIds) return [];
-  const existedBefore = new Set(entry.snapshotIds);
-  const provider = entry.provider.toLowerCase();
-  const candidates = entry.liveAccounts.filter(
-    (account) => !existedBefore.has(account.id) && account.identifier.toLowerCase() === provider
-  );
-  const claimed: string[] = [];
-  for (const account of candidates) {
-    // Assignment order matters: MySQL evaluates SET clauses left to right against current values,
-    // so every ownership column is guarded by owner_user_id before the last clause changes it.
-    const [result] = await database().execute<ResultSetHeader>(
+/** Claims one new integration and consumes its browser attempt in the same short transaction. */
+export async function completeConnectAttempt(
+  stateHash: string,
+  userId: string,
+  liveAccounts: SocialAccount[]
+): Promise<ConnectCompletion> {
+  const connection = await database().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [attempts] = await connection.execute<RowDataPacket[]>(
+      "SELECT user_id, provider, snapshot_ids, return_view, expires_at, consumed_at FROM social_connect_attempts WHERE state_hash=? FOR UPDATE",
+      [stateHash]
+    );
+    const attempt = attempts[0];
+    const now = utc(new Date());
+    if (!attempt || String(attempt.user_id) !== userId || attempt.consumed_at != null || String(attempt.expires_at) <= now) {
+      await connection.rollback();
+      return { outcome: "invalid", returnView: "accounts" };
+    }
+    const returnView = String(attempt.return_view || "accounts");
+    const snapshotIds = parseSnapshot(attempt.snapshot_ids);
+    const provider = String(attempt.provider).toLowerCase();
+    const existedBefore = new Set(snapshotIds ?? []);
+    const candidates = liveAccounts.filter(account =>
+      account.id.trim() !== "" && account.id.toLowerCase() !== provider &&
+      !existedBefore.has(account.id) && account.identifier.toLowerCase() === provider
+    );
+    // A provider-only fallback id is not an integration; neither added=<provider> nor the
+    // apiKey-only webhook identifies an account. Ambiguous differences must stay unclaimed.
+    if (!snapshotIds || candidates.length !== 1) {
+      await connection.rollback();
+      return { outcome: "unconfirmed", returnView };
+    }
+    const candidate = candidates[0];
+    await connection.execute(
       `INSERT INTO social_accounts (integration_id, provider, account_name, owner_user_id, assigned_by_user_id, origin)
        VALUES (?,?,?,?,?,'connect')
        ON DUPLICATE KEY UPDATE
@@ -167,12 +157,34 @@ export async function claimNewAccounts(entry: {
          account_name = IF(owner_user_id IS NULL, VALUES(account_name), account_name),
          provider = IF(owner_user_id IS NULL, VALUES(provider), provider),
          owner_user_id = IF(owner_user_id IS NULL, VALUES(owner_user_id), owner_user_id)`,
-      [account.id, account.identifier, account.name, entry.userId, entry.userId]
+      [candidate.id, candidate.identifier, candidate.name, userId, userId]
     );
-    // 1 = inserted, 2 = ownership taken; 0 = already owned, so the first member to return keeps it.
-    if (result.affectedRows > 0) claimed.push(account.id);
+    const [owners] = await connection.execute<RowDataPacket[]>(
+      "SELECT owner_user_id FROM social_accounts WHERE integration_id=? FOR UPDATE",
+      [candidate.id]
+    );
+    if (!owners[0] || String(owners[0].owner_user_id) !== userId) {
+      await connection.rollback();
+      return { outcome: "conflict", returnView };
+    }
+    // Check TTL again after SQL writes; crossing it must roll back the ownership change too.
+    const consumedAt = utc(new Date());
+    const [consumed] = await connection.execute<ResultSetHeader>(
+      "UPDATE social_connect_attempts SET consumed_at=? WHERE state_hash=? AND user_id=? AND consumed_at IS NULL AND expires_at>?",
+      [consumedAt, stateHash, userId, consumedAt]
+    );
+    if (consumed.affectedRows !== 1) {
+      await connection.rollback();
+      return { outcome: "invalid", returnView: "accounts" };
+    }
+    await connection.commit();
+    return { outcome: "returned", returnView };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
-  return claimed;
 }
 
 /**

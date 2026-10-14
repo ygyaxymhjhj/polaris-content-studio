@@ -7,7 +7,7 @@
 - 成员默认只能查看、只能发布到自己**授权**或**管理员分配**的账号；其他成员的账号不可见、不可用（服务端强制，不只是界面过滤）。
 - 管理员可查看、分配、使用工作区内全部账号；可把存量账号分配/改派/收回给任意成员。
 - **不对 Postiz 做任何修改**。Postiz 里已授权的存量账号不动，进入「未分配」池（仅管理员可见），由管理员分配给成员。
-- 成员新授权完成的账号自动归属发起成员（快照 + 差异认领，见第 3 节），无需 Postiz 回调。
+- 成员正常新增授权的账号默认归属发起成员（快照 + 单候选认领，见第 3 节），不需要管理员再次分配。只有归属写入成功后才显示授权完成。
 
 为什么不沿用共享池：出现「部分账号不能让所有人发」的需求后，团队共享池无法表达账号级访问。风控仍靠「服务端校验 + 分配留痕 + 发布审计」实现，账号归属只是可见性与发布权的边界，token 依旧由 Postiz 统一管理。
 
@@ -18,7 +18,7 @@
 - 独立入口：侧栏「社媒账号」展示账号列表、可用状态、刷新时间；「添加社媒账号」打开独立的平台选择界面。设置页和发布弹窗也保留入口。
 - 直连授权参考 `social-autopub` 的白标流程：登录成员选择平台 → `POST /api/social/connect` → 服务端用 HS256 JWT 调用 Postiz `/api/enterprise/url` → 新窗口打开平台官方授权页面 → Postiz 保存账号与令牌 → 返回 Polaris，刷新账号列表。支持 Facebook、Instagram、X、Threads、LinkedIn，前提是对应平台应用已在 Postiz 中正确配置。
 - 必须配置服务端 `POSTIZ_JWT_SECRET`，其值与自托管 Postiz 实例的 `JWT_SECRET` 一致。API Key 和签名 JWT 不返回浏览器；签名有效期 10 分钟。该密钥具有敏感权限，不要提供给浏览器、普通用户或提交到 Git。
-- Polaris 的返回状态使用 10 分钟有效的 HttpOnly / SameSite=Lax Cookie，绑定当前登录用户；过期、缺失或换账号后的返回不会视为有效。授权发生在新窗口，原工作区与未保存草稿保持打开。新窗口返回、关闭后会刷新；直接在 Postiz 中连接后可点「刷新账号」。
+- Polaris 的返回状态使用 10 分钟有效的 HttpOnly / SameSite=Lax Cookie，绑定当前登录用户；过期、缺失或换账号后的返回不会视为有效。授权发生在新窗口，原工作区与未保存草稿保持打开。独立轻量完成页负责通知原窗口，成功后尝试关闭授权窗口，不再依赖工作台加载。浏览器不允许关闭时提供返回入口；失败时显示具体结果并提供适用的重试入口。
 - 本地只登记**归属**（`social_accounts`），账号本体与 token 仍完全由 Postiz 管理；列表接口始终以 Postiz 实时数据为准，登记表只做归属装饰，绝不单独用登记表出数据。
 - 返回授权流程并不等于所有平台步骤都完成。Facebook 等平台可能还需要在 Postiz 中选主页；以刷新后的账号是否出现及状态为准，不用 URL 上的标记伪造连接成功。
 - 降级入口「改用 Postiz 连接」打开 `POSTIZ_UI_URL`，**仅管理员可见**：Postiz 界面本身无法按成员隔离，普通成员不应持有 Postiz 登录。
@@ -29,13 +29,14 @@
 两张本地表（见 `deploy/mysql/init.sql` 与 `deploy/mysql/migrations/2026-10-08-social-account-ownership.sql`）：
 
 - `social_accounts`：`integration_id` 主键、`provider`/`account_name` 快照、`owner_user_id`（NULL = 未分配，仅管理员可见）、`assigned_by_user_id`、`origin ENUM('connect','admin')`。
-- `social_connect_attempts`：`state_hash` 主键（= 连接 Cookie 值 `sha256(userId:state)`）、`user_id`、`provider`、`snapshot_ids JSON`、`expires_at`、`consumed_at`。
+- `social_connect_attempts`：`state_hash` 主键（= 连接 Cookie 值 `sha256(userId:state)`）、`user_id`、`provider`、`snapshot_ids JSON`、`return_view`、`expires_at`、`consumed_at`。旧数据库还需要执行 `2026-10-12-connect-return-view.sql` 补迁移。
 
-自动认领机制（新账号归属发起人，无需 Postiz 回调）：
+自动认领机制（正常新增账号默认归属发起人）：
 
-1. 发起授权时（`POST /api/social/connect`）先取当前 Postiz 账号 id 快照，连同 `provider` 写入 attempt 行（10 分钟有效，与 Cookie 一致；快照失败记 NULL）。
-2. 授权完成返回时（`GET /api/social/connect`）校验 Cookie/state 后原子消费 attempt（重复返回或过期一律不再认领），再取实时列表与快照做差集：只认领「快照后新增 + 平台匹配 + 未占用」的账号，条件 upsert 保证**先返回者优先**、已归属不覆盖。
-3. 任何一步失败（Postiz 不可达、数据库异常）只记录日志，不影响返回跳转；账号落「未分配」，由管理员分配。
+1. 发起授权时（`POST /api/social/connect`）必须成功取得当前 Postiz 账号 id 快照并保存 attempt，才会生成外部授权链接。快照或数据库不可用时阻止发起，不再让用户走进无法自动归属的流程。
+2. 返回时（`GET /api/social/connect`）校验 Cookie/state，取得实时列表，并在短事务中锁定有效 attempt。仅当存在一个「快照后新增 + 平台匹配」的候选账号时，才条件写入归属；已属于他人的账号不能被覆盖。实际 owner 校验、归属写入和 attempt 消费在同一事务提交。
+3. Postiz 查询或数据库暂时失败时明确显示错误，保留有效 attempt 和 Cookie 供重试，不再静默显示成功或默认要求管理员补分配。零候选或多个候选时显示「尚未确认」，不自动认领；过期、重放或更换登录用户时显示无效。
+4. 回调统一通过相对重定向进入 `/social/connect/complete`，避免代理内部 `localhost` 被用于后续跳转。外部授权返回地址从通过同源校验的浏览器 Origin 构造；兼容 Postiz 在已有查询串后追加第二个 `?` 的行为。
 
 访问与发布规则（服务端强制）：
 
@@ -49,7 +50,8 @@
 
 边界与已知限制：
 
-- 同一时刻两人授权同一平台：先返回者认领成功，另一个账号落「未分配」，管理员改派（不改 Postiz 无法完全消除，先返回者优先是安全降级）。
+- 快照差集不是精确授权身份凭证。多个同平台新增候选时拒绝自动认领，但同平台并发或直接在 Postiz 新增账号仍可能干扰单候选判断。完全消除此问题需要 Postiz 提供可信且绑定本次授权的 integration ID。
+- Postiz 的 `added=x` 仅表示平台，`Channel Updated` 也不是归属成功凭证。历史未分配账号的重复授权不会产生新 ID，不能安全地自动认领；不通过扫描所有未分配账号来绕过这一限制。
 - 直接在 Postiz UI 连接的账号：进「未分配」池，由管理员分配。
 - 授权超过 10 分钟才返回：Cookie 过期 → 不认领（与现有语义一致），账号落「未分配」。
 - 成员账号 token 失效后的重连由管理员在 Postiz 处理（后续可选做 refreshId 自助重连，不在本期）。

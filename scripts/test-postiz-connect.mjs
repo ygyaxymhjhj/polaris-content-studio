@@ -22,10 +22,6 @@ function loadModule(path, mocks = {}) {
 const environmentNames = ["POSTIZ_API_URL", "POSTIZ_API_KEY", "POSTIZ_JWT_SECRET", "POSTIZ_UI_URL"];
 const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]));
 const previousFetch = globalThis.fetch;
-// The route logs expected best-effort failures (attempt record without a database) through
-// console.error; keep the regression output readable while assertion failures still surface.
-const originalConsoleError = console.error;
-console.error = () => {};
 const platformTypes = loadModule("src/lib/types.ts");
 const postiz = loadModule("src/lib/postiz.ts", { "./types": platformTypes });
 const capturedRequests = [];
@@ -37,12 +33,11 @@ const routes = loadModule("src/app/api/social/connect/route.ts", {
   "@/lib/postiz": postiz,
   "@/lib/auth": { currentUser: async () => currentAccount, unauthorized: () => NextResponse.json({ code: "UNAUTHORIZED" }, { status: 401 }) },
   "@/lib/same-origin": sameOriginModule,
-  // The route records a best-effort connect attempt for ownership claiming; this regression has no
-  // database, and the route must treat a missing database as "claim later, by an administrator".
+  // Ownership transactions are tested against the real library in test-social-connect-completion.
+  // This JWT regression models a saved attempt but no newly confirmed integration on return.
   "@/lib/social-accounts": {
-    createConnectAttempt: async () => { throw new Error("database is not configured in this regression"); },
-    consumeConnectAttempt: async () => null,
-    claimNewAccounts: async () => []
+    createConnectAttempt: async () => {},
+    completeConnectAttempt: async () => ({ outcome: "unconfirmed", returnView: "workspace" })
   }
 });
 const baseUrl = "https://studio.example.test";
@@ -63,6 +58,7 @@ try {
   delete process.env.POSTIZ_UI_URL;
   globalThis.fetch = async (url, options) => {
     capturedRequests.push({ url, options });
+    if (String(url).endsWith("/public/v1/integrations")) return new Response("[]", { status: 200 });
     return new Response(upstreamBody, { status: upstreamStatus });
   };
 
@@ -102,15 +98,15 @@ try {
   assert.equal(cookie.maxAge, 600);
   const cookieHeader = `${cookie.name}=${cookie.value}`;
   const callbackResponse = await routes.GET(returnRequest(tokenPayload.redirectUrl, cookieHeader));
-  assert.equal(new URL(callbackResponse.headers.get("location")).searchParams.get("connection"), "returned");
-  assert.equal(callbackResponse.cookies.get(cookie.name).maxAge, 0);
+  assert.equal(new URL(callbackResponse.headers.get("location"), baseUrl).searchParams.get("connection"), "unconfirmed");
+  assert.equal(callbackResponse.cookies.get(cookie.name), undefined, "Unconfirmed callbacks preserve the state cookie for retry");
   for (const callback of [returnRequest(tokenPayload.redirectUrl), returnRequest(`${baseUrl}/api/social/connect?state=forged`, cookieHeader)]) {
-    assert.equal(new URL((await routes.GET(callback)).headers.get("location")).searchParams.get("connection"), "invalid");
+    assert.equal(new URL((await routes.GET(callback)).headers.get("location"), baseUrl).searchParams.get("connection"), "invalid");
   }
   currentAccount = { user: { id: "another-member", role: "member" } };
-  assert.equal(new URL((await routes.GET(returnRequest(tokenPayload.redirectUrl, cookieHeader))).headers.get("location")).searchParams.get("connection"), "invalid");
+  assert.equal(new URL((await routes.GET(returnRequest(tokenPayload.redirectUrl, cookieHeader))).headers.get("location"), baseUrl).searchParams.get("connection"), "invalid");
   currentAccount = null;
-  assert.equal(new URL((await routes.GET(returnRequest(tokenPayload.redirectUrl, cookieHeader))).headers.get("location")).pathname, "/login");
+  assert.equal(new URL((await routes.GET(returnRequest(tokenPayload.redirectUrl, cookieHeader))).headers.get("location"), baseUrl).searchParams.get("connection"), "unauthenticated");
 
   currentAccount = { user: { id: "member-one", role: "member" } };
   delete process.env.POSTIZ_JWT_SECRET;
@@ -130,7 +126,10 @@ try {
   assert.ok(!(await (await routes.POST(startRequest({ provider: "x" }))).text()).includes(process.env.POSTIZ_API_KEY));
 
   const translations = loadModule("src/lib/i18n.tsx");
-  const Dialog = loadModule("src/components/ConnectAccountsDialog.tsx", { "@/lib/types": platformTypes, "@/lib/i18n": translations }).default;
+  const connectionResults = loadModule("src/lib/social-connect-result.ts");
+  const Dialog = loadModule("src/components/ConnectAccountsDialog.tsx", {
+    "@/lib/types": platformTypes, "@/lib/i18n": translations, "@/lib/social-connect-result": connectionResults
+  }).default;
   const dialogMarkup = renderToStaticMarkup(createElement(translations.LocaleContext.Provider, { value: "zh" }, createElement(Dialog, {
     open: true, configured: true, oauthConfigured: false, loading: false, uiUrl: "https://postiz.example.test", accounts: [], error: "", onClose() {}, async onRefresh() {}
   })));
@@ -143,10 +142,55 @@ try {
     open: true, configured: true, oauthConfigured: false, loading: false, uiUrl: "https://postiz.example.test", accounts: [], error: "", onClose() {}, async onRefresh() {}, canUsePostizUi: true
   })));
   assert.ok(adminDialogMarkup.includes("改用 Postiz 连接"), "Administrators keep the direct Postiz hand-off");
+  const previousWindow = globalThis.window;
+  try {
+    for (const retryOutcome of ["error", "unconfirmed"]) {
+      const listeners = new Map();
+      const references = [];
+      const stateUpdates = new Map();
+      let stateIndex = 0;
+      let closeCount = 0;
+      let refreshCount = 0;
+      globalThis.window = {
+        location: { origin: baseUrl },
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        setInterval: () => 1
+      };
+      const ReturnDialog = loadModule("src/components/ConnectAccountsDialog.tsx", {
+        react: {
+          useRef: initial => { const reference = { current: initial }; references.push(reference); return reference; },
+          useState: initial => { const index = stateIndex++; return [initial, value => stateUpdates.set(index, value)]; },
+          useEffect: effect => { effect(); }
+        },
+        "@/lib/types": platformTypes,
+        "@/lib/i18n": { useTranslation: () => text => text },
+        "@/lib/social-connect-result": connectionResults
+      }).default;
+      ReturnDialog({ open: false, onClose: () => { closeCount++; }, onRefresh: async () => { refreshCount++; } });
+      const popup = { closed: false };
+      references[0].current = popup;
+      const handleReturn = listeners.get("message");
+      const sendReturn = (outcome, source = popup, origin = baseUrl) => handleReturn({ origin, source, data: { type: "POLARIS_POSTIZ_RETURNED", outcome } });
+      sendReturn("returned", {}, baseUrl);
+      sendReturn("returned", popup, "https://untrusted.example.test");
+      assert.equal(closeCount, 0, "Foreign source/origin messages cannot complete authorisation");
+      sendReturn(retryOutcome);
+      assert.equal(references[0].current, popup, "Retryable returns must preserve the popup source");
+      assert.equal(stateUpdates.get(2), true, "The existing popup remains the active authorisation attempt");
+      sendReturn("returned");
+      assert.equal(references[0].current, null);
+      assert.equal(stateUpdates.get(2), false);
+      assert.equal(closeCount, 1, "Retry success closes the original connection dialog");
+      assert.equal(refreshCount, 2);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+  console.log("PASS: retryable popup messages preserve origin/source validation; retry success refreshes accounts and closes the connection dialog.");
   console.log("PASS: URL normalization; server-only JWT signature and expiry; authenticated member access; CSRF/input rejection; user-bound callback state; credential-safe errors; unsupported Postiz fallback; accessible translated platform picker; member Postiz hand-off hidden.");
 } finally {
   globalThis.fetch = previousFetch;
-  console.error = originalConsoleError;
   for (const name of environmentNames) {
     if (previousEnvironment[name] === undefined) delete process.env[name];
     else process.env[name] = previousEnvironment[name];

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowUpRight, Check, ExternalLink, Loader2, ShieldCheck, X as CloseIcon } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
+import { AUTHORIZATION_POPUP_STORAGE_KEY, CONNECTION_MESSAGES, parseConnectionOutcome } from "@/lib/social-connect-result";
 import { DEFAULT_PLATFORMS, PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
 
 type Props = {
@@ -53,16 +54,15 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
 
   useEffect(() => {
     function handleReturn(event: MessageEvent) {
-      if (event.origin !== window.location.origin || event.source !== authorizationWindow.current || event.data?.type !== "POLARIS_POSTIZ_RETURNED") return;
-      authorizationWindow.current = null;
-      setAuthorizing(false);
-      if (event.data.outcome === "returned") {
-        setNotice("Authorisation returned. Check the refreshed account list; if an account is missing, finish selecting its page in Postiz.");
-        setConnectionError("");
-      } else {
-        setConnectionError("The authorisation return expired or belongs to another session. Please start again.");
-      }
+      if (!authorizationWindow.current || event.origin !== window.location.origin || event.source !== authorizationWindow.current || event.data?.type !== "POLARIS_POSTIZ_RETURNED") return;
+      const outcome = parseConnectionOutcome(event.data.outcome);
+      const canRetryInPopup = outcome === "error" || outcome === "unconfirmed";
+      if (!canRetryInPopup) authorizationWindow.current = null;
+      setAuthorizing(canRetryInPopup);
+      setNotice("");
+      setConnectionError(outcome === "returned" ? "" : CONNECTION_MESSAGES[outcome]);
       void onRefresh();
+      if (outcome === "returned") closeHandler.current();
     }
     function handleFocus() {
       if (authorizationWindow.current) void onRefresh();
@@ -91,6 +91,9 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
     // Embedded browsers (IDE preview panes) refuse pop-ups; that only decides which window shows the
     // authorisation page, so a blocked pop-up falls through to this window instead of dead-ending.
     const popup = window.open("about:blank", "_blank", "popup,width=760,height=780");
+    try {
+      popup?.sessionStorage.setItem(AUTHORIZATION_POPUP_STORAGE_KEY, "1");
+    } catch { /* The opener still identifies the popup when storage is unavailable. */ }
     authorizationWindow.current = popup;
     setCreatingLink(true);
     try {

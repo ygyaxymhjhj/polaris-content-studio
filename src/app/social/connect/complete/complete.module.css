@@ -1,0 +1,33 @@
+.panel {
+  max-width: 440px;
+}
+
+.message {
+  line-height: 1.6;
+}
+
+.actions {
+  display: grid;
+  gap: 10px;
+}
+
+.actions a,
+.actions button {
+  justify-content: center;
+  min-height: 40px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.actions a:focus-visible,
+.actions button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.closeHint {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}

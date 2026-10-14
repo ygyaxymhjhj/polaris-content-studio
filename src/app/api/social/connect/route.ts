@@ -3,27 +3,55 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { createPostizAuthorizationUrl, fetchPostizIntegrations, PostizConnectionError } from "@/lib/postiz";
-import { claimNewAccounts, consumeConnectAttempt, createConnectAttempt } from "@/lib/social-accounts";
+import { completeConnectAttempt, createConnectAttempt } from "@/lib/social-accounts";
 import { isSameOrigin } from "@/lib/same-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const stateCookie = "polaris-postiz-connect";
-const connectSchema = z.object({ 
+const returnViewSchema = z.enum(["workspace", "facts", "assets", "export", "accounts", "settings"]);
+const connectSchema = z.object({
   provider: z.enum(["facebook", "threads", "linkedin", "x", "instagram"]),
-  returnView: z.string().optional()
+  returnView: returnViewSchema.optional()
 }).strict();
 const hashState = (userId: string, state: string) => createHash("sha256").update(`${userId}:${state}`).digest("hex");
-const cookieOptions = (request: NextRequest) => ({
-  httpOnly: true, sameSite: "lax" as const, secure: request.nextUrl.protocol === "https:",
+const cookieOptions = (secure: boolean) => ({
+  httpOnly: true, sameSite: "lax" as const, secure,
   path: "/api/social/connect", maxAge: 600
 });
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 
+type ConnectionOutcome = "returned" | "invalid" | "unauthenticated" | "error" | "unconfirmed" | "conflict";
+
+function completionResponse(request: NextRequest, outcome: ConnectionOutcome, returnView = "accounts", state = "") {
+  const parsedView = returnViewSchema.safeParse(returnView);
+  const parameters = new URLSearchParams({ connection: outcome, view: parsedView.success ? parsedView.data : "accounts" });
+  const retryable = outcome === "error" || outcome === "unconfirmed";
+  if (retryable) parameters.set("retry", `/api/social/connect?state=${state}`);
+  const response = new NextResponse(null, {
+    status: 303,
+    headers: {
+      Location: `/social/connect/complete?${parameters.toString()}`,
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer"
+    }
+  });
+  if (!retryable) {
+    const secure = request.nextUrl.protocol === "https:" || request.headers.get("x-forwarded-proto")?.split(",")[0].trim() === "https";
+    response.cookies.set(stateCookie, "", { ...cookieOptions(secure), maxAge: 0 });
+  }
+  return response;
+}
+
 export async function POST(request: NextRequest) {
   if (!isSameOrigin(request)) {
     return json({ error: "Same-origin request required." }, 403);
+  }
+  // Only the Origin already accepted by the CSRF guard may determine the browser callback URL.
+  const browserOrigin = new URL(request.headers.get("origin")!);
+  if (!["http:", "https:"].includes(browserOrigin.protocol)) {
+    return json({ error: "Same-origin HTTP request required." }, 403);
   }
   const auth = await currentUser();
   if (!auth) return unauthorized();
@@ -33,32 +61,30 @@ export async function POST(request: NextRequest) {
 
   const state = randomBytes(32).toString("hex");
   const stateHash = hashState(auth.user.id, state);
-  const redirectUrl = new URL("/api/social/connect", request.nextUrl.origin);
+  const redirectUrl = new URL("/api/social/connect", browserOrigin.origin);
   redirectUrl.searchParams.set("state", state);
 
-  // Use the returnView from the request body if provided, otherwise default to workspace
-  const returnView = body.data.returnView || "workspace";
+  const returnView = body.data.returnView ?? "workspace";
 
-  // The snapshot is taken before the authorisation URL exists, so any channel created later in this
-  // flow is "new" and can be claimed for this member on return. Both the snapshot and the attempt
-  // record are best-effort: a failure only means the new channel needs an administrator's assignment.
-  let snapshotIds: string[] | null = null;
+  let snapshotIds: string[];
   try {
     const current = await fetchPostizIntegrations();
-    if (current.configured && !current.error) snapshotIds = current.accounts.map((account) => account.id);
-  } catch (snapshotError) {
-    console.error("[social/connect] snapshot failed; a new channel will need admin assignment", snapshotError);
+    if (!current.configured) return json({ error: "Postiz is not configured." }, 503);
+    if (current.error) return json({ error: "Could not read accounts before authorisation. Please try again." }, 502);
+    snapshotIds = current.accounts.map((account) => account.id);
+  } catch {
+    return json({ error: "Could not read accounts before authorisation. Please try again." }, 502);
   }
   try {
     await createConnectAttempt({ stateHash, userId: auth.user.id, provider: body.data.provider, snapshotIds, returnView });
-  } catch (attemptError) {
-    console.error("[social/connect] attempt record failed; a new channel will need admin assignment", attemptError);
+  } catch {
+    return json({ error: "Could not save this connection attempt. Please try again." }, 503);
   }
 
   try {
     const url = await createPostizAuthorizationUrl(body.data.provider, redirectUrl.href);
     const response = json({ url });
-    response.cookies.set(stateCookie, stateHash, cookieOptions(request));
+    response.cookies.set(stateCookie, stateHash, cookieOptions(browserOrigin.protocol === "https:"));
     return response;
   } catch (error) {
     if (error instanceof PostizConnectionError) return json({ error: error.message }, error.status);
@@ -67,50 +93,30 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const auth = await currentUser();
   const rawState = request.nextUrl.searchParams.get("state") || "";
   // Postiz appends its own "?added=..." to our return URL, which can pollute the state value
   // ("abc?added=x"); the random hex part before the first extra "?" is still intact.
   const state = /^[a-f0-9]{64}$/.test(rawState) ? rawState : rawState.split("?")[0];
+  let auth: Awaited<ReturnType<typeof currentUser>>;
+  try {
+    auth = await currentUser();
+  } catch {
+    return completionResponse(request, "error", "accounts", /^[a-f0-9]{64}$/.test(state) ? state : "");
+  }
+  if (!auth) return completionResponse(request, "unauthenticated");
   const expectedState = request.cookies.get(stateCookie)?.value || "";
   const validState = Boolean(auth && /^[a-f0-9]{64}$/.test(state) && /^[a-f0-9]{64}$/.test(expectedState)
     && timingSafeEqual(Buffer.from(hashState(auth.user.id, state), "hex"), Buffer.from(expectedState, "hex")));
 
-  if (validState && auth) {
-    // Claiming is best-effort: the return redirect must land even when Postiz or the database hiccups,
-    // and a failed claim only means the new channel stays unassigned until an administrator places it.
-    let returnView = "accounts";
-    try {
-      const attempt = await consumeConnectAttempt(expectedState, auth.user.id);
-      if (attempt) {
-        returnView = attempt.returnView;
-        const current = await fetchPostizIntegrations();
-        if (current.configured && !current.error) {
-          await claimNewAccounts({
-            userId: auth.user.id,
-            provider: attempt.provider,
-            snapshotIds: attempt.snapshotIds,
-            liveAccounts: current.accounts
-          });
-        }
-      }
-    } catch (error) {
-      console.error("[social/connect] claim failed; a new channel will need admin assignment", error);
-    }
-
-    const destination = new URL(`/?view=${returnView}`, request.nextUrl.origin);
-    destination.searchParams.set("connection", "returned");
-    const response = NextResponse.redirect(destination, 303);
-    response.headers.set("Cache-Control", "no-store");
-    response.headers.set("Referrer-Policy", "no-referrer");
-    response.cookies.set(stateCookie, "", { ...cookieOptions(request), maxAge: 0 });
-    return response;
+  if (!validState) return completionResponse(request, "invalid");
+  try {
+    // Finish Postiz network I/O before starting the short, row-locked ownership transaction.
+    const current = await fetchPostizIntegrations();
+    if (!current.configured || current.error) return completionResponse(request, "error", "accounts", state);
+    const result = await completeConnectAttempt(expectedState, auth.user.id, current.accounts);
+    return completionResponse(request, result.outcome, result.returnView, state);
+  } catch {
+    // A transient failure leaves both the attempt and the browser cookie available for a retry.
+    return completionResponse(request, "error", "accounts", state);
   }
-
-  const destination = new URL(auth ? "/?view=accounts&connection=invalid" : "/login", request.nextUrl.origin);
-  const response = NextResponse.redirect(destination, 303);
-  response.headers.set("Cache-Control", "no-store");
-  response.headers.set("Referrer-Policy", "no-referrer");
-  response.cookies.set(stateCookie, "", { ...cookieOptions(request), maxAge: 0 });
-  return response;
 }

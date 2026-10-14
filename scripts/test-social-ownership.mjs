@@ -17,8 +17,7 @@ function loadModule(path, mocks = {}) {
   return compiled.exports;
 }
 
-// The routes log expected best-effort failures (snapshot, claim) through console.error; keep the
-// regression output readable while still failing loudly on assertion errors.
+// Capture expected diagnostics from the channel and publish routes without hiding assertions.
 const originalConsoleError = console.error;
 const loggedErrors = [];
 console.error = (...args) => { loggedErrors.push(args); };
@@ -26,7 +25,7 @@ console.error = (...args) => { loggedErrors.push(args); };
 /**
  * In-memory stand-in for the two ownership tables plus the publish audit, dispatching on the SQL
  * text. It mirrors the MySQL semantics the app relies on: conditional claim upserts report 0 when
- * a row is already owned, and consume is a single atomic conditional update.
+ * a row is already owned. Transaction snapshots model ownership/attempt rollback together.
  */
 function createFakeDatabase() {
   const state = {
@@ -86,10 +85,10 @@ function createFakeDatabase() {
         return [rows];
       }
       if (text.startsWith("INSERT INTO social_connect_attempts")) {
-        const [stateHash, userId, provider, snapshotIds, expiresAt] = params;
+        const [stateHash, userId, provider, snapshotIds, returnView, expiresAt] = params;
         state.attempts.set(stateHash, {
           state_hash: stateHash, user_id: userId, provider,
-          snapshot_ids: snapshotIds, expires_at: expiresAt, consumed_at: null
+          snapshot_ids: snapshotIds, return_view: returnView, expires_at: expiresAt, consumed_at: null
         });
         return [{ affectedRows: 1 }];
       }
@@ -109,9 +108,13 @@ function createFakeDatabase() {
         }
         return [{ affectedRows: 0 }];
       }
-      if (text.startsWith("SELECT provider, snapshot_ids FROM social_connect_attempts")) {
+      if (text.startsWith("SELECT") && text.includes("FROM social_connect_attempts")) {
         const row = state.attempts.get(params[0]);
-        return [row ? [{ provider: row.provider, snapshot_ids: row.snapshot_ids }] : []];
+        return [row ? [{ ...row }] : []];
+      }
+      if (text.startsWith("SELECT owner_user_id FROM social_accounts")) {
+        const row = state.accounts.get(params[0]);
+        return [row ? [{ owner_user_id: row.owner_user_id }] : []];
       }
       if (text.startsWith("UPDATE social_accounts SET owner_user_id=?")) {
         const row = state.accounts.get(params[2]);
@@ -135,6 +138,18 @@ function createFakeDatabase() {
       }
       throw new Error(`Fake DB: unsupported statement: ${text}`);
     }
+  };
+  database.getConnection = async () => {
+    let snapshot;
+    return {
+      execute: (sql, params) => database.execute(sql, params),
+      beginTransaction: async () => { snapshot = structuredClone({ accounts: state.accounts, attempts: state.attempts }); },
+      commit: async () => { snapshot = undefined; },
+      rollback: async () => {
+        if (snapshot) { state.accounts = snapshot.accounts; state.attempts = snapshot.attempts; snapshot = undefined; }
+      },
+      release() {}
+    };
   };
   return database;
 }
@@ -272,7 +287,7 @@ try {
     headers: { Cookie: `polaris-postiz-connect=${cookieValue}` }
   }));
   const connectionOutcome = async (response) =>
-    new URL(response.headers.get("location")).searchParams.get("connection");
+    new URL(response.headers.get("location"), "https://studio.example.test").searchParams.get("connection");
 
   connectLive = [...liveAccounts];
   const claimCookie = await startConnect();
@@ -285,36 +300,39 @@ try {
   assert.ok(fake.state.attempts.get(claimCookie).consumed_at, "The attempt is consumed exactly once");
 
   connectLive = [...connectLive, { id: "acct-replay", name: "Replay X", identifier: "x", disabled: false }];
-  await returnFromConnect(capturedRedirect, claimCookie);
+  assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, claimCookie)), "invalid", "Consumed attempts cannot report success on replay");
   const replayRow = fake.state.accounts.get("acct-replay");
   assert.ok(!replayRow || replayRow.owner_user_id === null, "A replayed return must not claim again");
 
   const providerCookie = await startConnect("x");
   connectLive = [...connectLive, { id: "acct-fb", name: "FB Page", identifier: "facebook", disabled: false }];
-  await returnFromConnect(capturedRedirect, providerCookie);
+  assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, providerCookie)), "unconfirmed");
+  assert.equal(fake.state.attempts.get(providerCookie).consumed_at, null);
   const fbRow = fake.state.accounts.get("acct-fb");
   assert.ok(!fbRow || fbRow.owner_user_id === null, "Channels of another provider are not claimed");
 
   const ownedCookie = await startConnect("x");
   fake.state.accounts.set("acct-owned", { integration_id: "acct-owned", provider: "x", account_name: "Owned", owner_user_id: benUser.id, assigned_by_user_id: adminUser.id, origin: "admin" });
   connectLive = [...connectLive, { id: "acct-owned", name: "Owned", identifier: "x", disabled: false }];
-  await returnFromConnect(capturedRedirect, ownedCookie);
+  assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, ownedCookie)), "conflict");
   assert.equal(fake.state.accounts.get("acct-owned").owner_user_id, benUser.id, "An already-owned channel is never overwritten");
 
   connectPostiz.fetchPostizIntegrations = async () => { throw new Error("Postiz unreachable"); };
-  const noSnapshotCookie = await startConnect("x");
-  assert.equal(fake.state.attempts.get(noSnapshotCookie).snapshot_ids, null, "A failed snapshot is recorded as null");
+  const previousRedirect = capturedRedirect;
+  const snapshotFailure = await connectRoute.POST(new NextRequest("https://studio.example.test/api/social/connect", {
+    method: "POST", headers: { Origin: "https://studio.example.test", "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "x" })
+  }));
+  assert.equal(snapshotFailure.status, 502);
+  assert.equal(snapshotFailure.cookies.get("polaris-postiz-connect"), undefined);
+  assert.equal(capturedRedirect, previousRedirect, "A failed snapshot must not issue an authorization URL");
   connectPostiz.fetchPostizIntegrations = async () => ({ configured: true, accounts: connectLive });
-  connectLive = [...connectLive, { id: "acct-nosnap", name: "No Snapshot", identifier: "x", disabled: false }];
-  await returnFromConnect(capturedRedirect, noSnapshotCookie);
-  const noSnapshotRow = fake.state.accounts.get("acct-nosnap");
-  assert.ok(!noSnapshotRow || noSnapshotRow.owner_user_id === null, "Without a snapshot nothing is claimed");
 
   const expiredCookie = await startConnect("x");
   fake.state.attempts.get(expiredCookie).expires_at = "2020-01-01 00:00:00";
   connectLive = [...connectLive, { id: "acct-expired", name: "Expired", identifier: "x", disabled: false }];
   const expiredResponse = await returnFromConnect(capturedRedirect, expiredCookie);
-  assert.equal(await connectionOutcome(expiredResponse), "returned");
+  assert.equal(await connectionOutcome(expiredResponse), "invalid");
   const expiredRow = fake.state.accounts.get("acct-expired");
   assert.ok(!expiredRow || expiredRow.owner_user_id === null, "An expired attempt claims nothing");
 
