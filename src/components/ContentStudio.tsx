@@ -118,7 +118,9 @@ function platformIcon(platform: Platform) {
 
 function labelForAsset(asset: ContentAsset, t: (text: string) => string) {
   const assetType = t((asset.assetType || "content asset").replaceAll("_", " "));
-  if (asset.platform === "instagram") return `${assetType} · ${String(asset.meta?.slideCount || 6)} ${t("slides")}`;
+  if (asset.platform === "instagram" && asset.assetType === "carousel" && Array.isArray(asset.meta?.slides) && asset.meta.slides.length > 0) {
+    return `${assetType} · ${asset.meta.slides.length} ${t("slides")}`;
+  }
   return assetType;
 }
 

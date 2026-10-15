@@ -1,4 +1,5 @@
 import { channelVoice } from "./social-guidelines";
+import { INSTAGRAM_MAX_LENGTH } from "./asset-specs";
 import { dominantSourceLanguage } from "./source-config";
 import { PLATFORM_META } from "./types";
 import type { ContentAsset, GenerateResponse, Platform, ProjectConfig, SourceAnalysis } from "./types";
@@ -30,19 +31,15 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
     // "Prompt Social.md" fixes some channels to a single output language, so everything written
     // around the quoted source text uses the language this channel actually publishes in.
     const { language, fixed } = channelVoice(platform, config.language);
-    const l = (en: string, zh: string, vi: string) => language === "zh" ? zh : language === "vi" ? vi : en;
+    const l = (en: string, zh: string, vi: string, th = en) => language === "zh" ? zh : language === "vi" ? vi : language === "th" && platform === "instagram" ? th : en;
     const label = {
       context: l("What the source says", "原文信息", "Thông tin từ bài viết"),
-      details: l("Key details", "关键细节", "Chi tiết chính"),
-      limits: l("Scope and limitations", "信息范围与限制", "Phạm vi và giới hạn"),
       caution: l("These points reflect the source article, not independent verification or investment advice. Please check the original context.", "以上内容依据原文整理，并非独立核实结果或投资建议，请结合原文语境阅读。", "Các thông tin này được tổng hợp từ bài viết, không phải kết quả xác minh độc lập hay lời khuyên đầu tư. Vui lòng đọc trong ngữ cảnh gốc."),
       question: l("Which detail would you like us to explain further?", "你希望进一步了解哪一项细节？", "Bạn muốn tìm hiểu thêm chi tiết nào?"),
-      unknown: l("The reviewed source does not provide further details.", "已审核来源未提供更多细节。", "Nguồn đã duyệt không cung cấp thêm chi tiết."),
-      caption: l("Posting caption", "发布配文", "Chú thích bài đăng"),
-      visual: l("Suggested production: neutral editorial fact cards. No fabricated screenshots, testimony or performance charts.", "制作建议：中性的编辑事实卡片，不制作虚假截图、证言或收益图。", "Gợi ý sản xuất: thẻ thông tin trung lập. Không dựng ảnh chụp, lời chứng hay biểu đồ lợi nhuận giả."),
-      fallback: l("Local starter draft: source excerpts remain in their original language. Review completeness, language and attribution before publication.", "本地初稿：事实摘录保留原文语言。发布前请检查完整性、语言和归因。", "Bản nháp cục bộ: trích đoạn giữ nguyên ngôn ngữ nguồn. Kiểm tra độ đầy đủ, ngôn ngữ và quy thuộc trước khi đăng.")
+      visual: l("Suggested production: neutral editorial fact cards. No fabricated screenshots, testimony or performance charts.", "制作建议：中性的编辑事实卡片，不制作虚假截图、证言或收益图。", "Gợi ý sản xuất: thẻ thông tin trung lập. Không dựng ảnh chụp, lời chứng hay biểu đồ lợi nhuận giả.", "แนวทางการผลิต: ภาพประกอบข้อมูลที่เป็นกลาง ห้ามสร้างภาพหน้าจอ คำรับรอง หรือกราฟผลตอบแทนปลอม"),
+      fallback: l("Local starter draft: source excerpts remain in their original language. Review completeness, language and attribution before publication.", "本地初稿：事实摘录保留原文语言。发布前请检查完整性、语言和归因。", "Bản nháp cục bộ: trích đoạn giữ nguyên ngôn ngữ nguồn. Kiểm tra độ đầy đủ, ngôn ngữ và quy thuộc trước khi đăng.", "ฉบับร่างในเครื่อง: ข้อความจากแหล่งข้อมูลยังคงเป็นภาษาต้นฉบับ โปรดตรวจสอบความครบถ้วน ภาษา และการอ้างอิงก่อนเผยแพร่")
     };
-    const cta = [config.cta || l("Read the full article", "阅读完整文章", "Đọc toàn bộ bài viết"), url].filter(Boolean).join("\n");
+    const cta = [config.cta || l("Read the full article", "阅读完整文章", "Đọc toàn bộ bài viết", "อ่านบทความฉบับเต็ม"), url].filter(Boolean).join("\n");
     // This template copies reviewed source text verbatim and cannot translate it, so anything left in
     // another language has to be named. The quoted text and the short fields are tested separately: a
     // Vietnamese title or CTA inside an otherwise English draft would be diluted away by a single
@@ -63,6 +60,8 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
     let content = "";
     let meta: Record<string, unknown> = { visualBrief: label.visual };
     let assetType = "content_asset";
+    let includedFactIds = facts.map(fact => fact.id);
+    const additionalRiskFlags: string[] = [];
     switch (platform) {
       case "facebook":
         assetType = "short_post";
@@ -92,22 +91,28 @@ export function starterAssets(config: ProjectConfig, analysis: SourceAnalysis, p
         break;
       }
       case "instagram": {
-        assetType = "carousel";
-        const slides = [
-          { title, body: "" },
-          { title: label.context, body: texts[0] },
-          { title: label.details, body: texts[1] || label.unknown },
-          { title: label.details, body: texts.slice(2).join("\n") || label.unknown },
-          { title: label.limits, body: label.caution },
-          { title: label.question, body: cta }
-        ].map(s => ({ ...s, visualDirection: label.visual }));
-        const caption = [title, label.caution, label.question, cta].join("\n\n");
-        content = slides.map((s, i) => `${i + 1}/6 — ${s.title}\n${s.body}`).join("\n\n") + `\n\n${label.caption}\n${caption}`;
-        meta = { slides, slideCount: 6, caption, visualBrief: label.visual };
+        assetType = "short_post";
+        // Fit whole reviewed statements first; never cut a number, sentence or URL to meet the cap.
+        const selectedFacts: typeof facts = [];
+        for (const fact of facts) {
+          const candidate = [...selectedFacts.map(selected => selected.text), fact.text].join("\n\n");
+          if (fact.text.trim() && candidate.length <= INSTAGRAM_MAX_LENGTH) selectedFacts.push(fact);
+          if (selectedFacts.length === 3) break;
+        }
+        includedFactIds = selectedFacts.map(fact => fact.id);
+        content = selectedFacts.map(fact => fact.text).join("\n\n");
+        if (content) {
+          if (title && [title, content].join("\n\n").length <= INSTAGRAM_MAX_LENGTH) content = [title, content].join("\n\n");
+          if (cta && [content, cta].join("\n\n").length <= INSTAGRAM_MAX_LENGTH) content = [content, cta].join("\n\n");
+        } else {
+          content = l("The reviewed source is too long for a complete Instagram post. Select a shorter verified statement before publishing.", "已审核来源过长，无法完整放入 Instagram 贴文。请先选取较短且已核实的事实再发布。", "Nguồn đã duyệt quá dài cho một bài Instagram hoàn chỉnh. Hãy chọn thông tin đã xác minh ngắn hơn trước khi đăng.", "แหล่งข้อมูลที่ตรวจสอบแล้วยาวเกินไปสำหรับโพสต์ Instagram โปรดเลือกข้อเท็จจริงที่ตรวจสอบแล้วและสั้นกว่านี้ก่อนเผยแพร่");
+          additionalRiskFlags.push(l("Not publishable: no complete reviewed fact can fit within 2200 characters. Edit the fact pack before publishing.", "不可直接发布：没有完整的已审核事实能放入 2200 字符内。请先编辑事实包。", "Chưa thể đăng: không có thông tin đã duyệt hoàn chỉnh nào vừa giới hạn 2200 ký tự. Cần chỉnh sửa bộ thông tin trước.", "ยังเผยแพร่ไม่ได้: ไม่มีข้อเท็จจริงที่ตรวจสอบแล้วฉบับสมบูรณ์ที่สั้นพอสำหรับขีดจำกัด 2200 อักขระ โปรดแก้ไขชุดข้อมูลก่อน"));
+        }
+        meta = { caption: content, visualBrief: label.visual };
         break;
       }
     }
-    assets.push({ id: `local-${platform}`, platform, assetType, title, content, cta: config.cta, imageUrl: config.imageUrl || undefined, publishStatus: "unpublished", factIds: facts.map(f => f.id), riskFlags: [label.fallback, ...(languageWarning ? [languageWarning] : [])], updatedAt: new Date().toISOString(), meta, generationMode: "local" });
+    assets.push({ id: `local-${platform}`, platform, assetType, title, content, cta: config.cta, imageUrl: config.imageUrl || undefined, publishStatus: "unpublished", factIds: includedFactIds, riskFlags: [label.fallback, ...(languageWarning ? [languageWarning] : []), ...additionalRiskFlags], updatedAt: new Date().toISOString(), meta, generationMode: "local" });
   }
   return { assets, usedFallback: true };
 }

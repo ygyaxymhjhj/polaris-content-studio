@@ -242,6 +242,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
   },
   instagram: {
     vi: [
+      "- Chỉ viết một bài đăng hoàn chỉnh, độc lập, không chia thành carousel, slide hay 6 trang. Tối đa 2200 ký tự theo JavaScript string.length (UTF-16), gồm khoảng trắng, xuống dòng, emoji, CTA, hashtag và URL.",
       "- Dựa vào nội dung bài viết và visual đi kèm để lựa chọn cách triển khai caption phù hợp; không áp dụng một công thức cố định.",
       "- Caption cần ngắn gọn, dễ đọc, có điểm nhấn, bổ trợ cho hình ảnh/video thay vì lặp lại toàn bộ nội dung.",
       "- Ưu tiên cách viết phù hợp với hành vi người dùng Instagram: dễ đọc, trực quan, có tính thu hút và khuyến khích tương tác.",
@@ -250,6 +251,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Không tự thêm thông tin hoặc biến caption thành nội dung quảng cáo nếu bài viết không có mục đích đó."
     ].join("\n"),
     zh: [
+      "- 只写一篇完整、独立、可直接发布的正式贴文，不写轮播、分镜或六页文案。按 JavaScript string.length（UTF-16）计数最多 2200 字符，包含空格、换行、emoji、CTA、话题标签和 URL。",
       "- 依据文章内容和配套视觉选择合适的文案展开方式；不要套用固定公式。",
       "- 文案要简短、易读、有重点，为图片/视频做补充，而不是重复全部内容。",
       "- 优先符合 Instagram 用户行为的写法：易读、直观、有吸引力、鼓励互动。",
@@ -258,6 +260,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- 不要自行添加信息，也不要在文章本无此意图时把文案写成广告。"
     ].join("\n"),
     en: [
+      "- Write one complete, standalone publishable post, not a carousel, slides or six pages. Maximum 2200 characters using JavaScript string.length (UTF-16), including spaces, newlines, emoji, CTA, hashtags and URLs.",
       "- Choose the caption approach from the article and its visuals; never a fixed formula.",
       "- The caption is short, readable and pointed — it supports the image/video rather than repeating it.",
       "- Match Instagram user behaviour: readable, visual, appealing, encouraging interaction.",
@@ -266,6 +269,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Do not add information or turn the caption into advertising when the article has no such intent."
     ].join("\n"),
     th: [
+      "- เขียนโพสต์ที่สมบูรณ์และเผยแพร่ได้เพียงหนึ่งโพสต์ ไม่แบ่งเป็นคารูเซล สไลด์ หรือ 6 หน้า ความยาวไม่เกิน 2200 อักขระตาม JavaScript string.length (UTF-16) รวมช่องว่าง การขึ้นบรรทัดใหม่ อีโมจิ CTA แฮชแท็ก และ URL",
       "- เลือกวิธีเขียนแคปชันให้เหมาะกับเนื้อหาบทความและภาพที่แนบมา ไม่ใช้สูตรตายตัว",
       "- แคปชันต้องสั้น อ่านง่าย มีจุดโฟกัส เสริมภาพ/วิดีโอแทนการพูดซ้ำทั้งหมด",
       "- เน้นวิธีเขียนที่เข้ากับพฤติกรรมผู้ใช้ Instagram: อ่านง่าย มองเห็นเป็นภาพ ดึงดูด และกระตุ้นการมีส่วนร่วม",

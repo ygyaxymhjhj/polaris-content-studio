@@ -38,8 +38,10 @@ export default function SocialPreview({
   const t = useTranslation();
   const [slideIndex, setSlideIndex] = useState(0);
 
-  // Extract slides if instagram carousel
-  const slides = (asset.meta?.slides as Array<{ title?: string; body?: string }>) || [];
+  const slides = asset.assetType === "carousel" && Array.isArray(asset.meta?.slides)
+    ? asset.meta.slides as Array<{ title?: string; body?: string }>
+    : [];
+  const currentSlideIndex = Math.min(slideIndex, Math.max(0, slides.length - 1));
 
   return (
     <div className="social-preview-wrapper" data-platform={platform}>
@@ -48,7 +50,9 @@ export default function SocialPreview({
           <span className="preview-badge-dot" />
           {platform.toUpperCase()} {t("Real social preview")}
         </span>
-        <span className="preview-char-count">{asset.content.length} {t("characters")}</span>
+        <span className="preview-char-count">
+          {platform === "instagram" ? `${asset.content.length} / 2200` : `${asset.content.length} ${t("characters")}`}
+        </span>
       </div>
 
       <div className="preview-card-viewport">
@@ -185,22 +189,22 @@ export default function SocialPreview({
               {slides.length > 0 ? (
                 <div className="ig-slide-card">
                   <div className="ig-slide-head">
-                    <span className="slide-badge">{t("Slides")} {slideIndex + 1} / {slides.length}</span>
+                    <span className="slide-badge">{t("Slides")} {currentSlideIndex + 1} / {slides.length}</span>
                   </div>
                   <div className="ig-slide-body">
-                    <h4>{slides[slideIndex]?.title || asset.title}</h4>
-                    <p>{slides[slideIndex]?.body || asset.content.slice(0, 140)}</p>
+                    <h4>{slides[currentSlideIndex]?.title || asset.title}</h4>
+                    <p>{slides[currentSlideIndex]?.body || asset.content.slice(0, 140)}</p>
                   </div>
                   <div className="slide-nav-arrows">
                     <button
-                      disabled={slideIndex === 0}
-                      onClick={() => setSlideIndex((i) => Math.max(0, i - 1))}
+                      disabled={currentSlideIndex === 0}
+                      onClick={() => setSlideIndex(Math.max(0, currentSlideIndex - 1))}
                     >
                       <ChevronLeft size={16} />
                     </button>
                     <button
-                      disabled={slideIndex >= slides.length - 1}
-                      onClick={() => setSlideIndex((i) => Math.min(slides.length - 1, i + 1))}
+                      disabled={currentSlideIndex >= slides.length - 1}
+                      onClick={() => setSlideIndex(Math.min(slides.length - 1, currentSlideIndex + 1))}
                     >
                       <ChevronRight size={16} />
                     </button>
@@ -218,7 +222,7 @@ export default function SocialPreview({
                 />
               ) : (
                 <div className="mock-image-fallback">
-                  <Sparkles size={20} /> <span>{t("Carousel card preview")}</span>
+                  <Sparkles size={20} /> <span>{t("Post image preview")}</span>
                 </div>
               )}
             </div>
@@ -234,7 +238,7 @@ export default function SocialPreview({
 
             <div className="ig-caption-block">
               <span className="ig-bold-handle">{authorHandle}</span>{" "}
-              <span className="ig-caption-text">{asset.content}</span>
+              <span className="ig-caption-text" style={{ whiteSpace: "pre-wrap" }}>{asset.content}</span>
             </div>
           </div>
         )}

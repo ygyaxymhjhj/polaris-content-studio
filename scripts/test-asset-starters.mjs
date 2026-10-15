@@ -122,7 +122,7 @@ try {
   };
   const typed = await generateWithAI(config, analysis, ['x', 'instagram']);
   assert.equal(typed.assets.find(asset => asset.platform === 'x').assetType, 'short_post', 'The model cannot rename an internal asset type');
-  assert.equal(typed.assets.find(asset => asset.platform === 'instagram').assetType, 'carousel', 'Every platform keeps its canonical asset type');
+  assert.equal(typed.assets.find(asset => asset.platform === 'instagram').assetType, 'short_post', 'Instagram keeps its canonical single-post asset type');
   requests.length = 0;
   let aliasCalls = 0;
   globalThis.fetch = async (_url, options) => {

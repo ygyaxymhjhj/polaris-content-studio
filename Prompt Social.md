@@ -104,6 +104,14 @@ Không được hiểu “thuần tiếng Anh” là dịch nguyên caption ti�
 
 # Instagram
 
+- Chỉ viết một bài đăng hoàn chỉnh, độc lập, có thể đăng trực tiếp; không chia thành carousel, slide, storyboard hay 6 trang. Mỗi phương án sửa là một bài riêng, không phải một trang.
+
+- Tối đa 2200 ký tự theo JavaScript string.length (UTF-16), bao gồm khoảng trắng, xuống dòng, emoji, CTA, hashtag và URL; áp dụng cho mọi ngôn ngữ đầu ra đã cấu hình (zh/en/vi/th).
+
+- Tập trung một góc thông tin có căn cứ; mở đầu từ nguồn, thường chia 2-4 đoạn ngắn khi phù hợp. Nguồn ngắn thì viết ngắn, không thêm nội dung để đủ độ dài; không ép câu hỏi hoặc CTA.
+
+- Đầu ra dùng assetType="short_post". content chỉ chứa toàn bộ caption có thể đăng, không có nhãn "caption" hay hướng dẫn sản xuất. meta.caption trùng khớp chính xác với content; meta.visualBrief chỉ dành cho sản xuất. Không trả về slides, slideCount hoặc visualDirections.
+
 - Dựa vào nội dung bài viết và visual đi kèm để lựa chọn cách triển khai caption phù hợp; không áp dụng một công thức cố định\.
 
 - Caption cần ngắn gọn, dễ đọc, có điểm nhấn, bổ trợ cho hình ảnh/video thay vì lặp lại toàn bộ nội dung\.

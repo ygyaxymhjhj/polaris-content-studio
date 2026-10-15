@@ -409,6 +409,7 @@ const messages: Record<string, [string, string]> = {
   "Repost": ["转发", "Đăng lại"],
   "Send": ["发送", "Gửi"],
   "Share": ["分享", "Chia sẻ"],
+  "Post image preview": ["贴文配图预览", "Xem trước ảnh bài đăng"],
   "Carousel card preview": ["图文卡片效果", "Hiệu ứng thẻ nhiều trang"],
   "Slides": ["幻灯片", "Trang"],
   "Select publishing platforms": ["选择发布平台", "Chọn nền tảng đăng"],
@@ -455,6 +456,7 @@ const messages: Record<string, [string, string]> = {
 
 const thMessages: Record<string, string> = {
   "Post image": "ภาพโพสต์",
+  "Post image preview": "ตัวอย่างภาพโพสต์",
   "Restore article image": "คืนค่าภาพต้นฉบับ",
   "Upload post image": "อัปโหลดภาพโพสต์",
   "Uploaded image": "อัปโหลดเอง",
