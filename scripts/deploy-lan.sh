@@ -166,8 +166,8 @@ set -euo pipefail
 APP_DIR=$1; RUN_USER=$2; SERVICE=$3; HEALTH=$4; COMMIT=$5
 # Anonymous /login does not query users, so HTTP 200 alone cannot verify a role migration.
 runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH && node scripts/check-user-roles.mjs"
-# Disabled/unconfigured notifications do not require a key or token to deploy the existing UI.
-runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH NODE_ENV=production SOCIAL_NOTIFICATIONS_INTERNAL_URL=http://192.168.220.109:13300/api/internal/social-notifications && node scripts/check-feishu-notifications.mjs"
+# Production application scheduling needs no HTTP worker token; enabled notifications still require the encryption key.
+runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH NODE_ENV=production && node scripts/check-feishu-notifications.mjs"
 printf '%s\n' "$COMMIT" > "$APP_DIR/DEPLOYED_COMMIT"
 chown "$RUN_USER:$RUN_USER" "$APP_DIR/DEPLOYED_COMMIT"
 systemctl start "$SERVICE"
@@ -182,14 +182,8 @@ if [ "$HEALTHY" != 1 ]; then
   echo "health: $CODE"
   exit 1
 fi
-if runuser -u "$RUN_USER" -- bash -c "cd '$APP_DIR' && export PATH=/usr/local/bin:\$PATH NODE_ENV=production SOCIAL_NOTIFICATIONS_INTERNAL_URL=http://192.168.220.109:13300/api/internal/social-notifications && node scripts/check-feishu-notifications.mjs --require-worker"; then
-  systemctl enable --now polaris-notifications.timer
-  systemctl is-active polaris-notifications.timer
-  echo "notification timer: active"
-else
-  systemctl disable --now polaris-notifications.timer
-  echo "note: notification units installed but timer stopped; configure SOCIAL_NOTIFICATIONS_TOKEN and rerun worker preflight before enabling it."
-fi
+systemctl disable --now polaris-notifications.timer
+echo "notification scheduling: managed by the application; legacy timer disabled"
 REMOTE
 
 echo "==> done: $SHORT deployed to $SERVER"

@@ -114,16 +114,38 @@ function createPreflightConnection({ enabled = false, missingColumn = false, mis
   };
 }
 
-test("disabled notification preflight works without secrets but worker activation requires token", async () => {
+test("disabled notification preflight works without secrets but external worker validation requires token", async () => {
   assert.deepEqual(await checkFeishuNotifications(createPreflightConnection(), { environment: {} }), { enabled: false, workerReady: false });
   await assert.rejects(checkFeishuNotifications(createPreflightConnection(), { environment: {}, requireWorker: true }), /SOCIAL_NOTIFICATIONS_TOKEN/);
   assert.deepEqual(await checkFeishuNotifications(createPreflightConnection(), { environment, requireWorker: true }), { enabled: false, workerReady: true });
 });
 
-test("enabled preflight requires canonical encryption key and existing schema grants", async () => {
-  await assert.rejects(checkFeishuNotifications(createPreflightConnection({ enabled: true }), { environment }), /FEISHU_ENCRYPTION_KEY/);
-  const enabledEnvironment = { ...environment, FEISHU_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") };
-  assert.deepEqual(await checkFeishuNotifications(createPreflightConnection({ enabled: true }), { environment: enabledEnvironment }), { enabled: true, workerReady: true });
+test("enabled production preflight requires encryption key and schema grants, not external worker secrets", async () => {
+  await assert.rejects(checkFeishuNotifications(createPreflightConnection({ enabled: true }), { environment: {} }), /FEISHU_ENCRYPTION_KEY/);
+  const enabledEnvironment = { NODE_ENV: "production", FEISHU_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") };
+  assert.deepEqual(await checkFeishuNotifications(createPreflightConnection({ enabled: true }), { environment: enabledEnvironment }), { enabled: true, workerReady: false });
+  for (const encryptionKey of ["invalid", Buffer.alloc(31, 7).toString("base64"), `${enabledEnvironment.FEISHU_ENCRYPTION_KEY}\n`, `${"A".repeat(42)}B=`]) {
+    await assert.rejects(checkFeishuNotifications(createPreflightConnection({ enabled: true }), {
+      environment: { ...enabledEnvironment, FEISHU_ENCRYPTION_KEY: encryptionKey }
+    }), /FEISHU_ENCRYPTION_KEY/);
+  }
   await assert.rejects(checkFeishuNotifications(createPreflightConnection({ missingColumn: true }), { environment }), /schema is incomplete/);
   await assert.rejects(checkFeishuNotifications(createPreflightConnection({ missingGrant: true }), { environment }), /grants/);
+});
+
+test("explicit external worker preflight still validates token and private URL for enabled notifications", async () => {
+  const enabledEnvironment = { FEISHU_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") };
+  for (const token of [undefined, "short", `${fakeToken}\n`]) {
+    await assert.rejects(checkFeishuNotifications(createPreflightConnection({ enabled: true }), {
+      environment: { ...enabledEnvironment, SOCIAL_NOTIFICATIONS_TOKEN: token }, requireWorker: true
+    }), /SOCIAL_NOTIFICATIONS_TOKEN/);
+  }
+  for (const invalidUrl of [`https://example.com${workerPath}`, `http://127.0.0.1${workerPath}?secret=value`]) {
+    await assert.rejects(checkFeishuNotifications(createPreflightConnection({ enabled: true }), {
+      environment: { ...enabledEnvironment, ...environment, SOCIAL_NOTIFICATIONS_INTERNAL_URL: invalidUrl }, requireWorker: true
+    }), /Worker URL/);
+  }
+  assert.deepEqual(await checkFeishuNotifications(createPreflightConnection({ enabled: true }), {
+    environment: { ...enabledEnvironment, ...environment }, requireWorker: true
+  }), { enabled: true, workerReady: true });
 });

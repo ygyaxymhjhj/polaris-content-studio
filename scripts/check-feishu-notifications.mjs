@@ -61,8 +61,9 @@ export async function checkFeishuNotifications(connection, { environment = proce
   const [configurationRows] = await connection.execute("SELECT enabled FROM workspace_feishu_config WHERE id=?", [1]);
   const enabled = Number(configurationRows[0]?.enabled) === 1;
   if (enabled) verifyEncryptionKey(environment.FEISHU_ENCRYPTION_KEY);
-  if (enabled || requireWorker) readWorkerConfiguration(environment);
-  return { enabled, workerReady: enabled || requireWorker };
+  if (requireWorker) readWorkerConfiguration(environment);
+  // workerReady only describes explicit external HTTP worker validation, not scheduler health.
+  return { enabled, workerReady: requireWorker };
 }
 
 const isEntryPoint = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
@@ -73,9 +74,9 @@ if (isEntryPoint) {
     connection = await openDatabase();
     const summary = await checkFeishuNotifications(connection, { requireWorker: process.argv.includes("--require-worker") });
     console.log(summary.enabled
-      ? "PASS: notification schema, grants, encryption key, and worker configuration are ready."
+      ? "PASS: notification schema and grants are ready; encryption key ready; automatic scheduling starts with production application."
       : "PASS: notification schema and grants are ready; Feishu notifications are not enabled.");
-    if (summary.workerReady && !summary.enabled) console.log("PASS: worker configuration is ready; delivery remains disabled.");
+    if (summary.workerReady) console.log("PASS: external HTTP worker configuration validated; scheduling has not been verified.");
   } catch (error) {
     console.error(error?.code ? "Notification database preflight failed. Check migration and application grants." : error.message);
     process.exitCode = 1;
