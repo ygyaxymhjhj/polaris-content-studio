@@ -382,4 +382,68 @@ assertNoSecrets(await unavailable.json());
 databaseFailure = false;
 console.log("PASS: real admin GET/PATCH/test routes; 401/403 and shared same-origin CSRF; strict Zod/8 KB bodies; secret-free GET/errors; saved-config tests; database-atomic 30-second limit; sanitized schema 503.");
 await runReviewRegressions();
+
+row = undefined;
+auth = { user: { id: administratorId, role: "admin", displayName: "Unsigned administrator" } };
+fetchHandler = async () => Response.json({ code: 0 });
+const unsignedFlags = { enabled: true, notifyDrafts: true, notifyPublished: false };
+const saveUnsigned = async (patch) => {
+  const response = await settingsRoute.PATCH(request("PATCH", { ...unsignedFlags, ...patch, clearSigningSecret: true }));
+  assert.equal(response.status, 200);
+  assertNoSecrets(await response.json());
+  const readResponse = await settingsRoute.GET();
+  assert.equal(readResponse.status, 200);
+  const view = await readResponse.json();
+  assert.equal(view.enabled, true);
+  assert.equal(view.notifyDrafts, true);
+  assert.equal(view.notifyPublished, false);
+  assert.equal(view.webhookConfigured, true);
+  assert.equal(view.signingConfigured, false);
+  assertNoSecrets(view);
+};
+const testUnsigned = async (expectedUrl) => {
+  row.last_test_at = null;
+  const previousFetchCount = fetchCalls.length;
+  const response = await testRoute.POST(request("POST", {}));
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result, { success: true });
+  assertNoSecrets(result);
+  assert.equal(fetchCalls.length, previousFetchCount + 1);
+  const [sentUrl, sentOptions] = fetchCalls.at(-1);
+  assert.equal(sentUrl, expectedUrl);
+  assert.deepEqual(JSON.parse(sentOptions.body), {
+    msg_type: "text", content: { text: "[Polaris] 飞书通知测试\n操作人：Unsigned administrator" }
+  }, "Unsigned requests must omit both timestamp and sign");
+};
+await saveUnsigned({ webhookUrl });
+await testUnsigned(webhookUrl);
+const signedResponse = await settingsRoute.PATCH(request("PATCH", { ...unsignedFlags, signingSecret }));
+assert.equal(signedResponse.status, 200);
+assertNoSecrets(await signedResponse.json());
+assert.equal((await (await settingsRoute.GET()).json()).signingConfigured, true);
+await saveUnsigned({});
+await testUnsigned(webhookUrl);
+row.encrypted_credentials = "corrupted synthetic ciphertext";
+const damagedView = await (await settingsRoute.GET()).json();
+assert.equal(damagedView.signingConfigured, false);
+assertNoSecrets(damagedView);
+await saveUnsigned({ webhookUrl: replacementUrl });
+await testUnsigned(replacementUrl);
+for (const [role, expectedStatus] of [[undefined, 401], ["member", 403]]) {
+  auth = role ? { user: { id: administratorId, role } } : null;
+  const previousFetchCount = fetchCalls.length;
+  const previousQueryCount = statements.length;
+  for (const response of [
+    await settingsRoute.GET(),
+    await settingsRoute.PATCH(request("PATCH", { ...unsignedFlags, webhookUrl, clearSigningSecret: true })),
+    await testRoute.POST(request("POST", {}))
+  ]) {
+    assert.equal(response.status, expectedStatus);
+    assertNoSecrets(await response.json());
+  }
+  assert.equal(fetchCalls.length, previousFetchCount);
+  assert.equal(statements.length, previousQueryCount);
+}
+console.log("PASS: real PATCH/GET/test routes accept webhook-only enabled notifications; unsigned sends omit timestamp/sign; saved signing secret clears; damaged storage recovers; auth and secret redaction remain intact.");
 console.log("All Feishu synthetic tests passed; no external requests or real notifications were sent.");

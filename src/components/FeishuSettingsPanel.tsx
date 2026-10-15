@@ -58,8 +58,8 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
   const [notifyPublished, setNotifyPublished] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [signingSecret, setSigningSecret] = useState("");
+  const [useSignature, setUseSignature] = useState(false);
   const [clearWebhook, setClearWebhook] = useState(false);
-  const [clearSigningSecret, setClearSigningSecret] = useState(false);
   const [accessDenied, setAccessDenied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"save" | "test" | null>(null);
@@ -73,8 +73,8 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
   const clearCredentials = useCallback(() => {
     setWebhookUrl("");
     setSigningSecret("");
+    setUseSignature(false);
     setClearWebhook(false);
-    setClearSigningSecret(false);
   }, []);
 
   const revokeAccess = useCallback(() => {
@@ -108,6 +108,7 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
       setEnabled(data.enabled);
       setNotifyDrafts(data.notifyDrafts);
       setNotifyPublished(data.notifyPublished);
+      setUseSignature(data.signingConfigured);
       setError("");
       return true;
     } catch {
@@ -137,11 +138,16 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
   }, [hasPermission, loadSettings, clearCredentials]);
 
   const dirty = Boolean(settings && (enabled !== settings.enabled || notifyDrafts !== settings.notifyDrafts
-    || notifyPublished !== settings.notifyPublished || webhookUrl || signingSecret || clearWebhook || clearSigningSecret));
+    || notifyPublished !== settings.notifyPublished || useSignature !== settings.signingConfigured || webhookUrl || signingSecret || clearWebhook));
   const canTest = Boolean(settings?.webhookConfigured && settings.encryptionReady && !dirty && !busy && !loading);
+  const needsSigningSecret = useSignature && !clearWebhook && !settings?.signingConfigured;
 
   async function send(action: "save" | "test") {
     if (!permission.current || busy || loading || !settings?.encryptionReady || (action === "test" && !canTest)) return;
+    if (action === "save" && needsSigningSecret && !signingSecret.trim()) {
+      setError("A signing secret is required only when signature verification is enabled and no secret is saved.");
+      return;
+    }
     const signal = requestLifetime.current?.signal;
     setBusy(action);
     setError("");
@@ -151,7 +157,7 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
       notifyDrafts,
       notifyPublished,
       ...(clearWebhook ? { clearWebhook: true } : webhookUrl.trim() ? { webhookUrl: webhookUrl.trim() } : {}),
-      ...(clearSigningSecret ? { clearSigningSecret: true } : signingSecret.trim() ? { signingSecret: signingSecret.trim() } : {})
+      ...(!useSignature ? { clearSigningSecret: true } : signingSecret.trim() ? { signingSecret: signingSecret.trim() } : {})
     };
     try {
       const response = await fetch(action === "test" ? "/api/admin/feishu/test" : "/api/admin/feishu", {
@@ -210,22 +216,23 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
             <span>{t("Signing secret")}: <strong>{t(settings.signingConfigured ? "Configured" : "Not configured")}</strong></span>
             <span>{t("Encryption")}: <strong>{t(settings.encryptionReady ? "Ready" : "Not ready")}</strong></span>
           </div>
-          {!settings.encryptionReady && <p className="login-error" role="alert">{t("Saving is disabled until the server administrator configures FEISHU_ENCRYPTION_KEY. Never enter this environment key here.")}</p>}
+          {!settings.encryptionReady && <p className="login-error" role="alert">{t("Saving is disabled until the server administrator configures FEISHU_ENCRYPTION_KEY for storage encryption. This server key is not the bot signing secret and is required even without signatures. Never enter it here.")}</p>}
           <form onSubmit={saveSettings} aria-describedby="feishu-sharing-warning">
             <fieldset disabled={Boolean(busy) || loading} style={{ border: 0, padding: 0, margin: 0, display: "grid", gap: 14, minWidth: 0 }}>
               <legend className="field-label">{t("Notification preferences")}</legend>
               <label><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} /> {t("Enable Feishu notifications")}</label>
               <label><input type="checkbox" checked={notifyDrafts} onChange={event => setNotifyDrafts(event.target.checked)} /> {t("Notify when a draft is submitted")}</label>
               <label><input type="checkbox" checked={notifyPublished} onChange={event => setNotifyPublished(event.target.checked)} /> {t("Notify when a post is published")}</label>
-              <p id="feishu-credentials-help">{t("Existing credentials are never displayed. Leave a field blank to keep its saved value. Use the separate clear checkboxes to remove credentials.")}</p>
+              <p id="feishu-credentials-help">{t("Existing credentials are never displayed. Leave a field blank to keep its saved value. Clear the webhook explicitly or disable signature verification and save to remove the saved signing secret.")}</p>
               <label className="field-label" htmlFor="feishu-webhook">{t("New webhook URL")}
                 <input id="feishu-webhook" type="password" autoComplete="new-password" spellCheck={false} value={webhookUrl} disabled={clearWebhook} aria-describedby="feishu-credentials-help" onChange={event => setWebhookUrl(event.target.value)} style={{ width: "100%" }} />
               </label>
               <label><input type="checkbox" checked={clearWebhook} onChange={event => { setClearWebhook(event.target.checked); if (event.target.checked) setWebhookUrl(""); }} /> {t("Clear the saved webhook URL")}</label>
+              <label><input type="checkbox" checked={useSignature} aria-describedby="feishu-signature-help" onChange={event => { setUseSignature(event.target.checked); if (!event.target.checked) setSigningSecret(""); }} /> {t("Enable signature verification (only if enabled in the Feishu bot)")}</label>
+              <p id="feishu-signature-help">{t("A signing secret is required only when signature verification is enabled and no secret is saved.")}</p>
               <label className="field-label" htmlFor="feishu-signing-secret">{t("New signing secret")}
-                <input id="feishu-signing-secret" type="password" autoComplete="new-password" spellCheck={false} value={signingSecret} disabled={clearSigningSecret} aria-describedby="feishu-credentials-help" onChange={event => setSigningSecret(event.target.value)} style={{ width: "100%" }} />
+                <input id="feishu-signing-secret" type="password" autoComplete="new-password" spellCheck={false} value={signingSecret} disabled={!useSignature || clearWebhook} required={needsSigningSecret} aria-describedby="feishu-credentials-help feishu-signature-help" onChange={event => setSigningSecret(event.target.value)} style={{ width: "100%" }} />
               </label>
-              <label><input type="checkbox" checked={clearSigningSecret} onChange={event => { setClearSigningSecret(event.target.checked); if (event.target.checked) setSigningSecret(""); }} /> {t("Clear the saved signing secret")}</label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 <button className="primary-button" type="submit" disabled={!settings.encryptionReady || !dirty}>{busy === "save" && <Loader2 size={14} className="spin" aria-hidden="true" />} {t("Save Feishu settings")}</button>
                 <button className="secondary-button" type="button" disabled={!canTest} aria-describedby="feishu-test-help" onClick={() => void send("test")}>{busy === "test" && <Loader2 size={14} className="spin" aria-hidden="true" />} {t("Send test message")}</button>

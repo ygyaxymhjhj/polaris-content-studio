@@ -117,11 +117,15 @@ try {
       const body = request.postDataJSON();
       patches.push(body);
       assert.ok(Object.keys(body).every(field => ['enabled', 'notifyDrafts', 'notifyPublished', 'webhookUrl', 'signingSecret', 'clearWebhook', 'clearSigningSecret'].includes(field)));
+      if (patchStatus === 200 && body.enabled && body.clearWebhook) {
+        await route.fulfill({ status: 400, json: { error: 'A webhook URL is required to enable Feishu notifications.' } });
+        return;
+      }
       if (patchStatus === 200) {
         settings = { ...settings, enabled: body.enabled, notifyDrafts: body.notifyDrafts, notifyPublished: body.notifyPublished, version: settings.version + 1 };
         if (body.clearWebhook) settings.webhookConfigured = false;
         else if (body.webhookUrl) settings.webhookConfigured = true;
-        if (body.clearSigningSecret) settings.signingConfigured = false;
+        if (body.clearWebhook || body.clearSigningSecret) settings.signingConfigured = false;
         else if (body.signingSecret) settings.signingConfigured = true;
         getStatus = getStatusAfterSave;
       }
@@ -153,7 +157,65 @@ try {
     assert.equal(await page.locator('section').count(), 0);
   }
   assert.equal(getCount, 0, 'Non-administrators must not fetch settings');
+  const signatureToggle = page.getByLabel('Enable signature verification (only if enabled in the Feishu bot)', { exact: true });
+  const secretInput = page.getByLabel('New signing secret', { exact: true });
+  settings = { ...initialSettings, webhookConfigured: false, signingConfigured: false };
   await mount();
+  assert.equal(await signatureToggle.isChecked(), false);
+  assert.equal(await secretInput.isDisabled(), true);
+  assert.equal(await secretInput.evaluate(input => input.required), false);
+  await page.getByLabel('Enable Feishu notifications', { exact: true }).check();
+  await page.getByLabel('New webhook URL').fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-unsigned-ui-only');
+  await save();
+  assert.deepEqual(patches.at(-1), {
+    enabled: true, notifyDrafts: true, notifyPublished: false,
+    webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/fake-unsigned-ui-only', clearSigningSecret: true
+  });
+  assert.equal(settings.signingConfigured, false);
+  assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isEnabled(), true);
+  await page.getByRole('button', { name: 'Send test message', exact: true }).click();
+  await page.getByText('Feishu test message sent using the saved configuration.', { exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('[aria-busy="false"]'));
+  assert.deepEqual(tests.at(-1), {});
+  console.log('PASS: new unsigned configuration defaults signature off; disabled non-required secret; webhook-only save and saved-only test succeed.');
+
+  await signatureToggle.check();
+  assert.equal(await secretInput.isEnabled(), true);
+  assert.equal(await secretInput.evaluate(input => input.required), true);
+  assert.match(await page.locator('#feishu-signature-help').innerText(), /required only when signature verification is enabled/);
+  const patchesBeforeMissingSecret = patches.length;
+  await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).click();
+  assert.equal(await secretInput.evaluate(input => input.validity.valueMissing), true);
+  assert.equal(patches.length, patchesBeforeMissingSecret, 'Only newly enabled signature mode requires a secret');
+  await secretInput.fill('   ');
+  await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).click();
+  await page.getByRole('alert').waitFor();
+  assert.match(await page.getByRole('alert').innerText(), /required only when signature verification is enabled/);
+  assert.equal(patches.length, patchesBeforeMissingSecret, 'Whitespace is not a signing secret');
+  await secretInput.fill('fake-unsaved-secret');
+  await signatureToggle.uncheck();
+  assert.equal(await secretInput.inputValue(), '', 'Disabling signature mode discards the local secret');
+  assert.equal(await secretInput.isDisabled(), true);
+  assert.equal(await secretInput.evaluate(input => input.required), false);
+  assert.equal(await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isEnabled(), true);
+  await signatureToggle.check();
+  await secretInput.fill('fake-new-signed-secret');
+  await save();
+  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, signingSecret: 'fake-new-signed-secret' });
+  assert.equal(await signatureToggle.isChecked(), true);
+  assert.equal(await secretInput.inputValue(), '');
+  assert.equal(await secretInput.evaluate(input => input.required), false);
+  await signatureToggle.uncheck();
+  assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
+  await signatureToggle.check();
+  assert.equal(await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isEnabled(), true);
+  console.log('PASS: only new signed mode requires a nonblank secret; signature toggles track dirty state without silently clearing saved credentials.');
+
+  settings = { ...initialSettings };
+  await mount();
+  assert.equal(await signatureToggle.isChecked(), true);
   assert.equal(await page.getByLabel('New webhook URL').inputValue(), '');
   assert.equal(await page.getByLabel('New signing secret').inputValue(), '');
   assert.equal(await page.getByLabel('New webhook URL').getAttribute('type'), 'password');
@@ -173,14 +235,38 @@ try {
   assert.equal(await page.getByLabel('New webhook URL').inputValue(), '');
   assert.equal(await page.getByLabel('New signing secret').inputValue(), '');
   assert.equal(await page.evaluate(() => location.search + localStorage.length + sessionStorage.length), '00');
-  await page.getByLabel('Clear the saved signing secret', { exact: true }).check();
+  await signatureToggle.uncheck();
   await save();
   assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, clearSigningSecret: true });
+  assert.equal(settings.signingConfigured, false);
+  assert.equal(await signatureToggle.isChecked(), false);
+  assert.equal(await secretInput.isDisabled(), true);
+  assert.equal(await secretInput.evaluate(input => input.required), false);
   await page.getByLabel('Clear the saved webhook URL', { exact: true }).check();
   await save();
-  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, clearWebhook: true });
+  await page.getByRole('alert').waitFor();
+  assert.match(await page.getByRole('alert').innerText(), /webhook URL is required/);
+  assert.equal(settings.webhookConfigured, true, 'An enabled configuration cannot clear its webhook');
+  await page.getByLabel('Enable Feishu notifications', { exact: true }).uncheck();
+  await save();
+  assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, clearWebhook: true, clearSigningSecret: true });
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
-  console.log('PASS: strict PATCH allowlist, independent explicit clears, credentials cleared after save, no URL or browser-storage persistence.');
+  console.log('PASS: strict PATCH allowlist; signature-off save clears saved secret; independent webhook clear; no URL or browser-storage persistence.');
+
+  settings = { ...initialSettings, enabled: true, signingConfigured: false };
+  await mount();
+  await signatureToggle.check();
+  assert.equal(await secretInput.evaluate(input => input.required), true);
+  await page.getByLabel('Enable Feishu notifications', { exact: true }).uncheck();
+  await page.getByLabel('Clear the saved webhook URL', { exact: true }).check();
+  assert.equal(await secretInput.isDisabled(), true);
+  assert.equal(await secretInput.evaluate(input => input.required), false);
+  await save();
+  assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, clearWebhook: true });
+  assert.equal(settings.webhookConfigured, false);
+  assert.equal(settings.signingConfigured, false);
+  assert.equal(await signatureToggle.isChecked(), false);
+  console.log('PASS: clearing webhook with notifications disabled bypasses unused new-signature requirement and reloads signature off.');
 
   settings = { ...initialSettings };
   await mount();
@@ -256,6 +342,7 @@ try {
   envelope = false;
   await mount(true, 'zh');
   await page.getByRole('heading', { name: '\u98de\u4e66\u7fa4\u901a\u77e5' }).waitFor();
+  assert.equal(await page.getByLabel('\u542f\u7528\u7b7e\u540d\u6821\u9a8c\uff08\u4ec5\u5728\u98de\u4e66\u673a\u5668\u4eba\u5df2\u542f\u7528\u65f6\u52fe\u9009\uff09', { exact: true }).isChecked(), true);
   for (const language of ['vi', 'th']) {
     await page.evaluate(language => window.renderPanel(true, language), language);
     await page.getByRole('heading', { name: 'Feishu group notifications' }).waitFor();
