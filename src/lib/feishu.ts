@@ -7,6 +7,7 @@ export type FeishuConfig = {
   enabled: boolean;
   notifyDrafts: boolean;
   notifyPublished: boolean;
+  notifyRejected: boolean;
   version: number;
   webhookUrl: string;
   signingSecret?: string;
@@ -16,6 +17,7 @@ export type FeishuSettings = {
   enabled: boolean;
   notifyDrafts: boolean;
   notifyPublished: boolean;
+  notifyRejected: boolean;
   webhookConfigured: boolean;
   signingConfigured: boolean;
   encryptionReady: boolean;
@@ -40,16 +42,17 @@ export function asFeishuError(error: unknown): FeishuError {
 }
 
 type ConfigRow = RowDataPacket & {
-  enabled: number; notify_drafts: number; notify_published: number;
+  enabled: number; notify_drafts: number; notify_published: number; notify_rejected: number;
   encrypted_credentials: string | null; version: number; updated_at: string;
   last_test_at: string | null; last_test_ok: number | null; last_test_error: string | null;
   last_worker_at: string | null; last_delivery_error: string | null;
 };
 type Credentials = { webhookUrl: string; signingSecret?: string };
-const columns = "enabled, notify_drafts, notify_published, encrypted_credentials, version, updated_at, last_test_at, last_test_ok, last_test_error, last_worker_at, last_delivery_error";
+const columns = "enabled, notify_drafts, notify_published, notify_rejected, encrypted_credentials, version, updated_at, last_test_at, last_test_ok, last_test_error, last_worker_at, last_delivery_error";
 const credentialsSchema = z.object({ webhookUrl: z.string(), signingSecret: z.string().max(2048).optional() }).strict();
 export const feishuUpdateSchema = z.object({
   enabled: z.boolean(), notifyDrafts: z.boolean(), notifyPublished: z.boolean(),
+  notifyRejected: z.boolean().optional(),
   webhookUrl: z.string().max(2048).optional(), signingSecret: z.string().max(2048).optional(),
   clearWebhook: z.boolean().optional(), clearSigningSecret: z.boolean().optional()
 }).strict().refine(input => !(input.clearWebhook && input.webhookUrl) && !(input.clearSigningSecret && input.signingSecret));
@@ -116,6 +119,7 @@ function safeSettings(row?: ConfigRow): FeishuSettings {
   const safeDiagnostic = (value: string | null | undefined) => value ? "Feishu delivery failed. Check credentials and service availability." : null;
   return {
     enabled: Number(row?.enabled) === 1, notifyDrafts: Number(row?.notify_drafts) === 1, notifyPublished: Number(row?.notify_published) === 1,
+    notifyRejected: Number(row?.notify_rejected) === 1,
     webhookConfigured: Boolean(row?.encrypted_credentials), signingConfigured: Boolean(credentials?.signingSecret), encryptionReady: Boolean(key),
     version: Number(row?.version ?? 1), updatedAt: row?.updated_at ?? null,
     lastTestAt: row?.last_test_at ?? null, lastTestOk: row?.last_test_ok == null ? null : Number(row.last_test_ok) === 1,
@@ -126,7 +130,7 @@ function safeSettings(row?: ConfigRow): FeishuSettings {
 
 function configFromRow(row: ConfigRow): FeishuConfig | null {
   if (!row.encrypted_credentials) return null;
-  return { enabled: Number(row.enabled) === 1, notifyDrafts: Number(row.notify_drafts) === 1, notifyPublished: Number(row.notify_published) === 1, version: Number(row.version), ...decryptCredentials(row.encrypted_credentials, encryptionKey()) };
+  return { enabled: Number(row.enabled) === 1, notifyDrafts: Number(row.notify_drafts) === 1, notifyPublished: Number(row.notify_published) === 1, notifyRejected: Number(row.notify_rejected) === 1, version: Number(row.version), ...decryptCredentials(row.encrypted_credentials, encryptionKey()) };
 }
 
 export async function readFeishuConfig(): Promise<FeishuConfig | null> {
@@ -144,7 +148,7 @@ export async function readFeishuSettings(): Promise<FeishuSettings> {
 }
 
 async function lockConfig(connection: PoolConnection): Promise<ConfigRow> {
-  await connection.execute("INSERT INTO workspace_feishu_config (id, enabled, notify_drafts, notify_published, version, updated_at) VALUES (?,0,0,0,1,UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE id=id", [1]);
+  await connection.execute("INSERT INTO workspace_feishu_config (id, enabled, notify_drafts, notify_published, notify_rejected, version, updated_at) VALUES (?,0,0,0,0,1,UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE id=id", [1]);
   const [rows] = await connection.execute<ConfigRow[]>(`SELECT ${columns} FROM workspace_feishu_config WHERE id=? FOR UPDATE`, [1]);
   return rows[0];
 }
@@ -177,13 +181,24 @@ export async function updateFeishuSettings(input: FeishuSettingsInput, userId: s
     const flagsChanged = input.enabled !== (Number(row.enabled) === 1)
       || input.notifyDrafts !== (Number(row.notify_drafts) === 1)
       || input.notifyPublished !== (Number(row.notify_published) === 1);
-    if (!credentialsChanged && !flagsChanged) {
+    const previousNotifyRejected = Number(row.notify_rejected) === 1;
+    const notifyRejected = input.notifyRejected ?? previousNotifyRejected;
+    const rejectionFlagChanged = notifyRejected !== previousNotifyRejected;
+    if (!credentialsChanged && !flagsChanged && !rejectionFlagChanged) {
       const settings = safeSettings(row);
       await connection.commit();
       return settings;
     }
-    const encryptedCredentials = webhookUrl ? encryptCredentials({ webhookUrl, ...(signingSecret ? { signingSecret } : {}) }, key) : null;
-    await connection.execute("UPDATE workspace_feishu_config SET enabled=?, notify_drafts=?, notify_published=?, encrypted_credentials=?, version=version+1, updated_by=?, updated_at=UTC_TIMESTAMP(3) WHERE id=?", [Number(input.enabled), Number(input.notifyDrafts), Number(input.notifyPublished), encryptedCredentials, userId, 1]);
+    const encryptedCredentials = credentialsChanged
+      ? webhookUrl ? encryptCredentials({ webhookUrl, ...(signingSecret ? { signingSecret } : {}) }, key) : null
+      : row.encrypted_credentials;
+    // Rejection preferences must not invalidate unrelated queued publication notifications.
+    const incrementVersion = credentialsChanged || flagsChanged;
+    await connection.execute("UPDATE workspace_feishu_config SET enabled=?, notify_drafts=?, notify_published=?, notify_rejected=?, encrypted_credentials=?, version=version+?, updated_by=?, updated_at=UTC_TIMESTAMP(3) WHERE id=?", [Number(input.enabled), Number(input.notifyDrafts), Number(input.notifyPublished), Number(notifyRejected), encryptedCredentials, Number(incrementVersion), userId, 1]);
+    if (rejectionFlagChanged && !notifyRejected) {
+      await connection.execute("UPDATE social_post_tracking SET notify_rejected=0 WHERE notify_rejected=1");
+      await connection.execute("UPDATE social_notification_outbox SET status='cancelled', lease_token=NULL, lease_expires_at=NULL WHERE event_type='draft_rejected' AND status IN ('pending','sending')");
+    }
     const [rows] = await connection.execute<ConfigRow[]>(`SELECT ${columns} FROM workspace_feishu_config WHERE id=?`, [1]);
     const settings = safeSettings(rows[0]);
     await connection.commit();

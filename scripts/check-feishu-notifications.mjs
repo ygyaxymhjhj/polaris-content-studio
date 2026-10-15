@@ -5,10 +5,16 @@ import { openDatabase } from "./_login.mjs";
 import { readWorkerConfiguration } from "./run-social-notifications.mjs";
 
 const requiredColumns = {
-  workspace_feishu_config: ["id", "enabled", "notify_drafts", "notify_published", "encrypted_credentials", "version", "updated_by", "updated_at", "last_test_at", "last_test_ok", "last_test_error", "last_worker_at", "last_delivery_error"],
-  social_post_tracking: ["publish_audit_id", "postiz_post_id", "state", "release_url", "postiz_publish_date", "confirmed_at", "submitted_at", "next_check_at", "last_checked_at", "check_attempts", "last_error", "notify_published", "config_version"],
+  workspace_feishu_config: ["id", "enabled", "notify_drafts", "notify_published", "notify_rejected", "encrypted_credentials", "version", "updated_by", "updated_at", "last_test_at", "last_test_ok", "last_test_error", "last_worker_at", "last_delivery_error"],
+  social_post_tracking: ["publish_audit_id", "postiz_post_id", "state", "review_status", "save_action", "rejected_detected_at", "notify_rejected", "release_url", "postiz_publish_date", "confirmed_at", "submitted_at", "next_check_at", "last_checked_at", "check_attempts", "last_error", "notify_published", "config_version"],
   social_notification_outbox: ["id", "publish_audit_id", "event_type", "event_time", "status", "attempts", "next_attempt_at", "lease_token", "lease_expires_at", "sent_at", "last_error", "config_version", "payload"]
 };
+
+const requiredEnums = {
+  social_post_tracking: { review_status: ["unknown", "pending", "rejected"], save_action: ["pass", "update", "draft", "schedule", "now"] },
+  social_notification_outbox: { event_type: ["draft_submitted", "published", "draft_rejected"] }
+};
+const migrationGuidance = "Apply deploy/mysql/migrations/2026-10-14-feishu-notifications.sql and deploy/mysql/migrations/2026-10-15-draft-rejection.sql.";
 
 function verifyGrants(grantRows, schemaName) {
   const grantedPrivileges = new Map(Object.keys(requiredColumns).map((tableName) => [tableName, new Set()]));
@@ -48,13 +54,34 @@ export async function checkFeishuNotifications(connection, { environment = proce
   if (!schemaName) throw new Error("Notification database is not configured.");
   for (const [tableName, columnNames] of Object.entries(requiredColumns)) {
     const [columnRows] = await connection.execute(
-      "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", [schemaName, tableName]
+      "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", [schemaName, tableName]
     );
     const availableColumns = new Set(columnRows.map((row) => row.COLUMN_NAME));
     if (columnNames.some((columnName) => !availableColumns.has(columnName))) {
-      throw new Error(`Notification schema is incomplete for ${tableName}. Apply deploy/mysql/migrations/2026-10-14-feishu-notifications.sql.`);
+      throw new Error(`Notification schema is incomplete for ${tableName}. ${migrationGuidance}`);
+    }
+    for (const [columnName, enumValues] of Object.entries(requiredEnums[tableName] ?? {})) {
+      const columnType = columnRows.find((row) => row.COLUMN_NAME === columnName)?.COLUMN_TYPE;
+      if (typeof columnType !== "string" || !columnType.startsWith("enum(")
+        || enumValues.some((value) => !columnType.includes(`'${value}'`))) {
+        throw new Error(`Notification schema enum is incomplete for ${tableName}.${columnName}. ${migrationGuidance}`);
+      }
     }
   }
+  const [indexRows] = await connection.execute(
+    "SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY INDEX_NAME, SEQ_IN_INDEX", [schemaName, "social_notification_outbox"]
+  );
+  const uniqueIndexes = new Map();
+  for (const indexRow of indexRows) {
+    if (Number(indexRow.NON_UNIQUE) !== 0) continue;
+    const indexColumns = uniqueIndexes.get(indexRow.INDEX_NAME) ?? [];
+    indexColumns.push(indexRow);
+    uniqueIndexes.set(indexRow.INDEX_NAME, indexColumns);
+  }
+  const hasEventUniqueKey = [...uniqueIndexes.values()].some((indexColumns) => indexColumns.length === 2
+    && indexColumns.every((column) => column.SUB_PART == null)
+    && indexColumns[0].COLUMN_NAME === "publish_audit_id" && indexColumns[1].COLUMN_NAME === "event_type");
+  if (!hasEventUniqueKey) throw new Error(`Notification schema is missing the audit/event unique index. ${migrationGuidance}`);
   const [grantRows] = await connection.query("SHOW GRANTS FOR CURRENT_USER()");
   verifyGrants(grantRows, schemaName);
   // Never retrieve or print encrypted webhook credentials during deployment preflight.

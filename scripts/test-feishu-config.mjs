@@ -15,7 +15,10 @@ const administratorId = "11111111-1111-4111-8111-111111111111";
 let clock = 1_700_000_000_000;
 let shortenDeadline = false;
 let row;
+let trackingRows = [];
+let outboxRows = [];
 let databaseFailure = false;
+let cancellationFailure = false;
 let afterCommit;
 let auth = { user: { id: administratorId, role: "admin" } };
 const statements = [];
@@ -41,13 +44,29 @@ const execute = async (sql, parameters = []) => {
   statements.push({ sql, parameters });
   if (databaseFailure) throw new Error(`ER_BAD_FIELD_ERROR ${webhookUrl} ${signingSecret}`);
   if (sql.startsWith("INSERT")) {
-    row ??= { enabled: 0, notify_drafts: 0, notify_published: 0, encrypted_credentials: null, version: 1, updated_at: timestamp(), last_test_at: null, last_test_ok: null, last_test_error: null, last_worker_at: null, last_delivery_error: null };
+    row ??= { enabled: 0, notify_drafts: 0, notify_published: 0, notify_rejected: 0, encrypted_credentials: null, version: 1, updated_at: timestamp(), last_test_at: null, last_test_ok: null, last_test_error: null, last_worker_at: null, last_delivery_error: null };
     return [{ affectedRows: 1 }];
   }
   if (sql.startsWith("SELECT")) return [row ? [{ ...row }] : []];
   if (sql.includes("SET enabled=?")) {
-    const [enabled, notifyDrafts, notifyPublished, encryptedCredentials, updatedBy] = parameters;
-    Object.assign(row, { enabled, notify_drafts: notifyDrafts, notify_published: notifyPublished, encrypted_credentials: encryptedCredentials, updated_by: updatedBy, updated_at: timestamp(), version: row.version + 1 });
+    assert.match(sql, /version=version\+\?/);
+    const [enabled, notifyDrafts, notifyPublished, notifyRejected, encryptedCredentials, incrementVersion, updatedBy, configurationId] = parameters;
+    assert.ok(incrementVersion === 0 || incrementVersion === 1);
+    assert.equal(configurationId, 1);
+    Object.assign(row, { enabled, notify_drafts: notifyDrafts, notify_published: notifyPublished, notify_rejected: notifyRejected, encrypted_credentials: encryptedCredentials, updated_by: updatedBy, updated_at: timestamp(), version: row.version + incrementVersion });
+    return [{ affectedRows: 1 }];
+  }
+  if (sql.startsWith("UPDATE social_post_tracking")) {
+    assert.equal(sql, "UPDATE social_post_tracking SET notify_rejected=0 WHERE notify_rejected=1");
+    trackingRows.forEach(tracking => { tracking.notify_rejected = 0; });
+    return [{ affectedRows: trackingRows.length }];
+  }
+  if (sql.startsWith("UPDATE social_notification_outbox")) {
+    if (cancellationFailure) throw new Error("Synthetic cancellation failure");
+    assert.equal(sql, "UPDATE social_notification_outbox SET status='cancelled', lease_token=NULL, lease_expires_at=NULL WHERE event_type='draft_rejected' AND status IN ('pending','sending')");
+    outboxRows.forEach(event => {
+      if (event.event_type === "draft_rejected" && ["pending", "sending"].includes(event.status)) Object.assign(event, { status: "cancelled", lease_token: null, lease_expires_at: null });
+    });
     return [{ affectedRows: 1 }];
   }
   if (sql.includes("SET last_test_at=")) {
@@ -70,6 +89,8 @@ const pool = {
   async getConnection() {
     let unlock;
     let snapshot;
+    let trackingSnapshot;
+    let outboxSnapshot;
     return {
       execute,
       async beginTransaction() {
@@ -77,9 +98,11 @@ const pool = {
         transactionQueue = new Promise(resolve => { unlock = resolve; });
         await previousTransaction;
         snapshot = row ? { ...row } : undefined;
+        trackingSnapshot = structuredClone(trackingRows);
+        outboxSnapshot = structuredClone(outboxRows);
       },
       async commit() { unlock(); unlock = undefined; const callback = afterCommit; afterCommit = undefined; await callback?.(); },
-      async rollback() { if (unlock) { row = snapshot; unlock(); unlock = undefined; } },
+      async rollback() { if (unlock) { row = snapshot; trackingRows = trackingSnapshot; outboxRows = outboxSnapshot; unlock(); unlock = undefined; } },
       release() { assert.equal(unlock, undefined, "Every connection must finish its transaction"); }
     };
   }
@@ -89,7 +112,7 @@ const sameOrigin = loadModule("src/lib/same-origin.ts");
 const mocks = { "@/lib/auth": { currentUser: async () => auth }, "@/lib/feishu": feishu, "@/lib/same-origin": sameOrigin };
 const settingsRoute = loadModule("src/app/api/admin/feishu/route.ts", mocks);
 const testRoute = loadModule("src/app/api/admin/feishu/test/route.ts", mocks);
-const flags = { enabled: false, notifyDrafts: true, notifyPublished: true };
+const flags = { enabled: false, notifyDrafts: true, notifyPublished: true, notifyRejected: false };
 const request = (method, body = {}, origin = "https://studio.example", headers = {}) => new NextRequest(`https://studio.example/api/admin/feishu${method === "POST" ? "/test" : ""}`, {
   method, headers: { origin, "content-type": "application/json", ...headers },
   ...(method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) })
@@ -159,6 +182,83 @@ async function runReviewRegressions() {
       await feishu.updateFeishuSettings(input, administratorId);
       assert.equal(row.version, ++previousVersion);
     }
+  });
+  await verify("rejection-only toggles preserve global version, ciphertext and publication subscriptions", async () => {
+    await feishu.updateFeishuSettings({ ...flags, enabled: true }, administratorId);
+    const before = { ...row };
+    trackingRows = [{ notify_rejected: 0, notify_published: 1, config_version: before.version }];
+    outboxRows = [{ event_type: "published", status: "pending", config_version: before.version }];
+    const previousFetchCount = fetchCalls.length;
+    const view = await feishu.updateFeishuSettings({ ...flags, enabled: true, notifyRejected: true }, administratorId);
+    assert.equal(view.notifyRejected, true);
+    assert.equal((await feishu.readFeishuConfig()).notifyRejected, true);
+    assert.equal(row.version, before.version);
+    assert.equal(row.encrypted_credentials, before.encrypted_credentials);
+    assert.deepEqual(trackingRows, [{ notify_rejected: 0, notify_published: 1, config_version: before.version }], "Enable does not backfill old tracking");
+    assert.deepEqual(outboxRows, [{ event_type: "published", status: "pending", config_version: before.version }]);
+    assert.equal(fetchCalls.length, previousFetchCount, "Preferences must never mutate remote posts or send messages");
+  });
+  await verify("legacy PATCH preserves saved rejection preference and unchanged saves preserve timestamps", async () => {
+    const before = { ...row };
+    const previousUpdates = statements.filter(statement => statement.sql.includes("SET enabled=?")).length;
+    const legacyFlags = { enabled: true, notifyDrafts: flags.notifyDrafts, notifyPublished: flags.notifyPublished };
+    for (const input of [legacyFlags, { ...legacyFlags, notifyRejected: true }]) {
+      const response = await settingsRoute.PATCH(request("PATCH", input));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).notifyRejected, true);
+      assert.deepEqual(row, before);
+    }
+    assert.equal(statements.filter(statement => statement.sql.includes("SET enabled=?")).length, previousUpdates, "No-op must not rewrite the timestamp or IV");
+  });
+  await verify("rejection off cancels pending and sending rejection leases without restoring old subscriptions", async () => {
+    const version = row.version;
+    trackingRows = [{ notify_rejected: 1, notify_published: 1, config_version: version }];
+    outboxRows = [
+      { event_type: "draft_rejected", status: "pending", lease_token: "synthetic-lease", lease_expires_at: timestamp() },
+      { event_type: "draft_rejected", status: "sending", lease_token: "synthetic-inflight-lease", lease_expires_at: timestamp() },
+      { event_type: "published", status: "pending" },
+      { event_type: "published", status: "sending", lease_token: "published-lease", lease_expires_at: timestamp() },
+      { event_type: "draft_submitted", status: "pending" },
+      { event_type: "draft_submitted", status: "sending", lease_token: "submitted-lease", lease_expires_at: timestamp() },
+      { event_type: "draft_rejected", status: "sent" },
+      { event_type: "draft_rejected", status: "failed" }
+    ];
+    const untouchedEvents = structuredClone(outboxRows.slice(2));
+    const statementsBeforeDisable = statements.length;
+    await feishu.updateFeishuSettings({ ...flags, enabled: true }, administratorId);
+    assert.equal(row.version, version);
+    assert.deepEqual(trackingRows, [{ notify_rejected: 0, notify_published: 1, config_version: version }]);
+    assert.deepEqual(outboxRows[0], { event_type: "draft_rejected", status: "cancelled", lease_token: null, lease_expires_at: null });
+    assert.deepEqual(outboxRows[1], { event_type: "draft_rejected", status: "cancelled", lease_token: null, lease_expires_at: null });
+    assert.deepEqual(outboxRows.slice(2), untouchedEvents);
+    const disableStatements = statements.slice(statementsBeforeDisable);
+    const configLockIndex = disableStatements.findIndex(statement => statement.sql.includes("FROM workspace_feishu_config") && statement.sql.endsWith("FOR UPDATE"));
+    const cancellationIndex = disableStatements.findIndex(statement => statement.sql.startsWith("UPDATE social_notification_outbox"));
+    assert.ok(configLockIndex >= 0 && cancellationIndex > configLockIndex, "Configuration must be locked before rejection cancellation");
+    const disabledSubscriptions = structuredClone(trackingRows);
+    const disabledEvents = structuredClone(outboxRows);
+    await feishu.updateFeishuSettings({ ...flags, enabled: true, notifyRejected: true }, administratorId);
+    assert.deepEqual(trackingRows, disabledSubscriptions);
+    assert.deepEqual(outboxRows, disabledEvents);
+    assert.equal(row.version, version);
+    await feishu.updateFeishuSettings({ ...flags, enabled: true }, administratorId);
+    await feishu.updateFeishuSettings(flags, administratorId);
+    trackingRows = [];
+    outboxRows = [];
+  });
+  await verify("rejection cancellation failure rolls back config and tracking in the same transaction", async () => {
+    await feishu.updateFeishuSettings({ ...flags, notifyRejected: true }, administratorId);
+    trackingRows = [{ notify_rejected: 1, notify_published: 1 }];
+    outboxRows = [{ event_type: "draft_rejected", status: "pending" }];
+    const before = { row: { ...row }, trackingRows: structuredClone(trackingRows), outboxRows: structuredClone(outboxRows) };
+    cancellationFailure = true;
+    try {
+      await expectError(() => feishu.updateFeishuSettings(flags, administratorId), "FEISHU_UNAVAILABLE");
+    } finally { cancellationFailure = false; }
+    assert.deepEqual({ row, trackingRows, outboxRows }, before);
+    await feishu.updateFeishuSettings(flags, administratorId);
+    trackingRows = [];
+    outboxRows = [];
   });
   await verify("proxy PATCH accepts forwarded public hostname", async () => {
     const response = await settingsRoute.PATCH(new NextRequest("http://localhost:3000/api/admin/feishu", {
@@ -244,6 +344,8 @@ const defaults = await feishu.readFeishuSettings();
 assert.equal(defaults.enabled, false);
 assert.equal(defaults.notifyDrafts, false);
 assert.equal(defaults.notifyPublished, false);
+assert.equal(defaults.notifyRejected, false);
+assert.equal(feishu.feishuUpdateSchema.parse({ enabled: false, notifyDrafts: true, notifyPublished: true }).notifyRejected, undefined, "Missing PATCH field must not default to false");
 assert.equal(defaults.version, 1);
 assertNoSecrets(defaults);
 await expectError(() => feishu.updateFeishuSettings({ ...flags, enabled: true }, administratorId), "FEISHU_WEBHOOK_REQUIRED");
@@ -386,7 +488,7 @@ await runReviewRegressions();
 row = undefined;
 auth = { user: { id: administratorId, role: "admin", displayName: "Unsigned administrator" } };
 fetchHandler = async () => Response.json({ code: 0 });
-const unsignedFlags = { enabled: true, notifyDrafts: true, notifyPublished: false };
+const unsignedFlags = { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false };
 const saveUnsigned = async (patch) => {
   const response = await settingsRoute.PATCH(request("PATCH", { ...unsignedFlags, ...patch, clearSigningSecret: true }));
   assert.equal(response.status, 200);

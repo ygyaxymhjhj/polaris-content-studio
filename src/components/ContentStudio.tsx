@@ -51,6 +51,8 @@ import FeishuSettingsPanel from "@/components/FeishuSettingsPanel";
 import ConnectAccountsDialog from "@/components/ConnectAccountsDialog";
 import SocialAccountsView from "@/components/SocialAccountsView";
 import type { ProjectSnapshot } from "@/lib/project-schema";
+import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, markSubmissionSucceeded, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
+import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
 import AssetImageEditor from "@/components/AssetImageEditor";
@@ -148,8 +150,20 @@ interface PublishHistoryEntry {
   publishedUrl: string | null;
   scheduledAt: string | null;
   status: "drafted" | "published" | "queued" | "failed";
+  reviewStatus?: ReviewStatus;
+  rejectedDetectedAt?: string | null;
   error: string | null;
   createdAt: string;
+}
+
+function PublishBadge({ asset }: { asset: Pick<ContentAsset, "publishStatus" | "reviewStatus" | "rejectedDetectedAt" | "publishedUrl"> }) {
+  const t = useTranslation();
+  const badge = getPublishBadge(asset);
+  const detected = badge.className === "rejected" && asset.rejectedDetectedAt;
+  return <span className={`publish-pill ${badge.className}`} title={detected ? `${t("First detected")}: ${new Date(detected).toLocaleString()}` : undefined}>
+    {badge.className === "published" ? "✓ " : ""}{t(badge.label)}
+    {badge.className === "published" && asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={event => event.stopPropagation()}><ExternalLink size={10} /></a>}
+  </span>;
 }
 
 export default function ContentStudio({ user, claimedProjects }: { user: User; claimedProjects: number }) {
@@ -225,6 +239,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   // Set by ProjectStorage once the current project has a saved id; rides along on publish calls
   // so the audit can tie each post back to its content project.
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
+  const currentProjectRef = useRef("");
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+  const submissionAttempts = useRef(new Map<string, number>());
+  const changeCurrentProject = useCallback((projectId: string) => {
+    if (currentProjectRef.current !== projectId) setPublishing(false);
+    currentProjectRef.current = projectId;
+    setCurrentProjectId(projectId);
+  }, []);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [publishing, setPublishing] = useState<boolean>(false);
   // Conversations are kept per asset so reopening the drawer continues where the editor left off.
@@ -233,6 +256,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const columnsAnchor = useRef<HTMLDivElement | null>(null);
   const rewriteSequence = useRef(0);
   const packSequence = useRef(0);
+  const historyRequestSequence = useRef(0);
 
   const loadChannels = useCallback(async () => {
     const requestSequence = ++channelRequestSequence.current;
@@ -303,12 +327,18 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }, [publishModalAsset, loadChannels]);
 
   const loadPublishHistory = useCallback(async (assetId: string) => {
+    const requestSequence = ++historyRequestSequence.current;
+    const projectId = currentProjectRef.current;
+    const projectEpoch = packSequence.current;
     setPublishHistory([]);
     try {
-      const res = await fetch(`/api/social/publishes?assetId=${encodeURIComponent(assetId)}`);
+      const parameters = new URLSearchParams({ assetId });
+      if (projectId) parameters.set("projectId", projectId);
+      const res = await fetch(`/api/social/publishes?${parameters}`);
       if (!res.ok) return;
       const data = await readJson<{ publishes?: PublishHistoryEntry[] }>(res);
-      if (Array.isArray(data.publishes)) setPublishHistory(data.publishes);
+      if (requestSequence === historyRequestSequence.current && projectId === currentProjectRef.current
+        && projectEpoch === packSequence.current && Array.isArray(data.publishes)) setPublishHistory(data.publishes);
     } catch { /* History is informational; the publish flow does not depend on it. */ }
   }, []);
 
@@ -316,64 +346,51 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     if (publishModalAsset) void loadPublishHistory(publishModalAsset.id);
   }, [publishModalAsset, loadPublishHistory]);
 
-  // Poll Postiz for draft status updates: if a draft was submitted and the admin published it in
-  // Postiz, sync that state back so the badge changes from "Postiz draft" to "Published".
+  // Poll local, owner-filtered facts for exact submissions, never Postiz or a global history page.
+  const submissionPollKey = JSON.stringify(assets.filter(shouldPollSubmission).map(asset => [asset.id, getSubmissionBindingKey(asset), asset.targetAccountId]));
+  const contentEpoch = packSequence.current;
   useEffect(() => {
-    const draftedAssets = assets.filter(asset => asset.publishStatus === "drafted");
-    if (draftedAssets.length === 0) return;
-
-    async function syncPostizStatus() {
+    if (!assetsRef.current.some(shouldPollSubmission)) return;
+    const controller = new AbortController();
+    const projectId = currentProjectId;
+    const projectEpoch = packSequence.current;
+    let inFlight = false;
+    const isCurrentProject = () => !controller.signal.aborted && currentProjectRef.current === projectId && packSequence.current === projectEpoch;
+    async function syncSubmissionStatus() {
+      if (inFlight || !isCurrentProject()) return;
+      const requestedAssets = assetsRef.current.filter(shouldPollSubmission);
+      const attempts = new Map(requestedAssets.map(asset => [asset.id, submissionAttempts.current.get(asset.id)]));
+      const queries = getSubmissionStatusQueries(requestedAssets, projectId);
+      if (!queries.length) return;
+      inFlight = true;
       try {
-        const res = await fetch(`/api/social/publishes?projectId=${encodeURIComponent(currentProjectId)}`);
-        if (!res.ok) return;
-        const data = await readJson<{ publishes?: PublishHistoryEntry[] }>(res);
-        if (!Array.isArray(data.publishes)) return;
-
-        const postIdToAssetId = new Map<string, string>();
-        data.publishes.forEach(entry => {
-          if (entry.postizPostId && entry.assetId) {
-            postIdToAssetId.set(entry.postizPostId, entry.assetId);
-          }
-        });
-
-        const postIds = Array.from(postIdToAssetId.keys());
-        if (postIds.length === 0) return;
-
-        const statusRes = await fetch(`/api/social/post-status?postIds=${postIds.join(",")}`);
-        if (!statusRes.ok) return;
-
-        const statusData = await readJson<{ statuses?: Record<string, string | null> }>(statusRes);
-        if (!statusData.statuses) return;
-
-        const updates: Array<{ assetId: string; newStatus: "published" }> = [];
-        Object.entries(statusData.statuses).forEach(([postId, state]) => {
-          if (state === "PUBLISHED") {
-            const assetId = postIdToAssetId.get(postId);
-            if (assetId) updates.push({ assetId, newStatus: "published" });
-          }
-        });
-
-        if (updates.length > 0) {
-          setAssets(current => 
-            current.map(asset => {
-              const update = updates.find(u => u.assetId === asset.id);
-              return update ? { ...asset, publishStatus: update.newStatus } : asset;
-            })
-          );
-          if (selectedAsset) {
-            const selectedUpdate = updates.find(u => u.assetId === selectedAsset.id);
-            if (selectedUpdate) {
-              setSelectedAsset(cur => cur ? { ...cur, publishStatus: selectedUpdate.newStatus } : null);
-            }
-          }
+        const snapshots: SubmissionStatusSnapshot[] = [];
+        for (const parameters of queries) {
+          if (!isCurrentProject()) return;
+          const res = await fetch(`/api/social/submission-status?${parameters}`, { signal: controller.signal, cache: "no-store" });
+          if (!res.ok) return;
+          const data = await readJson<{ submissions?: SubmissionStatusSnapshot[] }>(res);
+          if (!isCurrentProject() || !Array.isArray(data.submissions)) return;
+          snapshots.push(...data.submissions);
         }
-      } catch { /* Polling is best-effort; failures are silent. */ }
+        const mergeCurrent = (asset: ContentAsset) => {
+          const requested = requestedAssets.find(entry => entry.id === asset.id);
+          if (!isCurrentProject() || !requested || attempts.get(asset.id) !== submissionAttempts.current.get(asset.id)) return asset;
+          return mergeSubmissionStatus(asset, requested, snapshots);
+        };
+        setAssets(current => {
+          const merged = current.map(mergeCurrent);
+          return merged.some((asset, index) => asset !== current[index]) ? merged : current;
+        });
+        setSelectedAsset(current => current ? mergeCurrent(current) : current);
+        setPublishModalAsset(current => current ? mergeCurrent(current) : current);
+      } catch { /* Keep the last known facts; the next interval retries local tracking. */ }
+      finally { inFlight = false; }
     }
-
-    void syncPostizStatus();
-    const interval = setInterval(syncPostizStatus, 30000);
-    return () => clearInterval(interval);
-  }, [assets, currentProjectId, selectedAsset]);
+    void syncSubmissionStatus();
+    const interval = setInterval(syncSubmissionStatus, 30000);
+    return () => { controller.abort(); clearInterval(interval); };
+  }, [submissionPollKey, currentProjectId, contentEpoch]);
 
   useEffect(() => {
     document.documentElement.dataset.polarisArticleImport = "v1";
@@ -463,6 +480,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setAssets([]);
     setPendingPlatforms([]);
     setSelectedAsset(null);
+    setPublishModalAsset(null);
+    historyRequestSequence.current += 1;
+    setPublishHistory([]);
+    setPublishing(false);
     setAssetFilter("all");
     setUsedFallback(false);
     setLoading(null);
@@ -594,6 +615,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     const run = ++packSequence.current;
     rewriteSequence.current += 1;
     setSelectedAsset(null);
+    setPublishModalAsset(null);
+    setPublishing(false);
     setRewriting(false);
     setThreads({});
     clearCandidates();
@@ -843,10 +866,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       cta: draft.cta,
       deepLink: draft.deepLink,
       imageUrl: draft.imageUrl,
-      publishStatus: draft.publishStatus,
-      publishedUrl: draft.publishedUrl,
-      publishedAt: draft.publishedAt,
-      targetAccountId: draft.targetAccountId,
+      ...getAssetStatusFields(asset),
       factIds: draft.factIds,
       riskFlags: draft.riskFlags,
       revisions: draft.revisions,
@@ -868,8 +888,19 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (announceResult) notify(t("Select a social account first."));
       return { success: false, warning: false };
     }
+    const projectId = currentProjectRef.current;
+    const projectEpoch = packSequence.current;
+    const attempt = (submissionAttempts.current.get(asset.id) ?? 0) + 1;
+    submissionAttempts.current.set(asset.id, attempt);
+    const isCurrentAttempt = () => currentProjectRef.current === projectId && packSequence.current === projectEpoch && submissionAttempts.current.get(asset.id) === attempt;
+    const updateAttempt = (update: (current: ContentAsset) => ContentAsset) => {
+      const apply = (current: ContentAsset) => isCurrentAttempt() && current.id === asset.id ? update(current) : current;
+      setAssets(current => current.map(apply));
+      setSelectedAsset(current => current ? apply(current) : current);
+      setPublishModalAsset(current => current ? apply(current) : current);
+    };
     setPublishing(true);
-    setAssets(prev => prev.map(a => a.id === asset.id ? { ...a, publishStatus: "publishing" } : a));
+    updateAttempt(current => ({ ...current, publishStatus: "publishing" }));
     try {
       const res = await fetch("/api/social/publish", {
         method: "POST",
@@ -879,25 +910,18 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           integrationId: accountId,
           content: asset.content,
           imageUrl: asset.imageUrl ?? config.imageUrl,
-          projectId: currentProjectId || undefined,
+          projectId: projectId || undefined,
           platform: asset.platform,
           accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId
         })
       });
-      const data = await readJson<{ success?: boolean; error?: string; publishedAt?: string; warning?: string }>(res);
+      const data = await readJson<{ success?: boolean; error?: string; postId?: string; auditId: string | null; publishedAt: string; warning?: string }>(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || t("Publish failed"));
       }
-      setAssets(prev => prev.map(a => a.id === asset.id ? {
-        ...a,
-        publishStatus: "drafted",
-        publishedAt: data.publishedAt,
-        targetAccountId: accountId
-      } : a));
-      if (selectedAsset?.id === asset.id) {
-        setSelectedAsset(cur => cur ? { ...cur, publishStatus: "drafted" } : null);
-      }
       const hasWarning = typeof data.warning === "string" && Boolean(data.warning.trim());
+      if (!isCurrentAttempt()) return { success: true, warning: hasWarning };
+      updateAttempt(current => markSubmissionSucceeded(current, data, accountId));
       if (announceResult) {
         const message = t(hasWarning ? "Draft submitted, but notifications or status tracking need attention. Do not submit it again."
           : "Draft submitted to Postiz. An administrator reviews and publishes it there.");
@@ -907,15 +931,16 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       setPublishModalAsset(null);
       return { success: true, warning: hasWarning };
     } catch (err) {
-      setAssets(prev => prev.map(a => a.id === asset.id ? {
-        ...a,
+      if (!isCurrentAttempt()) return { success: false, warning: false };
+      updateAttempt(current => ({
+        ...current,
         publishStatus: "failed",
         publishError: err instanceof Error ? err.message : t("Publish failed")
-      } : a));
+      }));
       if (announceResult) notify(err instanceof Error ? err.message : t("Publish failed"));
       return { success: false, warning: false };
     } finally {
-      setPublishing(false);
+      if (isCurrentAttempt()) setPublishing(false);
     }
   }
 
@@ -940,12 +965,17 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     }
     const toSubmit = matches.filter((m): m is { asset: ContentAsset; account: SocialAccount } => Boolean(m.account));
     if (!toSubmit.length) return;
+    const projectId = currentProjectRef.current;
+    const projectEpoch = packSequence.current;
+    const isCurrentBatch = () => currentProjectRef.current === projectId && packSequence.current === projectEpoch;
     setLoading("export");
     let submittedCount = 0;
     let warningCount = 0;
     let failedCount = 0;
     for (const { asset, account } of toSubmit) {
+      if (!isCurrentBatch()) return;
       const result = await submitDraft(asset, account.id, false);
+      if (!isCurrentBatch()) return;
       if (result.success) submittedCount += 1;
       else failedCount += 1;
       if (result.warning) warningCount += 1;
@@ -1059,7 +1089,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
         <div className="content-wrap">
           {submissionNotice && <div className="info-banner" role="status"><TriangleAlert size={16} aria-hidden="true" /><span>{submissionNotice}</span></div>}
-          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets, selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={setCurrentProjectId} hidden={view === "export" || view === "accounts" || view === "settings"} />
+          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets: getPersistedAssets(assets), selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={changeCurrentProject} hidden={view === "export" || view === "accounts" || view === "settings"} />
           {view === "workspace" && (sourceError || sourcePending) && (
             <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>
           )}
@@ -1121,9 +1151,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 {platformIcon(selectedAsset.platform)} {labelForAsset(selectedAsset, t)}
               </span>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <span className={`publish-pill ${selectedAsset.publishStatus || "unpublished"}`}>
-                  {selectedAsset.publishStatus === "published" ? `✓ ${t("Published")}` : selectedAsset.publishStatus === "drafted" ? t("Postiz draft") : selectedAsset.publishStatus === "publishing" ? t("Submitting…") : t("Unpublished")}
-                </span>
+                <PublishBadge asset={selectedAsset} />
               </div>
             </div>
 
@@ -1309,9 +1337,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                       <div key={entry.id} style={{ border: "1px solid #e4e4e7", borderRadius: 8, padding: "8px 10px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                           <strong>{entry.accountName}</strong>
-                          <span style={{ color: entry.status === "published" ? "#166534" : entry.status === "drafted" || entry.status === "queued" ? "#1d4ed8" : "#b91c1c" }}>
-                            {entry.status === "published" ? t("Published") : entry.status === "drafted" ? t("Postiz draft") : entry.status === "queued" ? t("Scheduled") : t("Failed")}
-                          </span>
+                          <PublishBadge asset={{ publishStatus: entry.status, reviewStatus: entry.reviewStatus, rejectedDetectedAt: entry.rejectedDetectedAt ?? undefined }} />
                         </div>
                         <div style={{ color: "#71717a" }}>
                           {new Date(entry.createdAt).toLocaleString()} · {entry.publishedByName}
@@ -1593,7 +1619,7 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPubli
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><span className={`publish-pill ${asset.publishStatus || "unpublished"}`}>{asset.publishStatus === "published" ? <>✓ {t("Published")} {asset.publishedUrl && <a href={asset.publishedUrl} target="_blank" rel="noreferrer" title={t("View post")} onClick={e => e.stopPropagation()}><ExternalLink size={10} /></a>}</> : asset.publishStatus === "drafted" ? <>{t("Postiz draft")}</> : asset.publishStatus === "publishing" ? <>{t("Submitting…")}</> : asset.publishStatus === "failed" ? <>{t("Publish failed")}</> : <span>{t("Unpublished")}</span>}</span></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );

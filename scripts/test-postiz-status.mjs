@@ -135,6 +135,32 @@ test("unknown states and malformed post entries are ignored", async () => {
   assert.equal(details.size, 0);
 });
 
+test("deployment saveAction contract preserves six values without inferring post state", async () => {
+  const saveActions = ["pass", "update", "draft", "schedule", "now", null];
+  const posts = saveActions.map((saveAction, index) => ({ id: `action-${index}`, state: "DRAFT", saveAction, group: "synthetic-group" }));
+  createResponse = () => Response.json({ posts });
+  const details = await postiz.fetchPostizPostDetails(posts.map(post => post.id), customRange);
+  for (const post of posts) assert.deepEqual(details.get(post.id), post);
+});
+
+test("missing and unknown saveAction stay absent; null remains null; published stays published", async () => {
+  const unknownActions = ["approved", "rejected", "PASS", "", false, 0, {}, []];
+  const posts = [
+    { id: "legacy", state: "DRAFT" },
+    ...unknownActions.map((saveAction, index) => ({ id: `unknown-action-${index}`, state: "DRAFT", saveAction, group: 123 })),
+    { id: "published-pass", state: "PUBLISHED", saveAction: "pass" },
+    { id: "published-null", state: "PUBLISHED", saveAction: null }
+  ];
+  createResponse = () => Response.json({ posts });
+  const details = await postiz.fetchPostizPostDetails(posts.map(post => post.id), customRange);
+  for (const post of posts.slice(0, -2)) {
+    assert.deepEqual(details.get(post.id), { id: post.id, state: "DRAFT" });
+    assert.equal(Object.hasOwn(details.get(post.id), "saveAction"), false);
+  }
+  assert.deepEqual(details.get("published-pass"), { id: "published-pass", state: "PUBLISHED", saveAction: "pass" });
+  assert.deepEqual(details.get("published-null"), { id: "published-null", state: "PUBLISHED", saveAction: null });
+});
+
 test("release URLs accept HTTP(S) without credentials and discard invalid metadata", async () => {
   const invalidUrls = ["javascript:alert(1)", "ftp://social.example.test/123", "https://user:password@social.example.test/123", "https://user@social.example.test/123", "/posts/123", "invalid", "", 123];
   createResponse = () => Response.json({ posts: [

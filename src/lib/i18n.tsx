@@ -12,6 +12,8 @@ const feishuChineseMessages: Record<string, string> = {
   "Notifications off": "通知未启用",
   "Notification events": "通知事件",
   "Draft review": "草稿待审核",
+  "Draft rejected": "草稿不通过",
+  "When a draft is not approved": "审核不通过时",
   "When someone submits a draft": "有人提交草稿时",
   "Post published": "正式发布",
   "After publication is confirmed": "确认发布成功后",
@@ -358,6 +360,9 @@ const messages: Record<string, [string, string]> = {
   "No social accounts are available. Connect one or ask an administrator to assign one.": ["暂无可用账号，请先连接或联系管理员", "Chưa có tài khoản mạng xã hội khả dụng. Hãy kết nối hoặc nhờ quản trị viên gán."],
   "Skipped assets with no matching account": ["已跳过没有对应平台账号的素材", "Đã bỏ qua nội dung không có tài khoản nền tảng tương ứng"],
   "Published": ["已发布", "Đã đăng"],
+  "Review rejected": ["审核不通过", "Không được duyệt"],
+  "Pending review": ["待审核", "Chờ duyệt"],
+  "First detected": ["首次检测", "Phát hiện lần đầu"],
   "Unpublished": ["未发布", "Chưa đăng"],
   "Submitting…": ["提交中…", "Đang gửi…"],
   "Edit draft": ["编辑草稿", "Sửa bản nháp"],
@@ -455,6 +460,9 @@ const messages: Record<string, [string, string]> = {
 };
 
 const thMessages: Record<string, string> = {
+  "Review rejected": "ไม่ผ่านการอนุมัติ",
+  "Pending review": "รอการอนุมัติ",
+  "First detected": "ตรวจพบครั้งแรก",
   "Post image": "ภาพโพสต์",
   "Post image preview": "ตัวอย่างภาพโพสต์",
   "Restore article image": "คืนค่าภาพต้นฉบับ",

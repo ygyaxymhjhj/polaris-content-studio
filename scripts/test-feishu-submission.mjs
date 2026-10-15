@@ -105,6 +105,8 @@ function assertSingleSuccessfulSubmission(response, payload) {
   assert.equal(response.status, 200);
   assert.equal(payload.success, true);
   assert.equal(payload.assetId, validBody.assetId);
+  assert.equal(payload.auditId, registrationFailure ? null : registrationResult.auditId ?? null,
+    "Binding uses only this submission's saved audit ID, or explicit null when registration failed");
   assert.equal(payload.postId, upstreamResult.postId, "Only the real upstream post ID is returned");
   assert.equal(calls.postiz.length, 1, "An accepted submission must never be retried by the route");
   assert.equal(calls.submissions.length, 1, "The route registers exactly one audit entry");

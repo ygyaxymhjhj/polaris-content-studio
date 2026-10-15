@@ -127,6 +127,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       assetId,
+      auditId: auditId ?? null,
       postId: result.postId,
       ...(warnings.length ? { warning: [...new Set(warnings)].join(" ") } : {}),
       // Kept under its original key for existing clients; it is the moment the draft was handed to

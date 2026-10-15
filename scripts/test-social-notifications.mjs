@@ -17,7 +17,7 @@ function setup() {
   const state = {
     audits: new Map(), tracking: new Map(), outbox: new Map(), health: {}, failure: null,
     now: Date.parse("2026-10-14T12:00:00.000Z"), transactions: 0, queries: [],
-    config: { enabled: true, notifyDrafts: true, notifyPublished: true, version: 1, webhookUrl: "https://synthetic.invalid/hook" },
+    config: { enabled: true, notifyDrafts: true, notifyPublished: true, notifyRejected: true, version: 1, webhookUrl: "https://synthetic.invalid/hook" },
     configError: null, deliveryError: null, postizError: null, details: new Map(),
     messages: [], ranges: [], spacing: [], lock: null, lockAllowed: true, beforeSend: null, beforeReadConfig: null,
     beforeQuery: null, beforeFetchDetails: null
@@ -47,6 +47,12 @@ function setup() {
         if (state.beforeQuery) await state.beforeQuery(statement);
         if (state.failure && statement.includes(state.failure)) throw new Error("secret=https://hook.invalid/token credentials");
         if (statement === "SELECT DATABASE() AS database_name") return [[{ database_name: "synthetic_polaris" }]];
+        if (statement.startsWith("SELECT enabled, notify_rejected, version FROM workspace_feishu_config")) {
+          assert.ok(state.transactions > 0, "Eligibility lock must run inside the submission transaction");
+          assert.match(statement, /FOR (SHARE|UPDATE)$/);
+          return [state.config ? [{ enabled: state.config.enabled ? 1 : 0,
+            notify_rejected: state.config.notifyRejected ? 1 : 0, version: state.config.version }] : []];
+        }
         if (statement.includes("GET_LOCK")) {
           const acquired = state.lockAllowed && (!state.lock || state.lock === owner);
           if (acquired) state.lock = owner;
@@ -61,9 +67,10 @@ function setup() {
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("INSERT INTO social_post_tracking")) {
-          const [auditId, postId, submittedAt, nextCheckAt, notifyPublished, version] = parameters;
+          const [auditId, postId, submittedAt, nextCheckAt, notifyPublished, version, notifyRejected] = parameters;
           state.tracking.set(auditId, { publish_audit_id: auditId, postiz_post_id: postId, submitted_at: submittedAt,
-            next_check_at: nextCheckAt, notify_published: notifyPublished, config_version: version, state: "DRAFT", check_attempts: 0, confirmed_at: null });
+            next_check_at: nextCheckAt, notify_published: notifyPublished, config_version: version, notify_rejected: notifyRejected,
+            review_status: "pending", save_action: null, rejected_detected_at: null, state: "DRAFT", check_attempts: 0, confirmed_at: null });
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("INSERT INTO social_notification_outbox")) {
@@ -78,7 +85,7 @@ function setup() {
           const [now, ...remaining] = parameters;
           const auditId = remaining.length ? remaining[0] : null;
           const candidates = [...state.outbox.values()].filter(row => row.status === "pending" && row.next_attempt_at <= now && row.attempts < 5 &&
-            (!auditId || row.publish_audit_id === auditId) && (row.event_type !== "published" || ![...state.outbox.values()].some(draft =>
+            (!auditId || row.publish_audit_id === auditId) && (row.event_type === "draft_submitted" || ![...state.outbox.values()].some(draft =>
               draft.publish_audit_id === row.publish_audit_id && draft.event_type === "draft_submitted" && ["pending", "sending"].includes(draft.status))));
           candidates.sort((first, second) => first.event_time.localeCompare(second.event_time) || first.event_type.localeCompare(second.event_type));
           return [candidates.slice(0, 1).map(row => ({ ...row }))];
@@ -128,19 +135,34 @@ function setup() {
         if (statement.startsWith("SELECT") && statement.includes("FROM social_post_tracking")) {
           return [[state.tracking.get(parameters[0])].filter(Boolean).map(row => ({ ...row }))];
         }
-        if (statement.startsWith("UPDATE social_post_tracking") && statement.includes("notify_published=0")) {
+        if (statement.startsWith("UPDATE social_post_tracking") && statement.includes("JOIN workspace_feishu_config")) {
           const [version, enabled] = statement.includes("JOIN workspace_feishu_config")
             ? [state.config?.version ?? 0, state.config?.enabled && state.config.notifyPublished]
             : parameters;
           for (const row of state.tracking.values()) if (row.config_version !== version || !enabled) row.notify_published = 0;
+          if (statement.includes("tracking.notify_rejected=")) {
+            for (const row of state.tracking.values()) {
+              if (row.config_version !== version || !state.config?.enabled || !state.config.notifyRejected) row.notify_rejected = 0;
+            }
+          }
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("UPDATE social_post_tracking") && statement.includes("confirmed_at=?")) {
-          const [releaseUrl, publishDate, confirmedAt, lastCheckedAt, nextCheckAt, auditId] = parameters;
+          const [releaseUrl, publishDate, confirmedAt, lastCheckedAt, nextCheckAt, saveAction, auditId] = parameters;
           const row = state.tracking.get(auditId);
           Object.assign(row, { state: "PUBLISHED", release_url: releaseUrl, postiz_publish_date: publishDate,
-            confirmed_at: confirmedAt, last_checked_at: lastCheckedAt, next_check_at: nextCheckAt, last_error: null });
+            confirmed_at: confirmedAt, last_checked_at: lastCheckedAt, next_check_at: nextCheckAt, last_error: null,
+            save_action: saveAction, review_status: "unknown" });
           row.check_attempts++;
+          return [{ affectedRows: 1 }];
+        }
+        if (statement.startsWith("UPDATE social_post_tracking SET state=?, save_action=")) {
+          const [postState, saveAction, reviewStatus, rejectedAt, publishDate, nextCheckAt, lastCheckedAt, lastError, auditId] = parameters;
+          const row = state.tracking.get(auditId);
+          Object.assign(row, { state: postState, save_action: saveAction, review_status: reviewStatus,
+            rejected_detected_at: row.rejected_detected_at ?? rejectedAt,
+            postiz_publish_date: publishDate ?? row.postiz_publish_date, next_check_at: nextCheckAt,
+            last_checked_at: lastCheckedAt, last_error: lastError, check_attempts: row.check_attempts + 1 });
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("UPDATE social_post_tracking")) {
@@ -195,9 +217,12 @@ function setup() {
   const { outputText } = typescript.transpileModule(readFileSync("src/lib/social-notifications.ts", "utf8"), {
     compilerOptions: { module: typescript.ModuleKind.CommonJS, target: typescript.ScriptTarget.ES2022, esModuleInterop: true }
   });
-  const compiled = { exports: {} };
-  new Function("require", "module", "exports", "Date", outputText)(name => mocks[name] ?? nativeRequire(name), compiled, compiled.exports, ClockDate);
-  return { state, service: compiled.exports, advance: milliseconds => { state.now += milliseconds; } };
+  function reloadService() {
+    const compiled = { exports: {} };
+    new Function("require", "module", "exports", "Date", outputText)(name => mocks[name] ?? nativeRequire(name), compiled, compiled.exports, ClockDate);
+    return compiled.exports;
+  }
+  return { state, service: reloadService(), reloadService, advance: milliseconds => { state.now += milliseconds; } };
 }
 
 test("submission persists original applicant, bounded summary and explicit UTC; failed submissions never notify", async () => {
@@ -356,7 +381,7 @@ test("range includes submissions older than 32 days, missing/unknown/error post 
     if (variant === "mismatched-id") state.details.set(submission.postizPostId, { id: "invented-post", state: "PUBLISHED" });
     await service.processSocialNotifications();
     assert.ok(state.ranges[0].startDate <= new Date("2026-08-01T00:00:00Z"));
-    assert.equal(state.ranges[0].endDate.toISOString(), "2026-10-15T12:00:00.000Z");
+    assert.equal(state.ranges[0].endDate.toISOString(), "2027-10-14T12:00:00.000Z");
     assert.equal(state.outbox.size, 0); assert.equal(tracking.confirmed_at, null); assert.equal(tracking.check_attempts, 1);
     assert.ok(tracking.next_check_at > utc(state.now)); assert.doesNotMatch(tracking.last_error ?? "", /secret|api.invalid/);
   }
@@ -426,7 +451,7 @@ test("worker budget also stops delivery between sends without claiming remaining
   const { state, service, advance } = setup(); state.config.notifyPublished = false;
   await service.recordSocialSubmission(submission); await service.recordSocialSubmission(submission);
   state.beforeQuery = statement => {
-    if (statement.startsWith("UPDATE social_post_tracking") && statement.includes("notify_published=0")) advance(39_000);
+    if (statement.startsWith("UPDATE social_post_tracking") && statement.includes("JOIN workspace_feishu_config")) advance(39_000);
   };
   state.beforeSend = () => advance(1000);
   const summary = await service.processSocialNotifications();
@@ -452,7 +477,7 @@ test("worker eligibility update uses current V2 config and never retires a new V
   let newAuditId;
   let changedConfig = false;
   state.beforeQuery = async statement => {
-    if (!statement.startsWith("UPDATE social_post_tracking") || !statement.includes("notify_published=0") || changedConfig) return;
+    if (!statement.startsWith("UPDATE social_post_tracking") || !statement.includes("JOIN workspace_feishu_config") || changedConfig) return;
     changedConfig = true; state.config.version = 2;
     newAuditId = (await service.recordSocialSubmission({ ...submission, postizPostId: "real-v2-post" })).auditId;
     state.details.set("real-v2-post", { id: "real-v2-post", state: "PUBLISHED" });
@@ -521,4 +546,259 @@ test("deadline deferral by an obsolete owner cannot return the replacement owner
   const summary = await service.processSocialNotifications();
   assert.equal(summary.skipped, 1); assert.equal(state.messages.length, 0);
   assert.equal(draft.status, "sending"); assert.equal(draft.attempts, 5); assert.equal(draft.lease_token, "replacement-owner");
+});
+
+test("only DRAFT plus deployed pass action is rejected; other states and all other actions remain non-rejections", async () => {
+  for (const postState of ["DRAFT", "QUEUE", "PUBLISHED", "ERROR"]) {
+    for (const saveAction of ["pass", "draft", "update", "schedule", "now", null, undefined, "guessed-action"]) {
+      const { state, service } = setup(); state.config.notifyDrafts = false; state.config.notifyPublished = false;
+      const { auditId } = await service.recordSocialSubmission(submission);
+      state.details.set(submission.postizPostId, { id: submission.postizPostId, state: postState, saveAction });
+      await service.processSocialNotifications();
+      const tracking = state.tracking.get(auditId);
+      const rejected = postState === "DRAFT" && saveAction === "pass";
+      const expectedReview = postState === "DRAFT" && !["schedule", "now"].includes(saveAction) ? "pending" : "unknown";
+      assert.equal(tracking.review_status, rejected ? "rejected" : expectedReview, `${postState}/${saveAction}`);
+      assert.equal(state.outbox.size, rejected ? 1 : 0, `${postState}/${saveAction}`);
+      assert.equal(tracking.save_action, ["pass", "draft", "update", "schedule", "now"].includes(saveAction) ? saveAction : null);
+      assert.equal(Boolean(tracking.rejected_detected_at), rejected);
+    }
+  }
+});
+
+test("rejection is atomic, sticky-first-detected, once per audit across restart and pass-draft-pass, but new audit can notify", async () => {
+  const { state, service, advance, reloadService } = setup(); state.config.notifyDrafts = false;
+  const { auditId } = await service.recordSocialSubmission(submission);
+  const firstDetected = utc(state.now);
+  const post = { id: submission.postizPostId, state: "DRAFT", saveAction: "pass", publishDate: "2027-01-01T12:00:00Z" };
+  state.details.set(submission.postizPostId, post);
+  await service.processSocialNotifications();
+  assert.equal(state.messages.length, 1);
+  assert.match(state.messages[0].text, /^\[Polaris\] 草稿审核不通过\n申请人：原申请人/);
+  assert.match(state.messages[0].text, /首次检测时间：2026-10-14 12:00:00.000 UTC/);
+  assert.match(state.messages[0].text, /处理入口：https:\/\/postiz.example.test/);
+  assert.doesNotMatch(state.messages[0].text, /已发布|发布时间|审核人|驳回原因|2027-01-01/);
+  for (const saveAction of ["pass", undefined, "unknown", null, "draft", "pass", "update", "pass"]) {
+    advance(60_000); post.saveAction = saveAction;
+    await reloadService().processSocialNotifications();
+    const tracking = state.tracking.get(auditId);
+    assert.equal(tracking.rejected_detected_at, firstDetected);
+    assert.equal(tracking.confirmed_at, null);
+    assert.equal(tracking.next_check_at, utc(state.now + 60_000));
+    assert.equal(tracking.review_status, ["draft", "update"].includes(saveAction) ? "pending" : "rejected");
+  }
+  assert.equal(state.outbox.size, 1); assert.equal(state.messages.length, 1);
+  const second = await service.recordSocialSubmission({ ...submission, publishedByName: "新申请人" });
+  await service.processSocialNotifications();
+  assert.equal(state.outbox.size, 2); assert.equal(state.messages.length, 2);
+  assert.match(state.messages[1].text, /新申请人/);
+  assert.equal(state.audits.get(auditId).published_by_name, "原申请人");
+  assert.ok(state.tracking.get(second.auditId).rejected_detected_at);
+});
+
+test("outbox or tracking failure rolls back rejection and a later poll safely retries", async () => {
+  for (const failure of ["INSERT INTO social_notification_outbox", "UPDATE social_post_tracking SET state=?"]) {
+    const { state, service } = setup(); state.config.notifyDrafts = false;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+    state.failure = failure;
+    assert.ok((await service.processSocialNotifications()).warning);
+    assert.equal(state.tracking.get(auditId).review_status, "pending");
+    assert.equal(state.tracking.get(auditId).rejected_detected_at, null);
+    assert.equal(state.outbox.size, 0); assert.equal(state.transactions, 0);
+    state.failure = null;
+    await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "rejected");
+    assert.equal(state.outbox.size, 1); assert.equal(state.messages.length, 1);
+  }
+});
+
+test("disabled, missing rejection flag and historical subscriptions still update rejection facts without retroactive events", async () => {
+  for (const variant of ["disabled", "flag-off", "legacy-config", "legacy-tracking"]) {
+    const { state, service, advance } = setup(); state.config.notifyDrafts = false;
+    if (variant === "disabled") state.config.enabled = false;
+    if (variant === "flag-off") state.config.notifyRejected = false;
+    if (variant === "legacy-config") delete state.config.notifyRejected;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    if (variant === "legacy-tracking") {
+      Object.assign(state.tracking.get(auditId), { notify_rejected: 0, review_status: "unknown" });
+    }
+    state.config.enabled = true; state.config.notifyRejected = true;
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+    await service.processSocialNotifications(); advance(60_000); await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "rejected");
+    assert.equal(state.tracking.get(auditId).notify_rejected, 0);
+    assert.equal(state.outbox.size, 0); assert.equal(state.messages.length, 0);
+  }
+});
+
+test("rejected facts survive unknown observations and timeout but clear on QUEUE/PUBLISHED regardless of pass", async () => {
+  for (const nextState of ["QUEUE", "PUBLISHED"]) {
+    const { state, service, advance } = setup(); state.config.notifyDrafts = false;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    const post = { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" };
+    state.details.set(submission.postizPostId, post); await service.processSocialNotifications();
+    const detectedAt = state.tracking.get(auditId).rejected_detected_at;
+    state.postizError = new Error("synthetic timeout"); advance(60_000); await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "rejected");
+    state.postizError = null; state.details.clear(); advance(3_600_000); await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "rejected");
+    post.state = nextState; state.details.set(submission.postizPostId, post);
+    advance(3_600_000); await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).state, nextState);
+    assert.equal(state.tracking.get(auditId).review_status, "unknown");
+    assert.equal(state.tracking.get(auditId).save_action, "pass");
+    assert.equal(state.tracking.get(auditId).rejected_detected_at, detectedAt);
+    assert.equal([...state.outbox.values()].filter(row => row.event_type === "draft_rejected").length, 1);
+  }
+});
+
+test("eligibility cancellation treats published and rejected independently and dispatch fails closed for unknown events", async () => {
+  for (const variant of ["published-off", "rejected-off", "version"]) {
+    const { state, service } = setup(); state.config.notifyDrafts = false;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    if (variant === "published-off") state.config.notifyPublished = false;
+    if (variant === "rejected-off") state.config.notifyRejected = false;
+    if (variant === "version") state.config.version++;
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+    await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).notify_published, variant === "published-off" || variant === "version" ? 0 : 1);
+    assert.equal(state.tracking.get(auditId).notify_rejected, variant === "rejected-off" || variant === "version" ? 0 : 1);
+    assert.equal(state.messages.length, variant === "published-off" ? 1 : 0);
+  }
+  const { state, service } = setup(); await service.recordSocialSubmission(submission);
+  const notification = [...state.outbox.values()][0]; notification.event_type = "future-event";
+  await service.deliverSocialNotifications();
+  assert.equal(notification.status, "cancelled"); assert.equal(state.messages.length, 0);
+});
+
+test("rejection waits for submitted draft terminal state and dispatch rereads current rejection setting and version", async () => {
+  for (const variant of ["disabled", "flag-off", "version", "missing"]) {
+    const { state, service } = setup(); await service.recordSocialSubmission(submission);
+    state.deliveryError = new Error("synthetic");
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+    await service.processSocialNotifications();
+    const draft = [...state.outbox.values()].find(row => row.event_type === "draft_submitted");
+    const rejection = [...state.outbox.values()].find(row => row.event_type === "draft_rejected");
+    assert.ok(rejection); assert.equal(rejection.attempts, 0);
+    draft.status = "failed"; state.deliveryError = null;
+    if (variant === "disabled") state.config.enabled = false;
+    if (variant === "flag-off") state.config.notifyRejected = false;
+    if (variant === "version") state.config.version++;
+    if (variant === "missing") delete state.config.notifyRejected;
+    await service.deliverSocialNotifications();
+    assert.equal(rejection.status, "cancelled"); assert.equal(state.messages.length, 0);
+  }
+});
+
+test("publishDate window includes future scheduled drafts and expands to previously observed dates beyond default horizon", async () => {
+  const { state, service, advance } = setup(); state.config.notifyDrafts = false;
+  const { auditId } = await service.recordSocialSubmission(submission);
+  const post = { id: submission.postizPostId, state: "QUEUE", saveAction: "schedule", publishDate: "2027-09-01T00:00:00Z" };
+  state.details.set(submission.postizPostId, post); await service.processSocialNotifications();
+  assert.equal(state.tracking.get(auditId).postiz_publish_date, "2027-09-01 00:00:00.000");
+  // A known out-of-horizon date remains discoverable; unknown moves beyond one year cannot be guaranteed.
+  state.tracking.get(auditId).postiz_publish_date = "2029-01-01 00:00:00.000";
+  post.publishDate = "2029-01-01T00:00:00Z"; post.state = "DRAFT"; post.saveAction = "pass";
+  advance(60_000); await service.processSocialNotifications();
+  assert.equal(state.ranges[1].endDate.toISOString(), "2029-01-02T00:00:00.000Z");
+  assert.equal(state.tracking.get(auditId).review_status, "rejected");
+  state.tracking.get(auditId).postiz_publish_date = "2025-01-01 00:00:00.000";
+  post.publishDate = "2025-01-01T00:00:00Z";
+  advance(60_000); await service.processSocialNotifications();
+  assert.equal(state.ranges[2].startDate.toISOString(), "2024-12-31T00:00:00.000Z");
+});
+
+test("currently disabled rejection notifications never suppress fact polling or cancel independent published subscription", async () => {
+  for (const disabledSetting of ["enabled", "notifyRejected"]) {
+    const { state, service } = setup(); state.config.notifyDrafts = false;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    state.config[disabledSetting] = false;
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+    await service.processSocialNotifications();
+    const tracking = state.tracking.get(auditId);
+    assert.equal(tracking.review_status, "rejected"); assert.ok(tracking.rejected_detected_at);
+    assert.equal(tracking.notify_rejected, 0);
+    assert.equal(tracking.notify_published, disabledSetting === "enabled" ? 0 : 1);
+    assert.equal(state.outbox.size, 0); assert.equal(state.messages.length, 0);
+  }
+});
+
+test("legacy unknown review stays unknown without explicit evidence and invalid dates never erase known publishDate", async () => {
+  for (const saveAction of [undefined, null, "unrecognized"]) {
+    const { state, service } = setup(); state.config.notifyDrafts = false;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    const tracking = state.tracking.get(auditId);
+    Object.assign(tracking, { review_status: "unknown", notify_rejected: 0, postiz_publish_date: "2027-01-01 00:00:00.000" });
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction, publishDate: "invalid-date" });
+    await service.processSocialNotifications();
+    assert.equal(tracking.review_status, "unknown"); assert.equal(tracking.rejected_detected_at, null);
+    assert.equal(tracking.postiz_publish_date, "2027-01-01 00:00:00.000");
+    assert.equal(state.outbox.size, 0);
+  }
+});
+
+test("submission transaction uses current locked rejection eligibility rather than pre-disable config snapshot", async () => {
+  for (const variant of ["flag-off", "disabled", "version", "missing", "read-error"]) {
+    const { state, service } = setup(); state.config.notifyDrafts = false;
+    if (variant === "read-error") state.configError = new Error("synthetic config failure");
+    let changedConfig = false;
+    state.beforeQuery = statement => {
+      if (!statement.startsWith("INSERT INTO social_publishes") || changedConfig) return;
+      changedConfig = true;
+      if (variant === "flag-off") state.config.notifyRejected = false;
+      if (variant === "disabled") state.config.enabled = false;
+      if (variant === "version") state.config.version++;
+      if (variant === "missing") state.config = null;
+    };
+    const { auditId } = await service.recordSocialSubmission(submission);
+    assert.ok(auditId);
+    assert.equal(state.tracking.get(auditId).notify_rejected, 0, variant);
+    assert.equal(state.tracking.get(auditId).notify_published, variant === "read-error" ? 0 : 1);
+    state.configError = null;
+    state.config = { enabled: true, notifyRejected: true, notifyDrafts: false, notifyPublished: true, version: 1 };
+    state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+    await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "rejected");
+    assert.equal(state.outbox.size, 0); assert.equal(state.messages.length, 0);
+    assert.equal(state.transactions, 0);
+  }
+});
+
+test("explicit DRAFT schedule and now clear previous rejection to unknown without changing first detection or notifying again", async () => {
+  for (const saveAction of ["schedule", "now"]) {
+    const { state, service, advance } = setup(); state.config.notifyDrafts = false;
+    const { auditId } = await service.recordSocialSubmission(submission);
+    const post = { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" };
+    state.details.set(submission.postizPostId, post); await service.processSocialNotifications();
+    const detectedAt = state.tracking.get(auditId).rejected_detected_at;
+    post.saveAction = saveAction; advance(60_000); await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "unknown");
+    assert.equal(state.tracking.get(auditId).save_action, saveAction);
+    assert.equal(state.tracking.get(auditId).rejected_detected_at, detectedAt);
+    assert.equal(state.tracking.get(auditId).confirmed_at, null);
+    assert.equal(state.tracking.get(auditId).next_check_at, utc(state.now + 60_000));
+    post.saveAction = "pass"; advance(60_000); await service.processSocialNotifications();
+    assert.equal(state.tracking.get(auditId).review_status, "rejected");
+    assert.equal(state.outbox.size, 1); assert.equal(state.messages.length, 1);
+  }
+});
+
+test("cancelled sending rejection remains terminal when an obsolete send subsequently fails", async () => {
+  const { state, service, advance } = setup(); state.config.notifyDrafts = false;
+  await service.recordSocialSubmission(submission);
+  state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "DRAFT", saveAction: "pass" });
+  state.beforeSend = () => {
+    const notification = [...state.outbox.values()].find(row => row.event_type === "draft_rejected");
+    Object.assign(notification, { status: "cancelled", lease_token: null, lease_expires_at: null });
+    throw new Error("synthetic failure after cancellation");
+  };
+  const summary = await service.processSocialNotifications();
+  const rejection = [...state.outbox.values()][0];
+  assert.equal(summary.failed, 0); assert.equal(summary.skipped, 1);
+  assert.equal(rejection.status, "cancelled"); assert.equal(rejection.attempts, 1);
+  assert.equal(rejection.lease_token, null); assert.equal(rejection.last_error, undefined);
+  state.beforeSend = null; advance(60_000); await service.processSocialNotifications();
+  assert.equal(state.outbox.size, 1); assert.equal(rejection.status, "cancelled");
+  assert.equal(rejection.attempts, 1); assert.equal(state.messages.length, 0);
 });

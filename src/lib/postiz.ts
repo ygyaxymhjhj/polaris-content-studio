@@ -228,6 +228,8 @@ async function uploadMediaToPostiz(
 export interface PostizPostDetails {
   id: string;
   state: "DRAFT" | "QUEUE" | "PUBLISHED" | "ERROR";
+  saveAction?: "pass" | "update" | "draft" | "schedule" | "now" | null;
+  group?: string;
   releaseUrl?: string;
   publishDate?: string;
 }
@@ -349,6 +351,11 @@ export async function fetchPostizPostDetails(
       if (!isPostizRecord(post) || typeof post.id !== "string" || !post.id.trim()
         || !requestedIds.has(post.id) || !isPostizPostState(post.state)) continue;
       const details: PostizPostDetails = { id: post.id, state: post.state };
+      if (post.saveAction === null || post.saveAction === "pass" || post.saveAction === "update"
+        || post.saveAction === "draft" || post.saveAction === "schedule" || post.saveAction === "now") {
+        details.saveAction = post.saveAction;
+      }
+      if (typeof post.group === "string") details.group = post.group;
       const releaseUrl = validatePostizReleaseUrl(post.releaseURL);
       const publishDate = validatePostizPublishDate(post.publishDate);
       if (releaseUrl) details.releaseUrl = releaseUrl;

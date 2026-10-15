@@ -8,6 +8,7 @@ interface FeishuSettings {
   enabled: boolean;
   notifyDrafts: boolean;
   notifyPublished: boolean;
+  notifyRejected: boolean;
   webhookConfigured: boolean;
   signingConfigured: boolean;
   encryptionReady: boolean;
@@ -24,6 +25,7 @@ interface SettingsPatch {
   enabled: boolean;
   notifyDrafts: boolean;
   notifyPublished: boolean;
+  notifyRejected: boolean;
   webhookUrl?: string;
   signingSecret?: string;
   clearWebhook?: boolean;
@@ -33,7 +35,7 @@ interface SettingsPatch {
 function isSettings(value: unknown): value is FeishuSettings {
   if (!value || typeof value !== "object") return false;
   const settings = value as Record<string, unknown>;
-  const booleanFields = ["enabled", "notifyDrafts", "notifyPublished", "webhookConfigured", "signingConfigured", "encryptionReady"];
+  const booleanFields = ["enabled", "notifyDrafts", "notifyPublished", "notifyRejected", "webhookConfigured", "signingConfigured", "encryptionReady"];
   const nullableTextFields = ["updatedAt", "lastTestAt", "lastTestError", "lastWorkerAt", "lastDeliveryError"];
   return booleanFields.every(field => typeof settings[field] === "boolean")
     && typeof settings.version === "number"
@@ -56,6 +58,7 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
   const [enabled, setEnabled] = useState(false);
   const [notifyDrafts, setNotifyDrafts] = useState(false);
   const [notifyPublished, setNotifyPublished] = useState(false);
+  const [notifyRejected, setNotifyRejected] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [signingSecret, setSigningSecret] = useState("");
   const [useSignature, setUseSignature] = useState(false);
@@ -108,6 +111,7 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
       setEnabled(data.enabled);
       setNotifyDrafts(data.notifyDrafts);
       setNotifyPublished(data.notifyPublished);
+      setNotifyRejected(data.notifyRejected);
       setUseSignature(data.signingConfigured);
       setError("");
       return true;
@@ -138,7 +142,8 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
   }, [hasPermission, loadSettings, clearCredentials]);
 
   const dirty = Boolean(settings && (enabled !== settings.enabled || notifyDrafts !== settings.notifyDrafts
-    || notifyPublished !== settings.notifyPublished || useSignature !== settings.signingConfigured || webhookUrl || signingSecret || clearWebhook));
+    || notifyPublished !== settings.notifyPublished || notifyRejected !== settings.notifyRejected
+    || useSignature !== settings.signingConfigured || webhookUrl || signingSecret || clearWebhook));
   const canTest = Boolean(settings?.webhookConfigured && settings.encryptionReady && !dirty && !busy && !loading);
   const needsSigningSecret = useSignature && !clearWebhook && !settings?.signingConfigured;
 
@@ -156,6 +161,7 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
       enabled,
       notifyDrafts,
       notifyPublished,
+      notifyRejected,
       ...(clearWebhook ? { clearWebhook: true } : webhookUrl.trim() ? { webhookUrl: webhookUrl.trim() } : {}),
       ...(!useSignature ? { clearSigningSecret: true } : signingSecret.trim() ? { signingSecret: signingSecret.trim() } : {})
     };
@@ -239,6 +245,12 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
                     <Send size={20} aria-hidden="true" />
                     <span className="feishu-event-copy"><strong>{t("Post published")}</strong><span>{t("After publication is confirmed")}</span></span>
                     <input className="feishu-checkbox" type="checkbox" checked={notifyPublished} onChange={event => setNotifyPublished(event.target.checked)} />
+                    <span className="feishu-checkmark" aria-hidden="true"><Check size={13} /></span>
+                  </label>
+                  <label className="feishu-event">
+                    <AlertCircle size={20} aria-hidden="true" />
+                    <span className="feishu-event-copy"><strong>{t("Draft rejected")}</strong><span>{t("When a draft is not approved")}</span></span>
+                    <input className="feishu-checkbox" type="checkbox" checked={notifyRejected} onChange={event => setNotifyRejected(event.target.checked)} />
                     <span className="feishu-checkmark" aria-hidden="true"><Check size={13} /></span>
                   </label>
                   <p className="feishu-sharing" id="feishu-sharing-warning">{t("Workspace updates will be sent to this group.")}</p>

@@ -29,9 +29,10 @@ export type SocialWorkerSummary = SocialDeliverySummary & {
 };
 
 type FeishuConfig = NonNullable<Awaited<ReturnType<typeof readFeishuConfig>>>;
-type NotificationEvent = "draft_submitted" | "published";
+type NotificationEvent = "draft_submitted" | "draft_rejected" | "published";
 type PostState = "DRAFT" | "QUEUE" | "PUBLISHED" | "ERROR";
-type PostDetails = { id: string; state: PostState; releaseUrl?: string; publishDate?: string };
+type SaveAction = "pass" | "update" | "draft" | "schedule" | "now";
+type PostDetails = { id: string; state: PostState; releaseUrl?: string; publishDate?: string; saveAction?: SaveAction | null };
 type NotificationPayload = {
   applicantId: string;
   applicantName: string;
@@ -43,7 +44,7 @@ type NotificationPayload = {
   projectId?: string;
   postizPostId?: string;
   occurredAt: string;
-  timeKind: "submission" | "publication" | "confirmation";
+  timeKind: "submission" | "publication" | "confirmation" | "detection";
   releaseUrl?: string;
 };
 
@@ -52,6 +53,8 @@ const DELIVERY_BACKOFF_SECONDS = [60, 300, 900, 3600];
 const LEASE_DURATION_MS = 300_000;
 const WORKER_BUDGET_MS = 45_000;
 const WORKER_TASK_RESERVE_MS = 5_000;
+// The list API filters publishDate, not creation time. Unknown moves beyond this horizon need operator review.
+const UNKNOWN_PUBLISH_HORIZON_MS = 365 * 86_400_000;
 const LOCAL_SAVE_WARNING = "Postiz 已收到投稿，但本地审计或通知记录保存失败；请勿重复投稿。";
 const CONFIG_READ_ERROR = "飞书通知配置暂不可用。";
 const DELIVERY_ERROR = "飞书通知发送失败，系统将按重试策略处理。";
@@ -71,6 +74,11 @@ function parsePublishDate(value: unknown): Date | null {
   if (typeof value !== "string" || !/(Z|[+-]\d{2}:\d{2})$/i.test(value)) return null;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function parseSaveAction(value: unknown): SaveAction | null {
+  return typeof value === "string" && ["pass", "update", "draft", "schedule", "now"].includes(value)
+    ? value as SaveAction : null;
 }
 
 function shortenText(value: string, maximum: number): string {
@@ -156,12 +164,22 @@ export async function recordSocialSubmission(entry: SocialSubmissionEntry): Prom
       );
       if (entry.status !== "drafted") return;
       if (realPostId) {
+        // Serialize insertion with configuration disable/cleanup without decrypting or doing network I/O.
+        const [currentConfigs] = await connection.execute<RowDataPacket[]>(
+          "SELECT enabled, notify_rejected, version FROM workspace_feishu_config WHERE id=1 FOR SHARE"
+        );
+        const currentConfig = currentConfigs[0];
+        const rejectionEligible = config?.enabled && config.notifyRejected && currentConfig &&
+          Number(currentConfig.enabled) === 1 && Number(currentConfig.notify_rejected) === 1 &&
+          Number(currentConfig.version) === config.version;
         await connection.execute(
           `INSERT INTO social_post_tracking
-            (publish_audit_id, postiz_post_id, submitted_at, next_check_at, notify_published, config_version)
-           VALUES (?,?,?,?,?,?)`,
+            (publish_audit_id, postiz_post_id, submitted_at, next_check_at, notify_published, config_version,
+             notify_rejected, review_status)
+           VALUES (?,?,?,?,?,?,?,'pending')`,
           [auditId, realPostId, formatUtc(submittedAt), formatUtc(submittedAt),
-            config?.enabled && config.notifyPublished ? 1 : 0, config?.version ?? 1]
+            config?.enabled && config.notifyPublished ? 1 : 0, config?.version ?? 1,
+            rejectionEligible ? 1 : 0]
         );
       }
       if (config?.enabled && config.notifyDrafts) {
@@ -242,17 +260,23 @@ function formatMessage(notification: RowDataPacket): string {
   const occurredAt = parsePublishDate(payload.occurredAt);
   if (!occurredAt) throw new Error("Invalid notification time");
   const singleLine = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, " ");
-  const isDraft = notification.event_type === "draft_submitted";
-  const timeLabel = isDraft ? "提交时间" : payload.timeKind === "publication" ? "发布时间" : "确认时间";
-  const lines = [isDraft ? "[Polaris] 新草稿待审核" : "[Polaris] 内容已发布",
+  let title: string;
+  let timeLabel: string;
+  switch (notification.event_type as NotificationEvent) {
+    case "draft_submitted": title = "[Polaris] 新草稿待审核"; timeLabel = "提交时间"; break;
+    case "draft_rejected": title = "[Polaris] 草稿审核不通过"; timeLabel = "首次检测时间"; break;
+    case "published": title = "[Polaris] 内容已发布"; timeLabel = payload.timeKind === "publication" ? "发布时间" : "确认时间"; break;
+    default: throw new Error("Unknown notification event");
+  }
+  const lines = [title,
     `申请人：${singleLine(payload.applicantName)}`,
     `平台 / 账号：${singleLine(payload.platform)} / ${singleLine(payload.accountName)}`,
     `摘要：${singleLine(shortenText(payload.summary, 200))}`,
     `${timeLabel}：${occurredAt.toISOString().replace("T", " ").replace("Z", " UTC")}`];
-  if (isDraft) {
+  if (notification.event_type !== "published") {
     const reviewUrl = validateHttpUrl(getPostizUiUrl());
     // The configured Postiz origin is a known entry point; never invent a post deep-link.
-    if (reviewUrl) lines.push(`审核入口：${new URL(reviewUrl).origin}`);
+    if (reviewUrl) lines.push(`${notification.event_type === "draft_rejected" ? "处理入口" : "审核入口"}：${new URL(reviewUrl).origin}`);
   } else {
     const releaseUrl = validateHttpUrl(payload.releaseUrl);
     if (releaseUrl) lines.push(`发布链接：${releaseUrl}`);
@@ -309,7 +333,12 @@ async function deliverWithinBudget(
         }
         // Read after any rate-limit wait, so a queued message never uses an obsolete destination snapshot.
         const config = await readFeishuConfig().catch(() => { throw new Error(CONFIG_READ_ERROR); });
-        const eventEnabled = notification.event_type === "draft_submitted" ? config?.notifyDrafts : config?.notifyPublished;
+        let eventEnabled = false;
+        switch (notification.event_type as NotificationEvent) {
+          case "draft_submitted": eventEnabled = config?.notifyDrafts === true; break;
+          case "draft_rejected": eventEnabled = config?.notifyRejected === true; break;
+          case "published": eventEnabled = config?.notifyPublished === true; break;
+        }
         if (!config?.enabled || !eventEnabled || config.version !== Number(notification.config_version)) {
           await finishNotification(notification, "cancelled");
           summary.skipped++;
@@ -362,6 +391,55 @@ async function postponeTracking(row: RowDataPacket, state: PostState, error: str
   );
 }
 
+function createTrackingPayload(row: RowDataPacket, occurredAt: Date): NotificationPayload {
+  return createPayload({
+    assetId: String(row.asset_id), platform: String(row.platform), integrationId: String(row.integration_id),
+    accountName: String(row.account_name), publishedBy: String(row.published_by), publishedByName: String(row.published_by_name),
+    contentPreview: String(row.content_preview), postizPostId: String(row.postiz_post_id), status: "drafted",
+    ...(row.project_id ? { projectId: String(row.project_id) } : {})
+  }, occurredAt);
+}
+
+async function recordObservedPost(row: RowDataPacket, details: PostDetails): Promise<void> {
+  await runTransaction(async connection => {
+    const [currentRows] = await connection.execute<RowDataPacket[]>(
+      "SELECT * FROM social_post_tracking WHERE publish_audit_id=? FOR UPDATE", [row.publish_audit_id]
+    );
+    const current = currentRows[0];
+    if (!current || current.confirmed_at) return;
+    const observedAt = new Date();
+    const saveAction = parseSaveAction(details.saveAction);
+    const isRejected = details.state === "DRAFT" && saveAction === "pass";
+    let reviewStatus = current.review_status ?? "unknown";
+    if (details.state !== "DRAFT") reviewStatus = "unknown";
+    else if (isRejected) reviewStatus = "rejected";
+    else if (saveAction === "draft" || saveAction === "update") reviewStatus = "pending";
+    else if (saveAction === "schedule" || saveAction === "now") reviewStatus = "unknown";
+    // Missing or unrecognized actions cannot prove approval or erase an observed rejection.
+    const firstDetectedAt = isRejected
+      ? current.rejected_detected_at ? parseDatabaseUtc(current.rejected_detected_at) : observedAt
+      : null;
+    if (isRejected && Number(current.notify_rejected) === 1) {
+      const payload = createTrackingPayload(row, firstDetectedAt!);
+      payload.timeKind = "detection";
+      await insertNotification(connection, String(row.publish_audit_id), "draft_rejected", firstDetectedAt!,
+        Number(current.config_version), payload);
+    }
+    const publishDate = parsePublishDate(details.publishDate);
+    const error = details.state === "ERROR" ? "Postiz 报告帖子发布失败。" : null;
+    await connection.execute(
+      `UPDATE social_post_tracking SET state=?, save_action=?, review_status=?,
+         rejected_detected_at=COALESCE(rejected_detected_at,?), postiz_publish_date=COALESCE(?,postiz_publish_date),
+         next_check_at=?, last_checked_at=?, last_error=?, check_attempts=check_attempts+1
+       WHERE publish_audit_id=? AND confirmed_at IS NULL`,
+      [details.state, saveAction, reviewStatus, firstDetectedAt ? formatUtc(firstDetectedAt) : null,
+        publishDate ? formatUtc(publishDate) : null,
+        formatUtc(new Date(observedAt.getTime() + (error ? calculateCheckDelay(Number(current.check_attempts)) : 60_000))),
+        formatUtc(observedAt), error, row.publish_audit_id]
+    );
+  });
+}
+
 async function confirmPublished(row: RowDataPacket, details: PostDetails): Promise<boolean> {
   return runTransaction(async connection => {
     const [currentRows] = await connection.execute<RowDataPacket[]>(
@@ -372,12 +450,7 @@ async function confirmPublished(row: RowDataPacket, details: PostDetails): Promi
     const confirmedAt = new Date();
     const publishDate = parsePublishDate(details.publishDate);
     const releaseUrl = validateHttpUrl(details.releaseUrl);
-    const payload = createPayload({
-      assetId: String(row.asset_id), platform: String(row.platform), integrationId: String(row.integration_id),
-      accountName: String(row.account_name), publishedBy: String(row.published_by), publishedByName: String(row.published_by_name),
-      contentPreview: String(row.content_preview), postizPostId: String(current.postiz_post_id), status: "drafted",
-      ...(row.project_id ? { projectId: String(row.project_id) } : {})
-    }, publishDate ?? confirmedAt);
+    const payload = createTrackingPayload(row, publishDate ?? confirmedAt);
     payload.timeKind = publishDate ? "publication" : "confirmation";
     if (releaseUrl) payload.releaseUrl = releaseUrl;
     if (Number(current.notify_published) === 1) {
@@ -386,9 +459,10 @@ async function confirmPublished(row: RowDataPacket, details: PostDetails): Promi
     }
     await connection.execute(
       `UPDATE social_post_tracking SET state='PUBLISHED', release_url=?, postiz_publish_date=?, confirmed_at=?,
-         last_checked_at=?, next_check_at=?, last_error=NULL, check_attempts=check_attempts+1 WHERE publish_audit_id=?`,
+         last_checked_at=?, next_check_at=?, save_action=?, review_status='unknown',
+         last_error=NULL, check_attempts=check_attempts+1 WHERE publish_audit_id=?`,
       [releaseUrl, publishDate ? formatUtc(publishDate) : null, formatUtc(confirmedAt), formatUtc(confirmedAt),
-        formatUtc(confirmedAt), row.publish_audit_id]
+        formatUtc(confirmedAt), parseSaveAction(details.saveAction), row.publish_audit_id]
     );
     return true;
   });
@@ -400,11 +474,13 @@ async function pollTrackedPosts(deadline: number): Promise<{ checked: number; co
   await database().execute(
     `UPDATE social_post_tracking AS tracking
        LEFT JOIN workspace_feishu_config AS config ON config.id=1
-       SET tracking.notify_published=0
-       WHERE tracking.notify_published=1 AND
-         (tracking.config_version<>COALESCE(config.version,0)
-          OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_published,0)=0)`
+       SET tracking.notify_published=IF(tracking.config_version<>COALESCE(config.version,0)
+             OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_published,0)=0,0,tracking.notify_published),
+           tracking.notify_rejected=IF(tracking.config_version<>COALESCE(config.version,0)
+             OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_rejected,0)=0,0,tracking.notify_rejected)
+       WHERE tracking.notify_published=1 OR tracking.notify_rejected=1`
   );
+  if (!hasTaskBudget(deadline)) return { checked: 0, confirmed: 0 };
   const now = new Date();
   const [tracking] = await database().execute<RowDataPacket[]>(
     `SELECT tracking.*, audit.project_id, audit.asset_id, audit.platform, audit.integration_id, audit.account_name,
@@ -416,12 +492,15 @@ async function pollTrackedPosts(deadline: number): Promise<{ checked: number; co
   const summary = { checked: 0, confirmed: 0 };
   if (!tracking.length || !hasTaskBudget(deadline)) return summary;
   const oldestSubmission = Math.min(...tracking.map(row => parseDatabaseUtc(row.submitted_at).getTime()));
+  const knownPublishDates = tracking.map(row => parseDatabaseUtc(row.postiz_publish_date).getTime()).filter(Number.isFinite);
+  const earliestRelevantDate = Math.min(oldestSubmission, ...knownPublishDates);
+  const latestRelevantDate = Math.max(now.getTime() + UNKNOWN_PUBLISH_HORIZON_MS, ...knownPublishDates.map(date => date + 86_400_000));
   const postIds = [...new Set(tracking.map(row => String(row.postiz_post_id)))];
   let details: Map<string, PostDetails>;
   try {
     details = await fetchPostizPostDetails(postIds, {
       // Upstream creates the draft before local audit persistence; include that boundary and modest clock skew.
-      startDate: new Date(oldestSubmission - 86_400_000), endDate: new Date(now.getTime() + 86_400_000)
+      startDate: new Date(earliestRelevantDate - 86_400_000), endDate: new Date(latestRelevantDate)
     });
   } catch {
     for (const row of tracking) {
@@ -439,7 +518,7 @@ async function pollTrackedPosts(deadline: number): Promise<{ checked: number; co
     } else if (post.state === "PUBLISHED") {
       if (await confirmPublished(row, post)) summary.confirmed++;
     } else {
-      await postponeTracking(row, post.state, post.state === "ERROR" ? "Postiz 报告帖子发布失败。" : null);
+      await recordObservedPost(row, post);
     }
     summary.checked++;
   }

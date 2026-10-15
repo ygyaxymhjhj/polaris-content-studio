@@ -27,6 +27,10 @@ interface PublishRow extends RowDataPacket {
   release_url: string | null;
   postiz_publish_date: string | Date | null;
   confirmed_at: string | Date | null;
+  review_status: string | null;
+  save_action: string | null;
+  rejected_detected_at: string | Date | null;
+  last_checked_at: string | Date | null;
   error: string | null;
   created_at: string;
 }
@@ -68,7 +72,8 @@ export async function GET(request: Request) {
   try {
     const [rows] = assetId
       ? await database().execute<PublishRow[]>(
-          `SELECT p.*, t.state AS tracking_state, t.release_url, t.postiz_publish_date, t.confirmed_at FROM social_publishes p
+          `SELECT p.*, t.state AS tracking_state, t.release_url, t.postiz_publish_date, t.confirmed_at,
+                  t.review_status, t.save_action, t.rejected_detected_at, t.last_checked_at FROM social_publishes p
              LEFT JOIN social_post_tracking t ON t.publish_audit_id = p.id
              LEFT JOIN projects pr ON pr.id = p.project_id
             WHERE p.asset_id = ? AND (pr.owner_hash = ? OR (p.project_id IS NULL AND p.published_by = ?))
@@ -76,7 +81,8 @@ export async function GET(request: Request) {
           [assetId, auth.ownerHash, auth.user.id]
         )
       : await database().execute<PublishRow[]>(
-          `SELECT p.*, t.state AS tracking_state, t.release_url, t.postiz_publish_date, t.confirmed_at FROM social_publishes p
+          `SELECT p.*, t.state AS tracking_state, t.release_url, t.postiz_publish_date, t.confirmed_at,
+                  t.review_status, t.save_action, t.rejected_detected_at, t.last_checked_at FROM social_publishes p
              LEFT JOIN social_post_tracking t ON t.publish_audit_id = p.id
              JOIN projects pr ON pr.id = p.project_id
             WHERE p.project_id = ? AND pr.owner_hash = ?
@@ -100,6 +106,11 @@ export async function GET(request: Request) {
         : null,
       scheduledAt: row.scheduled_at,
       status: row.tracking_state === "PUBLISHED" ? "published" : row.status,
+      reviewStatus: row.review_status === "pending" || row.review_status === "rejected" ? row.review_status : "unknown",
+      saveAction: ["pass", "update", "draft", "schedule", "now"].includes(row.save_action ?? "") ? row.save_action : null,
+      rejectedDetectedAt: formatTrackingTimestamp(row.rejected_detected_at),
+      lastCheckedAt: formatTrackingTimestamp(row.last_checked_at),
+      postizState: ["DRAFT", "QUEUE", "PUBLISHED", "ERROR"].includes(row.tracking_state ?? "") ? row.tracking_state : null,
       error: row.error,
       createdAt: new Date(row.created_at).toISOString()
     }));
