@@ -159,7 +159,7 @@ export interface PostizPublishRequest {
 const DEFAULT_POSTIZ_SETTINGS: Record<string, object> = {
   x: { __type: "x", who_can_reply_post: "everyone" },
   instagram: { __type: "instagram", post_type: "post" },
-  facebook: { __type: "facebook" },
+  facebook: { __type: "facebook", post_type: "post" },
   threads: { __type: "threads" },
   linkedin: { __type: "linkedin" }
 };

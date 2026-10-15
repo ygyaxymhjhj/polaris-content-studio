@@ -74,6 +74,17 @@ test("draft hand-off succeeds without inventing an ID when upstream omits it", a
   }
 });
 
+test("Facebook drafts include the normal post type required for later publication", async () => {
+  createResponse = () => Response.json([{ postId: "facebook-draft-one" }]);
+  const result = await postiz.publishToPostiz({
+    integrationId: "facebook-page-one", content: "Facebook draft", platform: "facebook"
+  });
+  assert.equal(result.success, true);
+  const payload = JSON.parse(capturedRequests.at(-1).options.body);
+  assert.equal(payload.type, "draft", "Adding Facebook settings must not publish immediately");
+  assert.deepEqual(payload.posts[0].settings, { __type: "facebook", post_type: "post" });
+});
+
 test("draft hand-off retains only IDs actually returned upstream", async () => {
   for (const upstreamBody of [
     [{ postId: "real-post-one", integration: "channel-one" }],
