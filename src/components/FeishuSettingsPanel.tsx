@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { Bell, Loader2 } from "lucide-react";
+import { AlertCircle, Bell, Check, FileCheck2, Loader2, LockKeyhole, Send } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 
 interface FeishuSettings {
@@ -204,53 +204,93 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
 
   const displayTime = (value: string | null) => value ? (Number.isNaN(Date.parse(value)) ? t("Unknown") : new Date(value).toLocaleString()) : t("Never");
   return (
-    <section className="settings-card settings-card-wide" aria-labelledby="feishu-settings-title" aria-busy={loading || Boolean(busy)}>
-      <div className="settings-card-icon"><Bell size={18} aria-hidden="true" /></div>
-      <h2 id="feishu-settings-title">{t("Feishu group notifications")}</h2>
-      <p className="members-intro" id="feishu-sharing-warning">{t("The shared group receives submission summaries from all members. Confirm that everyone in the group may see them. Messages do not mention @all by default.")}</p>
-      {loading && <p role="status">{t("Loading Feishu settings...")}</p>}
+    <section className="settings-card settings-card-wide feishu-panel" aria-labelledby="feishu-settings-title" aria-busy={loading || Boolean(busy)}>
+      <header className="feishu-header">
+        <div className="feishu-heading">
+          <span className="feishu-icon"><Bell size={20} aria-hidden="true" /></span>
+          <div>
+            <h2 id="feishu-settings-title">{t("Feishu group notifications")}</h2>
+            <p>{t("Draft reviews and publication updates, delivered to your group.")}</p>
+          </div>
+        </div>
+        {settings && <label className="feishu-master-toggle feishu-switch">
+          <span>{t(enabled ? "Notifications on" : "Notifications off")}</span>
+          <input type="checkbox" checked={enabled} disabled={Boolean(busy) || loading} onChange={event => setEnabled(event.target.checked)} />
+          <span className="feishu-switch-track" aria-hidden="true" />
+        </label>}
+      </header>
+      {loading && <p className="feishu-feedback" role="status">{t("Loading Feishu settings...")}</p>}
       {settings && (
         <>
-          <div role="status" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-            <span>{t("Webhook")}: <strong>{t(settings.webhookConfigured ? "Configured" : "Not configured")}</strong></span>
-            <span>{t("Signing secret")}: <strong>{t(settings.signingConfigured ? "Configured" : "Not configured")}</strong></span>
-            <span>{t("Encryption")}: <strong>{t(settings.encryptionReady ? "Ready" : "Not ready")}</strong></span>
-          </div>
-          {!settings.encryptionReady && <p className="login-error" role="alert">{t("Saving is disabled until the server administrator configures FEISHU_ENCRYPTION_KEY for storage encryption. This server key is not the bot signing secret and is required even without signatures. Never enter it here.")}</p>}
+          {!settings.encryptionReady && <p className="feishu-feedback feishu-error" role="alert"><AlertCircle size={16} aria-hidden="true" />{t("Configure FEISHU_ENCRYPTION_KEY on the server to save credentials.")}</p>}
           <form onSubmit={saveSettings} aria-describedby="feishu-sharing-warning">
-            <fieldset disabled={Boolean(busy) || loading} style={{ border: 0, padding: 0, margin: 0, display: "grid", gap: 14, minWidth: 0 }}>
-              <legend className="field-label">{t("Notification preferences")}</legend>
-              <label><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} /> {t("Enable Feishu notifications")}</label>
-              <label><input type="checkbox" checked={notifyDrafts} onChange={event => setNotifyDrafts(event.target.checked)} /> {t("Notify when a draft is submitted")}</label>
-              <label><input type="checkbox" checked={notifyPublished} onChange={event => setNotifyPublished(event.target.checked)} /> {t("Notify when a post is published")}</label>
-              <p id="feishu-credentials-help">{t("Existing credentials are never displayed. Leave a field blank to keep its saved value. Clear the webhook explicitly or disable signature verification and save to remove the saved signing secret.")}</p>
-              <label className="field-label" htmlFor="feishu-webhook">{t("New webhook URL")}
-                <input id="feishu-webhook" type="password" autoComplete="new-password" spellCheck={false} value={webhookUrl} disabled={clearWebhook} aria-describedby="feishu-credentials-help" onChange={event => setWebhookUrl(event.target.value)} style={{ width: "100%" }} />
-              </label>
-              <label><input type="checkbox" checked={clearWebhook} onChange={event => { setClearWebhook(event.target.checked); if (event.target.checked) setWebhookUrl(""); }} /> {t("Clear the saved webhook URL")}</label>
-              <label><input type="checkbox" checked={useSignature} aria-describedby="feishu-signature-help" onChange={event => { setUseSignature(event.target.checked); if (!event.target.checked) setSigningSecret(""); }} /> {t("Enable signature verification (only if enabled in the Feishu bot)")}</label>
-              <p id="feishu-signature-help">{t("A signing secret is required only when signature verification is enabled and no secret is saved.")}</p>
-              <label className="field-label" htmlFor="feishu-signing-secret">{t("New signing secret")}
-                <input id="feishu-signing-secret" type="password" autoComplete="new-password" spellCheck={false} value={signingSecret} disabled={!useSignature || clearWebhook} required={needsSigningSecret} aria-describedby="feishu-credentials-help feishu-signature-help" onChange={event => setSigningSecret(event.target.value)} style={{ width: "100%" }} />
-              </label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                <button className="primary-button" type="submit" disabled={!settings.encryptionReady || !dirty}>{busy === "save" && <Loader2 size={14} className="spin" aria-hidden="true" />} {t("Save Feishu settings")}</button>
-                <button className="secondary-button" type="button" disabled={!canTest} aria-describedby="feishu-test-help" onClick={() => void send("test")}>{busy === "test" && <Loader2 size={14} className="spin" aria-hidden="true" />} {t("Send test message")}</button>
+            <fieldset className="feishu-fieldset" disabled={Boolean(busy) || loading}>
+              <legend className="feishu-sr-only">{t("Notification preferences")}</legend>
+              <div className="feishu-columns">
+                <section className="feishu-events" aria-labelledby="feishu-events-title">
+                  <h3 id="feishu-events-title">{t("Notification events")}</h3>
+                  <label className="feishu-event">
+                    <FileCheck2 size={20} aria-hidden="true" />
+                    <span className="feishu-event-copy"><strong>{t("Draft review")}</strong><span>{t("When someone submits a draft")}</span></span>
+                    <input className="feishu-checkbox" type="checkbox" checked={notifyDrafts} onChange={event => setNotifyDrafts(event.target.checked)} />
+                    <span className="feishu-checkmark" aria-hidden="true"><Check size={13} /></span>
+                  </label>
+                  <label className="feishu-event">
+                    <Send size={20} aria-hidden="true" />
+                    <span className="feishu-event-copy"><strong>{t("Post published")}</strong><span>{t("After publication is confirmed")}</span></span>
+                    <input className="feishu-checkbox" type="checkbox" checked={notifyPublished} onChange={event => setNotifyPublished(event.target.checked)} />
+                    <span className="feishu-checkmark" aria-hidden="true"><Check size={13} /></span>
+                  </label>
+                  <p className="feishu-sharing" id="feishu-sharing-warning">{t("Workspace updates will be sent to this group.")}</p>
+                </section>
+                <section className="feishu-connection" aria-labelledby="feishu-connection-title">
+                  <div className="feishu-section-heading">
+                    <h3 id="feishu-connection-title">{t("Bot connection")}</h3>
+                    <span className="feishu-badge">{settings.webhookConfigured && <Check size={12} aria-hidden="true" />}{t(settings.webhookConfigured ? "Webhook saved" : "Not connected")}</span>
+                  </div>
+                  <label className="feishu-field" htmlFor="feishu-webhook">{t("Webhook URL")}
+                    <input className={clearWebhook ? "feishu-input feishu-input-removing" : "feishu-input"} id="feishu-webhook" type="password" autoComplete="new-password" spellCheck={false} placeholder={t(settings.webhookConfigured ? "Saved; enter a replacement" : "Paste your bot webhook URL")} value={webhookUrl} disabled={clearWebhook} onChange={event => setWebhookUrl(event.target.value)} />
+                  </label>
+                  <label className="feishu-remove">
+                    <input className="feishu-checkbox" type="checkbox" checked={clearWebhook} onChange={event => { setClearWebhook(event.target.checked); if (event.target.checked) setWebhookUrl(""); }} />
+                    <span className="feishu-checkmark" aria-hidden="true"><Check size={13} /></span>
+                    <span>{t("Remove connection")}</span>
+                  </label>
+                  <label className="feishu-signature feishu-switch">
+                    <span>{t("Signature verification")} <span className="feishu-optional">{t("Optional")}</span></span>
+                    <input type="checkbox" checked={useSignature} onChange={event => { setUseSignature(event.target.checked); if (!event.target.checked) setSigningSecret(""); }} />
+                    <span className="feishu-switch-track" aria-hidden="true" />
+                  </label>
+                  <label className="feishu-field feishu-secret" htmlFor="feishu-signing-secret" hidden={!useSignature}>{t("Signing secret")}
+                    <input className="feishu-input" id="feishu-signing-secret" type="password" autoComplete="new-password" spellCheck={false} placeholder={t(settings.signingConfigured ? "Saved; enter a replacement" : "Enter signing secret")} value={signingSecret} disabled={!useSignature || clearWebhook} required={needsSigningSecret} onChange={event => setSigningSecret(event.target.value)} />
+                  </label>
+                  {settings.encryptionReady && <span className="feishu-encryption"><LockKeyhole size={13} aria-hidden="true" />{t("Credentials encrypted")}</span>}
+                </section>
               </div>
-              <p id="feishu-test-help">{t(dirty ? "Save your changes before testing. Only the saved configuration is tested." : !settings.webhookConfigured ? "Save a webhook URL before sending a test message." : "Testing sends a real message to the saved group, even when automatic notifications are disabled.")}</p>
+              <footer className="feishu-actions">
+                <div className="feishu-save-state">
+                  <span className={dirty ? "feishu-dirty-dot" : "feishu-saved-icon"} aria-hidden="true">{!dirty && <Check size={14} />}</span>
+                  <span>{t(dirty ? "Unsaved changes" : "All changes saved")}</span>
+                </div>
+                <div className="feishu-buttons">
+                  <button className="secondary-button" type="button" aria-label={t("Send test message")} disabled={!canTest} aria-describedby={dirty || !settings.webhookConfigured ? "feishu-test-help" : undefined} onClick={() => void send("test")}>{busy === "test" ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}{t("Send test message")}</button>
+                  <button className="primary-button" type="submit" disabled={!settings.encryptionReady || !dirty}>{busy === "save" && <Loader2 size={14} className="spin" aria-hidden="true" />}{t("Save changes")}</button>
+                </div>
+                {(dirty || !settings.webhookConfigured) && <p className="feishu-test-help" id="feishu-test-help">{t(dirty ? "Save your changes to test." : "Add a webhook to test.")}</p>}
+              </footer>
             </fieldset>
           </form>
-          <dl style={{ display: "grid", gridTemplateColumns: "minmax(120px, 1fr) minmax(0, 2fr)", gap: 10, marginTop: 20, fontSize: 12 }}>
-            <dt>{t("Configuration updated")}</dt><dd style={{ margin: 0 }}>{displayTime(settings.updatedAt)} ({t("Version")} {settings.version})</dd>
-            <dt>{t("Last test")}</dt><dd style={{ margin: 0 }}>{displayTime(settings.lastTestAt)} / {t(settings.lastTestOk === true ? "Successful" : settings.lastTestOk === false ? "Failed" : "Not tested")}</dd>
-            <dt>{t("Last worker update")}</dt><dd style={{ margin: 0 }}>{displayTime(settings.lastWorkerAt)}</dd>
+          <dl className="feishu-metadata">
+            <div><dt>{t("Configuration updated")} <span className="feishu-version">v{settings.version}</span></dt><dd>{displayTime(settings.updatedAt)}</dd></div>
+            <div><dt>{t("Last test")}</dt><dd>{settings.lastTestAt ? <>{displayTime(settings.lastTestAt)} · {t(settings.lastTestOk === true ? "Successful" : settings.lastTestOk === false ? "Failed" : "Not tested")}</> : t("Not tested")}</dd></div>
+            <div><dt>{t("Last worker update")}</dt><dd>{displayTime(settings.lastWorkerAt)}</dd></div>
           </dl>
-          {settings.lastTestError && <p className="login-error">{t("Last test error")}: {redactError(settings.lastTestError)}</p>}
-          {settings.lastDeliveryError && <p className="login-error">{t("Last delivery error (redacted)")}: {redactError(settings.lastDeliveryError)}</p>}
+          {settings.lastTestError && <p className="feishu-feedback feishu-error">{t("Last test error")}: {redactError(settings.lastTestError)}</p>}
+          {settings.lastDeliveryError && <p className="feishu-feedback feishu-error">{t("Last delivery error (redacted)")}: {redactError(settings.lastDeliveryError)}</p>}
         </>
       )}
-      {notice && <p className="members-notice" role="status">{t(notice)}</p>}
-      {error && <p className="login-error" role="alert">{t(error)}</p>}
+      {notice && <p className="feishu-feedback" role="status">{t(notice)}</p>}
+      {error && <p className="feishu-feedback feishu-error" role="alert">{t(error)}</p>}
       {!loading && !settings && <button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => void loadSettings(requestLifetime.current?.signal)}>{t("Retry")}</button>}
     </section>
   );

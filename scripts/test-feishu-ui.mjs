@@ -62,7 +62,8 @@ const browserBundle = `(() => {
   }
   load(${JSON.stringify(harnessPath)});
 })();`;
-const styles = readFileSync(resolve(repository, 'src/app/globals.css'), 'utf8').replace(/@import[^;]+;/g, '');
+// Font URLs contain semicolons; removing only up to the first one corrupts :root tokens.
+const styles = readFileSync(resolve(repository, 'src/app/globals.css'), 'utf8').replace(/@import\s+url\([^)]*\)\s*;/g, '');
 const server = createServer((request, response) => {
   if (request.url === '/bundle.js') {
     response.setHeader('Content-Type', 'application/javascript');
@@ -72,7 +73,7 @@ const server = createServer((request, response) => {
     response.end(styles);
   } else if (request.url === '/') {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    response.end('<!doctype html><html lang="en"><head><link rel="stylesheet" href="/styles.css"></head><body><main class="content-wrap"><div class="settings-grid" id="root"></div></main><script src="/bundle.js"></script></body></html>');
+    response.end('<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/styles.css"></head><body><main class="content-wrap"><div class="settings-grid" id="root"></div></main><script src="/bundle.js"></script></body></html>');
   } else {
     response.writeHead(500);
     response.end('Unexpected request: every API call must be mocked.');
@@ -146,7 +147,7 @@ try {
   };
   const save = async () => {
     const previousCount = patches.length;
-    await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('[aria-busy="false"]'));
     assert.equal(patches.length, previousCount + 1);
   };
@@ -157,15 +158,16 @@ try {
     assert.equal(await page.locator('section').count(), 0);
   }
   assert.equal(getCount, 0, 'Non-administrators must not fetch settings');
-  const signatureToggle = page.getByLabel('Enable signature verification (only if enabled in the Feishu bot)', { exact: true });
-  const secretInput = page.getByLabel('New signing secret', { exact: true });
+  const signatureToggle = page.getByRole('checkbox', { name: 'Signature verification Optional', exact: true });
+  const secretInput = page.getByLabel('Signing secret', { exact: true });
+  const notificationsToggle = page.getByRole('checkbox', { name: /^Notifications (on|off)$/ });
   settings = { ...initialSettings, webhookConfigured: false, signingConfigured: false };
   await mount();
   assert.equal(await signatureToggle.isChecked(), false);
   assert.equal(await secretInput.isDisabled(), true);
   assert.equal(await secretInput.evaluate(input => input.required), false);
-  await page.getByLabel('Enable Feishu notifications', { exact: true }).check();
-  await page.getByLabel('New webhook URL').fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-unsigned-ui-only');
+  await notificationsToggle.check();
+  await page.getByLabel('Webhook URL', { exact: true }).fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-unsigned-ui-only');
   await save();
   assert.deepEqual(patches.at(-1), {
     enabled: true, notifyDrafts: true, notifyPublished: false,
@@ -182,13 +184,14 @@ try {
   await signatureToggle.check();
   assert.equal(await secretInput.isEnabled(), true);
   assert.equal(await secretInput.evaluate(input => input.required), true);
-  assert.match(await page.locator('#feishu-signature-help').innerText(), /required only when signature verification is enabled/);
+  assert.equal(await secretInput.isVisible(), true);
+  assert.equal(await page.locator('#feishu-signature-help').count(), 0, 'Signature instructions appear only as validation errors, not permanent prose');
   const patchesBeforeMissingSecret = patches.length;
-  await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   assert.equal(await secretInput.evaluate(input => input.validity.valueMissing), true);
   assert.equal(patches.length, patchesBeforeMissingSecret, 'Only newly enabled signature mode requires a secret');
   await secretInput.fill('   ');
-  await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await page.getByRole('alert').waitFor();
   assert.match(await page.getByRole('alert').innerText(), /required only when signature verification is enabled/);
   assert.equal(patches.length, patchesBeforeMissingSecret, 'Whitespace is not a signing secret');
@@ -197,7 +200,7 @@ try {
   assert.equal(await secretInput.inputValue(), '', 'Disabling signature mode discards the local secret');
   assert.equal(await secretInput.isDisabled(), true);
   assert.equal(await secretInput.evaluate(input => input.required), false);
-  assert.equal(await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Save changes', exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isEnabled(), true);
   await signatureToggle.check();
   await secretInput.fill('fake-new-signed-secret');
@@ -209,31 +212,31 @@ try {
   await signatureToggle.uncheck();
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
   await signatureToggle.check();
-  assert.equal(await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Save changes', exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isEnabled(), true);
   console.log('PASS: only new signed mode requires a nonblank secret; signature toggles track dirty state without silently clearing saved credentials.');
 
   settings = { ...initialSettings };
   await mount();
   assert.equal(await signatureToggle.isChecked(), true);
-  assert.equal(await page.getByLabel('New webhook URL').inputValue(), '');
-  assert.equal(await page.getByLabel('New signing secret').inputValue(), '');
-  assert.equal(await page.getByLabel('New webhook URL').getAttribute('type'), 'password');
-  assert.equal(await page.getByLabel('New signing secret').getAttribute('type'), 'password');
+  assert.equal(await page.getByLabel('Webhook URL', { exact: true }).inputValue(), '');
+  assert.equal(await secretInput.inputValue(), '');
+  assert.equal(await page.getByLabel('Webhook URL', { exact: true }).getAttribute('type'), 'password');
+  assert.equal(await secretInput.getAttribute('type'), 'password');
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isEnabled(), true);
-  await page.getByLabel('Enable Feishu notifications', { exact: true }).check();
+  await notificationsToggle.check();
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
   assert.match(await page.locator('#feishu-test-help').innerText(), /Save your changes/);
   await save();
   assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false });
   console.log('PASS: administrator-only real component; password fields never prefilled; blank values preserve saved credentials; dirty saved-only test gate.');
 
-  await page.getByLabel('New webhook URL').fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-ui-only');
-  await page.getByLabel('New signing secret').fill('fake-ui-secret');
+  await page.getByLabel('Webhook URL', { exact: true }).fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-ui-only');
+  await secretInput.fill('fake-ui-secret');
   await save();
   assert.equal(patches.at(-1).signingSecret, 'fake-ui-secret');
-  assert.equal(await page.getByLabel('New webhook URL').inputValue(), '');
-  assert.equal(await page.getByLabel('New signing secret').inputValue(), '');
+  assert.equal(await page.getByLabel('Webhook URL', { exact: true }).inputValue(), '');
+  assert.equal(await secretInput.inputValue(), '');
   assert.equal(await page.evaluate(() => location.search + localStorage.length + sessionStorage.length), '00');
   await signatureToggle.uncheck();
   await save();
@@ -242,12 +245,12 @@ try {
   assert.equal(await signatureToggle.isChecked(), false);
   assert.equal(await secretInput.isDisabled(), true);
   assert.equal(await secretInput.evaluate(input => input.required), false);
-  await page.getByLabel('Clear the saved webhook URL', { exact: true }).check();
+  await page.getByLabel('Remove connection', { exact: true }).check();
   await save();
   await page.getByRole('alert').waitFor();
   assert.match(await page.getByRole('alert').innerText(), /webhook URL is required/);
   assert.equal(settings.webhookConfigured, true, 'An enabled configuration cannot clear its webhook');
-  await page.getByLabel('Enable Feishu notifications', { exact: true }).uncheck();
+  await notificationsToggle.uncheck();
   await save();
   assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, clearWebhook: true, clearSigningSecret: true });
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
@@ -257,8 +260,8 @@ try {
   await mount();
   await signatureToggle.check();
   assert.equal(await secretInput.evaluate(input => input.required), true);
-  await page.getByLabel('Enable Feishu notifications', { exact: true }).uncheck();
-  await page.getByLabel('Clear the saved webhook URL', { exact: true }).check();
+  await notificationsToggle.uncheck();
+  await page.getByLabel('Remove connection', { exact: true }).check();
   assert.equal(await secretInput.isDisabled(), true);
   assert.equal(await secretInput.evaluate(input => input.required), false);
   await save();
@@ -272,9 +275,9 @@ try {
   await mount();
   patchStatus = 400;
   patchError = 'Rejected fake-current-secret at https://example.test/fake-private-webhook';
-  await page.getByLabel('New signing secret').fill('fake-current-secret');
+  await secretInput.fill('fake-current-secret');
   await save();
-  assert.equal(await page.getByLabel('New signing secret').inputValue(), 'fake-current-secret', 'A failed save must remain editable for retry');
+  assert.equal(await secretInput.inputValue(), 'fake-current-secret', 'A failed save must remain editable for retry');
   assert.doesNotMatch(await page.getByRole('alert').innerText(), /fake-current-secret|example.test/);
   patchStatus = 200;
   patchError = 'Access denied';
@@ -284,14 +287,14 @@ try {
   assert.equal(await page.locator('input[type="password"]').count(), 0);
   getStatus = getStatusAfterSave = 200;
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
-  await page.getByLabel('New signing secret').waitFor();
-  assert.equal(await page.getByLabel('New signing secret').inputValue(), '', 'A successful save must clear credentials even when the status refresh fails');
+  await secretInput.waitFor();
+  assert.equal(await secretInput.inputValue(), '', 'A successful save must clear credentials even when the status refresh fails');
   console.log('PASS: failed saves retain editable values but redact errors; successful saves clear credentials despite a failed refresh, with safe retry.');
 
   settings = { ...initialSettings, encryptionReady: false };
   await mount();
-  await page.getByLabel('New webhook URL').fill('fake-unsaved-value');
-  assert.equal(await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).isDisabled(), true);
+  await page.getByLabel('Webhook URL', { exact: true }).fill('fake-unsaved-value');
+  assert.equal(await page.getByRole('button', { name: 'Save changes', exact: true }).isDisabled(), true);
   assert.match(await page.getByRole('alert').innerText(), /FEISHU_ENCRYPTION_KEY/);
   settings = { ...initialSettings };
   await mount();
@@ -300,9 +303,9 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-busy="false"]'));
   assert.deepEqual(tests.at(-1), {});
   assert.match(await page.locator('dl').innerText(), /Successful/);
-  assert.match(await page.locator('section').innerText(), /Last worker update/);
-  assert.match(await page.locator('section').innerText(), /Last delivery error \(redacted\)/);
-  assert.doesNotMatch(await page.locator('section').innerText(), /example.test/);
+  assert.match(await page.locator('.feishu-panel').innerText(), /Last worker update/);
+  assert.match(await page.locator('.feishu-panel').innerText(), /Last delivery error \(redacted\)/);
+  assert.doesNotMatch(await page.locator('.feishu-panel').innerText(), /example.test/);
   testStatus = 429;
   await page.getByRole('button', { name: 'Send test message', exact: true }).click();
   await page.getByRole('alert').waitFor();
@@ -317,8 +320,8 @@ try {
       testStatus = action === 'POST' ? status : 200;
       await mount();
       if (action === 'PATCH') {
-        await page.getByLabel('New signing secret').fill('credential-must-disappear');
-        await page.getByRole('button', { name: 'Save Feishu settings', exact: true }).click();
+        await secretInput.fill('credential-must-disappear');
+        await page.getByRole('button', { name: 'Save changes', exact: true }).click();
       } else if (action === 'POST') {
         await page.getByRole('button', { name: 'Send test message', exact: true }).click();
       }
@@ -328,12 +331,12 @@ try {
   }
   getStatus = patchStatus = testStatus = 200;
   await mount();
-  await page.getByLabel('New signing secret').fill('discard-on-role-change');
+  await secretInput.fill('discard-on-role-change');
   await page.evaluate(() => window.renderPanel(false));
   await page.waitForFunction(() => document.querySelector('section') === null);
   await page.evaluate(() => window.renderPanel(true));
-  await page.getByLabel('New signing secret').waitFor();
-  assert.equal(await page.getByLabel('New signing secret').inputValue(), '');
+  await secretInput.waitFor();
+  assert.equal(await secretInput.inputValue(), '');
   envelope = true;
   await mount();
   await page.getByRole('alert').waitFor();
@@ -342,11 +345,90 @@ try {
   envelope = false;
   await mount(true, 'zh');
   await page.getByRole('heading', { name: '\u98de\u4e66\u7fa4\u901a\u77e5' }).waitFor();
-  assert.equal(await page.getByLabel('\u542f\u7528\u7b7e\u540d\u6821\u9a8c\uff08\u4ec5\u5728\u98de\u4e66\u673a\u5668\u4eba\u5df2\u542f\u7528\u65f6\u52fe\u9009\uff09', { exact: true }).isChecked(), true);
+  assert.equal(await page.getByRole('checkbox', { name: '\u7b7e\u540d\u6821\u9a8c \u53ef\u9009', exact: true }).isChecked(), true);
   for (const language of ['vi', 'th']) {
     await page.evaluate(language => window.renderPanel(true, language), language);
     await page.getByRole('heading', { name: 'Feishu group notifications' }).waitFor();
   }
+  settings = { ...initialSettings, enabled: true, lastDeliveryError: null };
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await mount(true, 'zh');
+  const panel = page.locator('.feishu-panel');
+  const removedCredentialNotice = /Existing credentials are never displayed|已有凭据不会回填或显示|输入框留空表示保留已保存值/;
+  assert.doesNotMatch(await panel.innerHTML(), removedCredentialNotice, 'Removed instructions must not remain hidden in the DOM');
+  const desktopLayout = await panel.evaluate(element => {
+    const events = element.querySelector('.feishu-events').getBoundingClientRect();
+    const connection = element.querySelector('.feishu-connection').getBoundingClientRect();
+    return {
+      height: element.getBoundingClientRect().height,
+      columnsAligned: Math.abs(events.top - connection.top) < 2 && connection.left > events.right,
+      paragraphsReset: [...element.querySelectorAll('p')].every(paragraph => getComputedStyle(paragraph).minHeight === '0px'),
+      inputHeight: element.querySelector('#feishu-webhook').getBoundingClientRect().height,
+      background: getComputedStyle(element).backgroundColor,
+      enabledSwitch: getComputedStyle(element.querySelector('.feishu-switch-track')).backgroundColor,
+      inlineStyles: element.querySelectorAll('[style]').length
+    };
+  });
+  assert.equal(desktopLayout.columnsAligned, true, 'Desktop events and connection must share a row');
+  assert.ok(desktopLayout.height >= 450 && desktopLayout.height <= 650, `Desktop panel must remain compact: ${desktopLayout.height}px`);
+  assert.equal(desktopLayout.paragraphsReset, true, 'Shared card paragraph minimum height must not leak in');
+  assert.ok(desktopLayout.inputHeight >= 40);
+  assert.equal(desktopLayout.inlineStyles, 0);
+  assert.equal(desktopLayout.background, 'rgb(255, 254, 250)', 'The harness must preserve the real warm-white tokens');
+  assert.equal(desktopLayout.enabledSwitch, 'rgb(22, 21, 27)', 'An enabled switch must have a visible ink track');
+  const desktopScreenshot = process.env.TEST_SCREENSHOT_PATH || '/tmp/polaris-feishu-settings-desktop.png';
+  await page.screenshot({ path: desktopScreenshot, fullPage: true });
+  for (const width of [350, 375, 768, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    assert.equal(overflow, false, `No horizontal overflow at ${width}px`);
+    if (width === 375) {
+      const mobileLayout = await page.evaluate(() => {
+        const events = document.querySelector('.feishu-events').getBoundingClientRect();
+        const connection = document.querySelector('.feishu-connection').getBoundingClientRect();
+        return connection.top > events.bottom && Math.abs(events.left - connection.left) < 2;
+      });
+      assert.equal(mobileLayout, true, 'Mobile sections must stack');
+      const mobileScreenshot = process.env.TEST_SCREENSHOT_PATH ? process.env.TEST_SCREENSHOT_PATH.replace(/(\.[^.]+)?$/, '-mobile$1') : '/tmp/polaris-feishu-settings-mobile.png';
+      await page.screenshot({ path: mobileScreenshot, fullPage: true });
+      console.log(`SCREENSHOT: ${mobileScreenshot}`);
+    }
+  }
+  await mount(true, 'en');
+  assert.doesNotMatch(await panel.innerHTML(), removedCredentialNotice);
+  const visiblyNamedControls = [
+    notificationsToggle,
+    page.getByRole('checkbox', { name: /Draft review/ }),
+    page.getByRole('checkbox', { name: /Post published/ }),
+    page.getByRole('checkbox', { name: 'Remove connection', exact: true }),
+    signatureToggle,
+    page.getByLabel('Webhook URL', { exact: true }),
+    secretInput,
+    page.getByRole('button', { name: 'Send test message', exact: true }),
+    page.getByRole('button', { name: 'Save changes', exact: true })
+  ];
+  for (const control of visiblyNamedControls) {
+    assert.equal(await control.count(), 1, 'Each main control must be discoverable by its visible label');
+    if (await control.isEnabled()) {
+      await control.focus();
+      assert.equal(await control.evaluate(element => document.activeElement === element), true, 'Visibly named enabled controls must receive keyboard focus');
+    }
+  }
+  await signatureToggle.focus();
+  await page.keyboard.press('Space');
+  assert.equal(await signatureToggle.isChecked(), false);
+  assert.equal(await secretInput.isVisible(), false, 'Signature-off must hide the entire secret field');
+  assert.equal(await secretInput.isDisabled(), true);
+  assert.equal(await signatureToggle.evaluate(input => input.matches(':focus-visible')), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.getByRole('button', { name: 'Save changes', exact: true }).evaluate(button => document.activeElement === button), true, 'Tab must skip hidden credentials and the disabled test button');
+  await signatureToggle.focus();
+  await page.keyboard.press('Space');
+  assert.equal(await signatureToggle.isChecked(), true);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.ok(await page.locator('.feishu-switch-track').first().evaluate(track => parseFloat(getComputedStyle(track).transitionDuration) <= .001), 'Reduced motion must disable perceptible transitions, including the global minimal-duration override');
+  console.log(`PASS: compact desktop ${desktopLayout.height}px; scoped paragraph reset; 350/375/768/1280px layouts; hidden signature field, keyboard Space/Tab, reduced motion and removed instructions.`);
+  console.log(`SCREENSHOT: ${desktopScreenshot}`);
   assert.deepEqual(browserErrors, []);
   console.log('PASS: GET/PATCH/test 401 and 403 revoke and clear; live role change clears secrets; guessed envelope rejected; Chinese and English fallback; no browser errors.');
 } finally {
