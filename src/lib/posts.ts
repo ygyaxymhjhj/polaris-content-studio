@@ -281,7 +281,7 @@ export async function listManualPosts(ownerUserId: string, filters: PostListFilt
   const [rows] = await database().execute<ListedPostRow[]>(
     `${POST_STATUS_CTE}
      SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.target_count,
-            r.accepted_count, r.submitting_count, r.unsettled_count, r.platforms, r.status
+            r.accepted_count, r.submitting_count, r.unsettled_count, r.unknown_count, r.platforms, r.status
        FROM post_status r
       WHERE ${conditions ? `(${conditions}) AND ` : ""}(? = 'all' OR r.status = ?)
       ORDER BY r.updated_at DESC
@@ -334,7 +334,7 @@ export async function createManualPost(ownerUserId: string, input: CreatePostInp
 async function insertTargets(connection: PoolConnection, postId: string, targets: PostAccountSnapshot[], now: string): Promise<void> {
   if (!targets.length) return;
   const values = targets.slice(0, MAX_POST_TARGETS);
-  const placeholders = values.map(() => "(?,?,?,?,?,?,?)").join(",");
+  const placeholders = values.map(() => "(?,?,?,?,?,?,?,?)").join(",");
   await connection.execute(
     `INSERT INTO post_targets (id, post_id, integration_id, platform, account_name, status, created_at, updated_at)
      VALUES ${placeholders}
