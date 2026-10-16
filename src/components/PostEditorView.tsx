@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   Copy,
   ExternalLink,
-  ImageOff,
   Loader2,
   Save,
   Send,
@@ -15,15 +14,12 @@ import {
 } from "lucide-react";
 import { LocaleContext, translate } from "@/lib/i18n";
 import AssetImageEditor from "@/components/AssetImageEditor";
-import SocialPreview from "@/components/SocialPreview";
-import { PLATFORM_META, type ContentAsset, type Platform, type SocialAccount } from "@/lib/types";
+import PostAccountPicker from "@/components/PostAccountPicker";
+import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
 import {
-  MAX_POST_TARGETS,
   POST_CONTENT_MAX_LENGTH,
   POST_TARGET_STATUS_LABEL,
-  POST_TITLE_MAX_LENGTH,
   formatPostTimestamp,
-  isSupportedPlatform,
   platformRuleFor,
   type ManualPostDetail,
   type PostTarget
@@ -86,7 +82,8 @@ export default function PostEditorView({
   const [frozenNotice, setFrozenNotice] = useState("");
   const [submitting, setSubmitting] = useState<string[]>([]);
   const [submitError, setSubmitError] = useState("");
-  const [previewPlatform, setPreviewPlatform] = useState<Platform>("x");
+  const [preparingPush, setPreparingPush] = useState(false);
+  const pushFlight = useRef(false);
   const [savedRevision, setSavedRevision] = useState(0);
   const [copiedNotice, setCopiedNotice] = useState("");
 
@@ -108,8 +105,6 @@ export default function PostEditorView({
       setImageDirty(false);
       setImageName(detail.imageName ?? "");
       setTargetIds(detail.targets.map((target) => target.integrationId));
-      const firstPlatform = detail.targets[0]?.platform || "";
-      setPreviewPlatform(isSupportedPlatform(firstPlatform) ? firstPlatform : "x");
     }
     savedPayload.current = JSON.stringify([detail.title, detail.content, false, detail.targets.map((target) => target.integrationId).sort().join(",")]);
     setSavedRevision((revision) => revision + 1);
@@ -121,7 +116,7 @@ export default function PostEditorView({
     if (postId === "new") {
       setPost(null); postRef.current = null; versionRef.current = 0;
       setTitle(""); setContent(""); setImage(""); setImageDirty(false); setImageName("");
-      setTargetIds([]); setPreviewPlatform("x");
+      setTargetIds([]);
       savedPayload.current = JSON.stringify(["", "", false, ""]);
       setSavedRevision((revision) => revision + 1);
       setLoading(false); setLoadError(""); setConflict(false); setSaveError(""); setSubmitError(""); setFrozenNotice("");
@@ -160,6 +155,7 @@ export default function PostEditorView({
   const dirty = payloadKey !== savedPayload.current;
   void savedRevision;
   const editable = post ? post.editable : true;
+  const controlsLocked = !editable || preparingPush || Boolean(submitting.length);
 
   const reloadPost = useCallback(async () => {
     const current = postRef.current;
@@ -283,29 +279,38 @@ export default function PostEditorView({
   // Debounced autosave. It stays parked while accounts are submitting: those requests carry the
   // current version, and a save landing in between would invalidate them mid-flight.
   useEffect(() => {
-    if (!dirty || loading || conflict || imageBusy || submitting.length) return;
+    if (!editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
     const timer = window.setTimeout(() => { void save(); }, 1200);
     return () => window.clearTimeout(timer);
-  }, [dirty, loading, conflict, imageBusy, submitting.length, save, title, content, image, imageDirty, targetIds, postId]);
+  }, [editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, imageDirty, targetIds, postId]);
 
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
-      if (dirty || saving || submitting.length) {
+      if (dirty || saving || preparingPush || submitting.length) {
         event.preventDefault();
         event.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", preventLoss);
     return () => window.removeEventListener("beforeunload", preventLoss);
-  }, [dirty, saving, submitting.length]);
+  }, [dirty, saving, preparingPush, submitting.length]);
 
   const pushTargets = useCallback(async (integrationIds: string[]) => {
-    if (!integrationIds.length) return;
+    if (!integrationIds.length || pushFlight.current || accountsLoading || accountsError || imageBusy || conflict) return;
+    pushFlight.current = true;
+    setPreparingPush(true);
     setSubmitError("");
     setFrozenNotice("");
-    const saved = await save();
+    let saved = await save();
+    // An older autosave may have been in flight when the push was clicked. Flush the latest
+    // snapshot before submitting so selected accounts never receive an earlier edit.
+    const latest = payloadRef.current;
+    const latestKey = JSON.stringify([latest.title, latest.content, latest.imageDirty, [...latest.targetIds].sort().join(",")]);
+    if (saved && latestKey !== savedPayload.current) saved = await save();
     if (!saved) {
       setSubmitError(t("Save the post before submitting it."));
+      pushFlight.current = false;
+      setPreparingPush(false);
       return;
     }
     setSubmitting((current) => [...new Set([...current, ...integrationIds])]);
@@ -337,12 +342,14 @@ export default function PostEditorView({
       }
     };
     await Promise.all([worker(), worker()]);
+    pushFlight.current = false;
+    setPreparingPush(false);
     onSaved();
-  }, [save, onSaved, reloadPost, t]);
+  }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict]);
 
   async function copyAsNewDraft() {
     const current = postRef.current;
-    if (!current) return;
+    if (!current || pushFlight.current || imageBusy || saving) return;
     setCopiedNotice("");
     try {
       const response = await fetch(`/api/posts/${current.id}/duplicate`, { method: "POST" });
@@ -355,21 +362,12 @@ export default function PostEditorView({
   }
 
   async function leaveToPosts() {
-    if (dirty) await save();
+    if (dirty && !await save()) return;
     onBack();
   }
 
   const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
-  const groupedAccounts = useMemo(() => {
-    const groups = new Map<string, Account[]>();
-    for (const account of accounts) {
-      const key = account.identifier || "other";
-      groups.set(key, [...(groups.get(key) || []), account]);
-    }
-    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [accounts]);
-
-  const targets: PostTarget[] = post?.targets ?? targetIds.map((integrationId) => ({
+  const targets: PostTarget[] = targetIds.map((integrationId) => post?.targets.find(target => target.integrationId === integrationId) ?? ({
     integrationId,
     platform: accountsById.get(integrationId)?.identifier || "",
     accountName: accountsById.get(integrationId)?.name || integrationId,
@@ -389,33 +387,13 @@ export default function PostEditorView({
   function targetBlocker(target: PostTarget): string {
     if (!trimmedContent) return t("Add post text before submitting.");
     const rule = platformRuleFor(target.platform);
-    if (rule && content.length > rule.maxCharacters) {
-      return `${t("Longer than this platform's limit")} (${rule.maxCharacters})`;
-    }
     if (rule?.requiresImage && !hasImage) return t("This platform requires an image.");
     return "";
   }
 
   const pendingPushIds = targets
-    .filter((target) => (target.status === "not_started" || target.status === "failed") && !submitting.includes(target.integrationId))
+    .filter((target) => (target.status === "not_started" || target.status === "failed") && !submitting.includes(target.integrationId) && !targetBlocker(target))
     .map((target) => target.integrationId);
-
-  const previewAsset: ContentAsset = {
-    id: post?.id ?? "draft",
-    platform: previewPlatform,
-    assetType: "short post",
-    title: title || t("Untitled post"),
-    content,
-    imageUrl: image || undefined,
-    factIds: [],
-    riskFlags: [],
-    updatedAt: new Date().toISOString()
-  };
-
-  const previewPlatforms = useMemo(() => {
-    const selected = targets.map((target) => target.platform).filter((platform): platform is Platform => isSupportedPlatform(platform));
-    return selected.length ? [...new Set(selected)] : (["x"] as Platform[]);
-  }, [targets]);
 
   if (loading) {
     return (
@@ -441,12 +419,11 @@ export default function PostEditorView({
   return (
     <section className="post-editor" aria-labelledby="post-editor-title">
       <header className="post-editor-head">
-        <button type="button" className="post-editor-back" onClick={() => void leaveToPosts()}>
-          <ArrowLeft size={15} aria-hidden="true" /> {t("Posts")}
+        <button type="button" className="post-editor-back" aria-label={t("Back to posts")} disabled={preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void leaveToPosts()}>
+          <ArrowLeft size={17} aria-hidden="true" />
         </button>
         <div className="post-editor-title-block">
-          <div className="eyebrow">{t("MANUAL POST")}</div>
-          <h1 id="post-editor-title">{title.trim() || t("Untitled post")}</h1>
+          <h1 id="post-editor-title">{t(post ? "Edit post" : "New post")}</h1>
           <div className="post-editor-save-state" role="status">
             {saving ? <><Loader2 className="spin" size={12} aria-hidden="true" /> {t("Saving…")}</>
               : saveError ? <><AlertTriangle size={12} aria-hidden="true" /> {t("Save failed")}</>
@@ -457,21 +434,12 @@ export default function PostEditorView({
         </div>
         <div className="post-editor-actions">
           {post && (
-            <button type="button" className="secondary-button" onClick={() => void copyAsNewDraft()}>
+            <button type="button" className="secondary-button" disabled={preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}>
               <Copy size={14} aria-hidden="true" /> {t("Copy as new draft")}
             </button>
           )}
-          <button type="button" className="secondary-button" disabled={!dirty || saving} onClick={() => void save()}>
+          <button type="button" className="secondary-button" disabled={!editable || !dirty || saving || imageBusy || preparingPush || Boolean(submitting.length) || conflict} onClick={() => void save()}>
             <Save size={14} aria-hidden="true" /> {t("Save draft")}
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={!pendingPushIds.length || saving || Boolean(submitting.length) || !post}
-            onClick={() => void pushTargets(pendingPushIds)}
-          >
-            {submitting.length ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
-            {submitting.length ? t("Submitting…") : t("Push drafts")}
           </button>
         </div>
       </header>
@@ -487,7 +455,7 @@ export default function PostEditorView({
                 ? t("A submission is running. This view unlocks only while no draft exists in Postiz.")
                 : t("A draft already exists in Postiz for at least one account, so the local copy stays as it was submitted. Copy it as a new draft to change the text.")}
             <div className="frozen-actions">
-              <button type="button" className="secondary-button" onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
+              <button type="button" className="secondary-button" disabled={preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
               {isAdmin && postizUiUrl && <a className="text-button" href={postizUiUrl} target="_blank" rel="noopener noreferrer">{t("Open Postiz")} <ExternalLink size={13} aria-hidden="true" /></a>}
             </div>
           </div>
@@ -512,137 +480,46 @@ export default function PostEditorView({
 
       <div className="post-editor-columns">
         <div className="post-editor-column">
-          <label className="field-label" htmlFor="post-editor-internal-title">
-            {t("Internal title")} <span className="optional">{t("Only visible in Polaris; never sent to Postiz")}</span>
-            <input
-              id="post-editor-internal-title"
-              value={title}
-              maxLength={POST_TITLE_MAX_LENGTH}
-              disabled={!editable}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder={t("e.g. Gold regulation launch — X post")}
-            />
-          </label>
-
-          <label className="field-label post-editor-content" htmlFor="post-editor-content">
-            {t("Post text")}
+          <div className="post-composer-surface">
+            <label className="post-composer-sr-only" htmlFor="post-editor-content">{t("Post text")}</label>
             <textarea
               id="post-editor-content"
+              className="post-composer-textarea"
               value={content}
               maxLength={POST_CONTENT_MAX_LENGTH}
-              disabled={!editable}
-              onChange={(event) => setContent(event.target.value)}
+              disabled={controlsLocked}
+              onChange={event => setContent(event.target.value)}
               placeholder={t("Write the post exactly as it should appear.")}
-              rows={10}
+              rows={7}
             />
-          </label>
-          <div className="post-editor-counter">
-            <span>{content.length.toLocaleString()} {t("characters")}</span>
-            {previewPlatforms.map((platform) => {
-              const rule = platformRuleFor(platform);
-              if (!rule) return null;
-              const over = content.length > rule.maxCharacters;
-              return <span key={platform} className={over ? "over" : ""}>{PLATFORM_META[platform].label}: {content.length.toLocaleString()} / {rule.maxCharacters.toLocaleString()}</span>;
-            })}
+            <AssetImageEditor
+              variant="composer"
+              value={image}
+              title={t("Post image")}
+              disabled={controlsLocked}
+              allowUrlInput={false}
+              onChange={nextImage => {
+                setImage(nextImage);
+                setImageDirty(true);
+              }}
+              onBusyChange={setImageBusy}
+            />
           </div>
-
-          <AssetImageEditor
-            value={image}
-            title={title}
-            disabled={!editable}
-            allowUrlInput={false}
-            urlSourceLabel="Saved image"
-            onChange={(nextImage) => {
-              setImage(nextImage);
-              setImageDirty(true);
-            }}
-            onBusyChange={setImageBusy}
+          <PostAccountPicker
+            accounts={accounts}
+            selectedIds={targetIds}
+            disabled={controlsLocked}
+            loading={accountsLoading}
+            onChange={setTargetIds}
+            onOpenAccounts={onOpenAccounts}
           />
-
-          <section className="post-editor-preview" aria-label={t("Platform preview")}>
-            <div className="post-editor-preview-head">
-              <span className="eyebrow">{t("PREVIEW")}</span>
-              <div className="post-editor-preview-tabs">
-                {previewPlatforms.map((platform) => (
-                  <button
-                    key={platform}
-                    type="button"
-                    className={`posts-status-tab ${previewPlatform === platform ? "active" : ""}`}
-                    onClick={() => setPreviewPlatform(platform)}
-                  >
-                    {t(PLATFORM_META[platform].label)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <p className="post-editor-preview-note">{t("Simulated layout for this account. It is not real engagement data.")}</p>
-            {content.trim() || hasImage ? (
-              <SocialPreview
-                asset={previewAsset}
-                imageUrl={image || undefined}
-                authorName={targets.find((target) => isSupportedPlatform(target.platform) && target.platform === previewPlatform)?.accountName || "Polaris Insights"}
-              />
-            ) : (
-              <div className="post-editor-preview-empty"><ImageOff size={20} aria-hidden="true" /> {t("The preview appears once the post has text or an image.")}</div>
-            )}
-          </section>
         </div>
 
         <aside className="post-editor-aside">
-          <section className="post-editor-panel" aria-labelledby="post-editor-accounts-title">
-            <div className="post-editor-panel-head">
-              <h2 id="post-editor-accounts-title">{t("Accounts")}</h2>
-              <span className="post-editor-count">{targetIds.length} / {MAX_POST_TARGETS}</span>
-            </div>
-            <p className="post-editor-panel-note">{t("Each selected account receives its own Postiz draft of the same text and image.")}</p>
-            {accountsLoading && !accounts.length ? (
-              <div className="post-editor-accounts-loading"><Loader2 className="spin" size={15} aria-hidden="true" /> {t("Loading accounts…")}</div>
-            ) : accounts.length ? (
-              <div className="post-editor-account-groups">
-                {groupedAccounts.map(([platform, groupAccounts]) => {
-                  const meta = PLATFORM_META[platform as Platform];
-                  return (
-                    <div className="post-editor-account-group" key={platform}>
-                      <div className="post-editor-account-group-label"><span className="posts-platform-mark" style={{ "--chip-accent": meta?.accent || "#71717a" } as React.CSSProperties}>{meta?.short || platform.slice(0, 2).toUpperCase()}</span> {platform || t("Other")}</div>
-                      {groupAccounts.map((account) => {
-                        const selected = targetIds.includes(account.id);
-                        const locked = !editable || account.disabled;
-                        return (
-                          <label key={account.id} className={`post-editor-account ${selected ? "selected" : ""} ${account.disabled ? "disabled" : ""}`}>
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              disabled={locked || (!selected && targetIds.length >= MAX_POST_TARGETS)}
-                              onChange={(event) => {
-                                setTargetIds((current) => event.target.checked
-                                  ? [...new Set([...current, account.id])]
-                                  : current.filter((id) => id !== account.id));
-                              }}
-                            />
-                            <span className="post-editor-account-copy">
-                              <strong>{account.name}</strong>
-                              <small>{account.disabled ? t("Needs reconnect in Postiz") : account.identifier || t("Other")}</small>
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="post-editor-accounts-empty">
-                <p>{t("No accounts are available yet. Connect a platform, or ask an administrator to assign one.")}</p>
-                <button type="button" className="secondary-button" onClick={onOpenAccounts}>{t("Open accounts")}</button>
-              </div>
-            )}
-          </section>
-
           <section className="post-editor-panel" aria-labelledby="post-editor-targets-title">
             <div className="post-editor-panel-head">
-              <h2 id="post-editor-targets-title">{t("Draft hand-off")}</h2>
+              <h2 id="post-editor-targets-title">{t("Send drafts to")}</h2>
             </div>
-            <p className="post-editor-panel-note draft-note">{t("Pushing only creates a Postiz draft. Nothing is published or scheduled.")}</p>
             {targets.length ? (
               <ul className="post-editor-targets">
                 {targets.map((target) => {
@@ -669,11 +546,11 @@ export default function PostEditorView({
                       {target.status === "failed" && target.error && <div className="post-editor-target-error">{target.error}</div>}
                       {target.warning && target.status !== "pending_unknown" && <div className="post-editor-target-warning">{target.warning}</div>}
                       {blocker && canRetry && <div className="post-editor-target-warning">{blocker}</div>}
-                      {canRetry && (
+                      {target.status === "failed" && (
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={isSubmitting || Boolean(blocker)}
+                          disabled={preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker)}
                           onClick={() => void pushTargets([target.integrationId])}
                         >
                           {isSubmitting ? <><Loader2 className="spin" size={13} aria-hidden="true" /> {t("Submitting…")}</> : <><Send size={13} aria-hidden="true" /> {target.status === "failed" ? t("Retry this account") : t("Submit to Postiz draft")}</>}
@@ -684,11 +561,18 @@ export default function PostEditorView({
                 })}
               </ul>
             ) : (
-              <p className="post-editor-targets-empty">{t("Select at least one account to enable the hand-off.")}</p>
+              <p className="post-editor-targets-empty">{t("No accounts selected yet.")}</p>
             )}
+            <div className="post-draft-destination"><ShieldCheck size={15} aria-hidden="true" /><span>{t("Destination")}<strong>{t("Postiz drafts")}</strong></span></div>
+            <button type="button" className="primary-button post-push-drafts"
+            disabled={!pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
+              onClick={() => void pushTargets(pendingPushIds)}>
+              {preparingPush || submitting.length ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
+              {preparingPush || submitting.length ? t("Submitting…") : t("Push drafts to Postiz")}
+            </button>
             <div className="post-editor-aside-foot">
               <ShieldCheck size={14} aria-hidden="true" />
-              <span>{t("Drafts wait for review inside Postiz. Publishing stays a human decision there.")}</span>
+              <span>{t("Pushing only creates a Postiz draft. Nothing is published or scheduled.")}</span>
             </div>
           </section>
         </aside>

@@ -387,8 +387,8 @@ export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<stri
 
 /**
  * Hands one asset to Postiz as a draft. Polaris never publishes or schedules: the returned post id
- * points at a draft that an administrator reviews and promotes inside Postiz. The request carries
- * no publish time, so nothing here can turn into a live post.
+ * points at a draft that an administrator reviews and promotes inside Postiz. The required `date`
+ * field does not schedule anything while the request's type is fixed to "draft".
  */
 export async function publishToPostiz(req: PostizPublishRequest): Promise<{ success: boolean; postId?: string; error?: string; warning?: string }> {
   const config = getPostizConfig();
@@ -418,6 +418,7 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
  * Builds the create-draft payload. The `date` is required by the Postiz create endpoint and is the
  * moment the draft was written, not a publish time: promoting the draft inside Postiz sets the real
  * one, and `type` stays "draft" so nothing here can go live on its own.
+ * Contract: https://docs.postiz.com/public-api/posts/create
  */
 function draftPayload(req: PostizPublishRequest, images: Array<{ id: string; path: string }>) {
   const normalizedPlatform = (req.platform || "x").toLowerCase();

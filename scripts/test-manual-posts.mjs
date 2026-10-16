@@ -67,6 +67,37 @@ test("a transport failure is reported as uncertain so the caller does not retry 
   assert.equal(result.uncertain, true);
 });
 
+test("every supported account receives the documented draft-only payload and authentication", async () => {
+  for (const platform of ["x", "facebook", "instagram", "linkedin", "threads"]) {
+    calls.requests.length = 0;
+    respond = async (url) => url.endsWith("/upload") ? uploadOk() : Response.json([{ postId: `draft-${platform}` }]);
+    const result = await postiz.createStrictDraft({
+      integrationId: `account-${platform}`,
+      platform,
+      content: "Exact draft text\nwith a second line",
+      imageUrl: "data:image/png;base64,AAAA"
+    });
+    assert.equal(result.success, true);
+    assert.equal(calls.requests.length, 2, "upload must precede exactly one create request");
+    const [uploadRequest, draftRequest] = calls.requests;
+    assert.equal(uploadRequest.url, "https://postiz.example.test/api/public/v1/upload");
+    assert.ok(uploadRequest.options.body instanceof FormData);
+    assert.equal(uploadRequest.options.body.get("file").type, "image/png");
+    assert.equal(draftRequest.url, "https://postiz.example.test/api/public/v1/posts");
+    assert.equal(draftRequest.options.headers.Authorization, "synthetic-key");
+    const payload = JSON.parse(draftRequest.options.body);
+    assert.equal(payload.type, "draft");
+    assert.ok(Number.isFinite(Date.parse(payload.date)), "Postiz requires a date even for a non-scheduled draft");
+    assert.equal(payload.shortLink, false);
+    assert.deepEqual(payload.tags, []);
+    assert.equal(payload.posts.length, 1);
+    assert.deepEqual(payload.posts[0].integration, { id: `account-${platform}` });
+    assert.deepEqual(payload.posts[0].value, [{ content: "Exact draft text\nwith a second line", image: [{ id: "media-one", path: "https://uploads.postiz.example.test/one.png" }] }]);
+    assert.equal(payload.posts[0].settings.__type, platform);
+    assert.equal(payload.saveAction, undefined);
+  }
+});
+
 test("an explicit Postiz refusal is a failure, and an accepted draft without an ID still succeeds", async () => {
   respond = async () => new Response("invalid integration", { status: 400 });
   const refused = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Text", platform: "x" });

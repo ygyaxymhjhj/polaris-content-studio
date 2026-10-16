@@ -15,6 +15,7 @@ interface AssetImageEditorProps {
   allowUrlInput?: boolean;
   /** Label for a value that is neither an uploaded data URL nor the original article image. */
   urlSourceLabel?: string;
+  variant?: "default" | "composer";
   onChange: (imageUrl: string) => void;
   onBusyChange: (busy: boolean) => void;
 }
@@ -26,6 +27,7 @@ export default function AssetImageEditor({
   disabled = false,
   allowUrlInput = true,
   urlSourceLabel,
+  variant = "default",
   onChange,
   onBusyChange
 }: AssetImageEditorProps) {
@@ -102,6 +104,36 @@ export default function AssetImageEditor({
     event.preventDefault();
     setDragActive(false);
     if (!locked) void uploadImages(Array.from(event.dataTransfer.files));
+  }
+
+  if (variant === "composer") {
+    return (
+      <section className={`post-composer-media${dragActive ? " is-dragging" : ""}`} aria-label={t("Post image")} aria-busy={uploading}
+        onDragOver={handleDragOver} onDragLeave={() => setDragActive(false)} onDrop={handleDrop}>
+        <input ref={fileInput} type="file" className="asset-image-file-input" accept={ACCEPTED_IMAGE_TYPES.join(",")}
+          aria-label={t("Upload post image")} disabled={locked} tabIndex={-1}
+          onChange={event => {
+            const imageFiles = Array.from(event.currentTarget.files || []);
+            event.currentTarget.value = "";
+            void uploadImages(imageFiles);
+          }} />
+        <button type="button" className="secondary-button post-media-add" disabled={locked} onClick={() => fileInput.current?.click()}>
+          {uploading ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <CloudUpload size={14} aria-hidden="true" />}
+          {t(uploading ? "Processing image…" : value ? "Replace image" : "Add media")}
+        </button>
+        {value && <div className="post-media-attachments">
+          <div className="post-media-thumbnail">
+            {previewFailed ? <ImageOff size={24} aria-label={t("Image preview unavailable")} />
+              : <Image key={value} src={value} alt={title || t("Post image")} fill unoptimized sizes="144px" onError={() => setFailedPreviewUrl(value)} />}
+            <button type="button" className="post-media-remove" disabled={locked} aria-label={t("Remove image")} onClick={() => changeImage("")}><Trash2 size={15} aria-hidden="true" /></button>
+          </div>
+          <button type="button" className="post-media-replace" disabled={locked} aria-label={t("Replace image")} onClick={() => fileInput.current?.click()}><ImagePlus size={22} aria-hidden="true" /></button>
+        </div>}
+        <p className="asset-image-help">{t("JPG, PNG or WebP, up to 5 MB. Large images are optimized automatically.")}</p>
+        {uploadError && <p className="asset-image-error" role="alert">{uploadError}</p>}
+        <span className="post-composer-sr-only" role="status">{uploading ? t("Processing image…") : currentUpload ? t("Image added to the draft. Save changes to keep it.") : ""}</span>
+      </section>
+    );
   }
 
   return (
