@@ -2,12 +2,10 @@
 
 import {
   ArrowRight,
-  Bell,
   BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
-  CircleHelp,
   ClipboardCheck,
   CloudUpload,
   Download,
@@ -26,7 +24,6 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
-  Search,
   Send,
   Settings2,
   ShieldCheck,
@@ -55,6 +52,7 @@ import OverviewView from "@/components/OverviewView";
 import PostsView from "@/components/PostsView";
 import PostEditorView from "@/components/PostEditorView";
 import ThemeToggle from "@/components/ThemeToggle";
+import LanguageMenu from "@/components/LanguageMenu";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, markSubmissionSucceeded, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
 import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
@@ -1163,7 +1161,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <div className="brand-name">POLARIS</div>
             <div className="brand-product">Content Studio</div>
           </div>
-          <ThemeToggle />
+          <div className="sidebar-preferences" role="group" aria-label={t("Appearance")}>
+            <ThemeToggle />
+            <LanguageMenu language={uiLanguage} onChange={changeUiLanguage} />
+          </div>
         </div>
 
         <div className="workspace-label">{t("WORKSPACE")}</div>
@@ -1202,13 +1203,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumbs"><span>Growth OS</span><span className="slash">/</span><strong>{view === "overview" ? t("Overview") : view === "posts" ? t("Posts") : config.name || t("New project")}</strong></div>
-          <div className="topbar-actions">
-            <label className="locale-switcher"><span>{t("Interface language")}</span><select aria-label={t("Interface language")} value={uiLanguage} onChange={(event) => changeUiLanguage(event.target.value as UiLanguage)}><option value="en">{t("English")}</option><option value="zh">简体中文</option><option value="vi">Tiếng Việt</option><option value="th">ไทย</option></select></label>
-            <div className="system-status"><span className="status-dot" /> {t("All systems operational")}</div>
-            <button className="icon-button"><Search size={17} /></button>
-            <button className="icon-button"><Bell size={17} /></button>
-            <button className="help-button"><CircleHelp size={16} /> {t("Help")}</button>
-          </div>
         </header>
 
         <div className="content-wrap">
@@ -1415,7 +1409,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
             <div className="drawer-footer">
               <button className="secondary-button" onClick={closeDrawer}>{t("Cancel")}</button>
-              <button type="button" className="secondary-button" style={{ color: "#18181b", borderColor: "#d4d4d8", fontWeight: 700 }} disabled={imageUploading} onClick={() => setPublishModalAsset(viewAsset)}>
+              <button type="button" className="secondary-button" style={{ color: "var(--text-strong)", borderColor: "var(--border-strong)", fontWeight: 700 }} disabled={imageUploading} onClick={() => setPublishModalAsset(viewAsset)}>
                 <Send size={14} /> {t("Submit to Postiz draft")}
               </button>
               <button className="primary-button" onClick={saveAsset} disabled={imageUploading}><Check size={16} /> {t("Save changes")}</button>
@@ -1498,17 +1492,17 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                   {t("Publish history for this asset")}
                   <div style={{ marginTop: 6, display: "grid", gap: 6, fontSize: 12 }}>
                     {publishHistory.map((entry) => (
-                      <div key={entry.id} style={{ border: "1px solid #e4e4e7", borderRadius: 8, padding: "8px 10px" }}>
+                      <div key={entry.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                           <strong>{entry.accountName}</strong>
                           <PublishBadge asset={{ publishStatus: entry.status, reviewStatus: entry.reviewStatus, rejectedDetectedAt: entry.rejectedDetectedAt ?? undefined }} />
                         </div>
-                        <div style={{ color: "#71717a" }}>
+                        <div style={{ color: "var(--text-muted)" }}>
                           {new Date(entry.createdAt).toLocaleString()} · {entry.publishedByName}
                           {entry.scheduledAt ? ` · ${t("Scheduled at")} ${new Date(entry.scheduledAt).toLocaleString()}` : ""}
                         </div>
                         {entry.publishedUrl && <a href={entry.publishedUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>{t("View published post")}</a>}
-                        {entry.error && <div style={{ color: "#b91c1c" }}>{entry.error}</div>}
+                        {entry.error && <div style={{ color: "var(--danger-text)" }}>{entry.error}</div>}
                       </div>
                     ))}
                   </div>
@@ -1783,7 +1777,7 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPubli
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "#18181b", background: "#f4f4f5", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "var(--text-strong)", background: "var(--surface-muted)", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );
@@ -1797,5 +1791,5 @@ function ExportView({ assets, submittedCount, onExport, onBatchSubmitDrafts, loa
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {
   const t = useTranslation();
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; submitted drafts wait there for review.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "#71717a", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}{canManageMembers === true && <FeishuSettingsPanel canManageMembers={canManageMembers} />}</div></>;
+  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("WORKSPACE SETTINGS")}</div><h1>{t("Keep the system")} <em>{t("on-brand.")}</em></h1><p>{t("System settings and third-party platform connection status.")}</p></div></div><div className="settings-grid"><div className="settings-card"><div className="settings-card-icon" style={{ background: "#27272a", color: "#fff" }}><Send size={18} /></div><h2>{t("Postiz social account hosting")}</h2><p>{postizConfigured ? t("Connected to the Postiz instance; submitted drafts wait there for review.") : t("Set POSTIZ_API_URL and POSTIZ_API_KEY in the environment.")}</p><div style={{ marginTop: 10, fontSize: 12 }}><strong>{t(canManageMembers ? "All social accounts" : "My social accounts")} ({socialAccounts.length})：</strong>{socialAccounts.length > 0 ? (<div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{socialAccounts.map(acc => (<span key={acc.id} className="platform-chip" style={{ fontSize: 11 }}>{acc.name} ({acc.identifier})</span>))}</div>) : (<div style={{ color: "var(--text-muted)", marginTop: 4 }}>{t(canManageMembers ? "No social accounts yet. Connect a platform in Postiz." : "No accounts available. Connect one or ask an administrator to assign one.")}</div>)}</div><div style={{ marginTop: 14, display: "flex", gap: 8 }}><button type="button" className="secondary-button" onClick={onManageAccounts}><RefreshCw size={13} /> {t("Manage accounts")}</button></div></div><div className="settings-card"><div className="settings-card-icon"><Sparkles size={18} /></div><h2>{t("Brand voice")}</h2><p>{t("Clear, evidence-led, approachable. Never sensational or investment-advisory.")}</p><button className="secondary-button">{t("Edit voice")} <ArrowRight size={14} /></button></div><div className="settings-card"><div className="settings-card-icon"><ShieldCheck size={18} /></div><h2>{t("Safety rules")}</h2><p>{t("Financial, broker, legal and regulatory claims always require human approval.")}</p><button className="secondary-button">{t("Manage rules")} <ArrowRight size={14} /></button></div>{canManageMembers && <MembersPanel canManageMembers={canManageMembers} />}{canManageMembers === true && <FeishuSettingsPanel canManageMembers={canManageMembers} />}</div></>;
 }

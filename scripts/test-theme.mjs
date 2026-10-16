@@ -141,6 +141,65 @@ test("the script is a fixed payload with no user input interpolated", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * 2b. The stylesheet must not pair a theme token with a fixed surface.
+ * ------------------------------------------------------------------ */
+
+const stylesheet = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+
+function relativeLuminance(hexValue) {
+  const text = hexValue.replace("#", "");
+  const full = text.length === 3 ? [...text].map(character => character + character).join("") : text;
+  if (full.length !== 6) return null;
+  const [r, g, b] = [0, 2, 4].map(index => parseInt(full.slice(index, index + 2), 16) / 255);
+  const channel = value => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/**
+ * A background that is pinned to a near-white or near-black literal cannot follow the theme, so
+ * pairing it with a colour that does is how text becomes invisible in one of the two modes. The
+ * simulated social card is excluded: it deliberately keeps its own light palette.
+ */
+function findMismatchedThemePairs(css) {
+  const previewStart = css.indexOf("/* Social Preview Component */");
+  const previewEnd = css.indexOf("/* Modal Backdrop & Publish Dialog */");
+  const region = css.slice(0, previewStart) + css.slice(previewEnd);
+  const offenders = [];
+  for (const rule of region.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const selector = rule[1].split("\n").pop().trim().replace(/\s+/g, " ").slice(0, 60);
+    const background = /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/.exec(rule[2]);
+    const colour = /(?:^|;)\s*color\s*:\s*([^;]+)/.exec(rule[2]);
+    if (!background || !colour) continue;
+    if (background[1].includes("var(") || background[1].includes("gradient")) continue;
+    // `transparent` is not a surface: the element shows whatever is behind it, which follows the theme.
+    if (/^(transparent|none|inherit|unset|initial|currentcolor)$/i.test(background[1].trim())) continue;
+    if (!/var\(--(text|ink|btn|accent-soft|surface)/.test(colour[1])) continue;
+    const literals = ["white", ...background[1].match(/#[0-9a-fA-F]{3,8}/g) || []];
+    for (const literal of literals) {
+      const luminance = literal === "white" ? 1 : relativeLuminance(literal);
+      if (luminance === null) continue;
+      if (luminance > 0.6 || luminance < 0.25) {
+        offenders.push(`${selector} background: ${background[1].trim()} with color: ${colour[1].trim()}`);
+      }
+    }
+  }
+  return offenders;
+}
+
+test("no rule pairs a fixed light or dark surface with a theme-dependent colour", () => {
+  assert.deepEqual(findMismatchedThemePairs(stylesheet), []);
+});
+
+test("the surfaces and text a switch relies on resolve from tokens", () => {
+  // These two were the reported bug: a literal white surface under theme-dependent text.
+  assert.match(stylesheet, /\.url-input-row input \{[^}]*background: var\(--surface-input\)/);
+  assert.match(stylesheet, /\.locale-switcher select \{[^}]*background: var\(--surface-input\)/);
+  // Roughly one in twenty surfaces stays intentional, so a floor keeps this from passing on nothing.
+  const tokenSurfaces = stylesheet.match(/background(?:-color)?: var\(--/g) || [];
+  assert.ok(tokenSurfaces.length > 60, `expected many token surfaces, found ${tokenSurfaces.length}`);
+});
+
+/* ------------------------------------------------------------------ *
  * 3. The switch itself, against a running server.
  * ------------------------------------------------------------------ */
 

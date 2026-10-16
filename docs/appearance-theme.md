@@ -24,13 +24,14 @@ the sign-in page and the social-connection result page. It opens a small menu wi
 
 | Option | Meaning |
 | --- | --- |
-| Automatic | Follow the device clock. Shown with the window it uses, the detected time zone, and a check mark while active |
+| Automatic | Follow the device clock ("Always follows this device's time"), with a check mark while active |
 | Light | Always light |
 | Dark | Always dark |
 
 The trigger's glyph reflects what is on screen right now (sun or moon), and a small dot marks
 automatic mode. Arrow keys move through the options, Escape closes the menu and returns focus to the
-trigger, and every label is translated into the four interface languages.
+trigger, and every label is translated into the four interface languages. Each option keeps to a
+single short line, so the exact light window is not shown there; the rule itself is documented above.
 
 ## What follows the theme
 

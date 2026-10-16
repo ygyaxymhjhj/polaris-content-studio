@@ -4,7 +4,7 @@ import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Check, Moon, Sun, SunMoon } from "lucide-react";
 import { LocaleContext, translate, type UiLanguage } from "@/lib/i18n";
 import { useTheme } from "@/components/ThemeProvider";
-import { DAY_START_HOUR, NIGHT_START_HOUR, THEME_MODES, type ThemeMode } from "@/lib/theme";
+import { THEME_MODES, type ThemeMode } from "@/lib/theme";
 
 /**
  * Appearance switch, sitting beside the Polaris wordmark like the reference product.
@@ -20,10 +20,6 @@ const VIEWPORT_MARGIN = 10;
 
 const MODE_ICONS: Record<ThemeMode, typeof Sun> = { auto: SunMoon, light: Sun, dark: Moon };
 
-function formatHour(hour: number): string {
-  return `${String(hour).padStart(2, "0")}:00`;
-}
-
 export default function ThemeToggle({ language: languageOverride }: { language?: UiLanguage }) {
   const contextLanguage = useContext(LocaleContext);
   const language = languageOverride ?? contextLanguage;
@@ -35,7 +31,6 @@ export default function ThemeToggle({ language: languageOverride }: { language?:
   const optionRefs = useRef<Partial<Record<ThemeMode, HTMLButtonElement | null>>>({});
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
-  const [timeZone, setTimeZone] = useState("");
 
   const positionMenu = useCallback(() => {
     const button = trigger.current;
@@ -46,7 +41,9 @@ export default function ThemeToggle({ language: languageOverride }: { language?:
       Math.max(VIEWPORT_MARGIN, window.innerWidth - MENU_WIDTH - VIEWPORT_MARGIN)
     );
     // Below the trigger by default, lifted above it when the rail sits near the bottom edge.
-    const estimatedHeight = 208;
+    // The estimate covers the tallest translation measured (~240px in Thai) so a menu that fits
+    // there is never pushed off the bottom of a short viewport.
+    const estimatedHeight = 244;
     const below = rect.bottom + 8;
     const top = below + estimatedHeight > window.innerHeight
       ? Math.max(VIEWPORT_MARGIN, rect.top - estimatedHeight - 8)
@@ -65,11 +62,6 @@ export default function ThemeToggle({ language: languageOverride }: { language?:
       return;
     }
     positionMenu();
-    try {
-      setTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone || "");
-    } catch {
-      setTimeZone("");
-    }
     optionRefs.current[mode]?.focus();
 
     function onPointerDown(event: MouseEvent) {
@@ -107,8 +99,6 @@ export default function ThemeToggle({ language: languageOverride }: { language?:
     setMode(next);
     close(true);
   }
-
-  const lightWindow = `${formatHour(DAY_START_HOUR)}–${formatHour(NIGHT_START_HOUR)}`;
 
   return (
     <div className="theme-toggle" ref={container}>
@@ -168,10 +158,9 @@ export default function ThemeToggle({ language: languageOverride }: { language?:
                     {t(option === "auto" ? "Automatic" : option === "light" ? "Light" : "Dark")}
                   </span>
                   {option === "auto" && (
-                    <span className="theme-option-detail">
-                      {t("Follows this device's local time")} · {t("Light from")} {lightWindow}
-                      {timeZone ? ` · ${timeZone}` : ""}
-                    </span>
+                    // Kept to one short line: the exact window is a detail of the rule, not something
+                    // a reader has to weigh when choosing.
+                    <span className="theme-option-detail">{t("Always follows this device's time")}</span>
                   )}
                   {option === "light" && <span className="theme-option-detail">{t("Always light")}</span>}
                   {option === "dark" && <span className="theme-option-detail">{t("Always dark")}</span>}
