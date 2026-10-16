@@ -1283,11 +1283,57 @@ for (const [key, value] of Object.entries(manualPostThaiMessages)) {
   if (!thMessages[key]) thMessages[key] = value;
 }
 
+// Presentation only: never apply this boundary to post content, account names or link targets.
+const publishingCopy: Record<string, Record<UiLanguage, string>> = {
+  "Push drafts to Postiz": { en: "Push drafts", zh: "提交草稿", vi: "Gửi bản nháp", th: "ส่งฉบับร่าง" },
+  "Postiz drafts": { en: "Draft inbox", zh: "草稿箱", vi: "Hộp thư bản nháp", th: "กล่องฉบับร่าง" },
+  "Postiz draft": { en: "Draft ID", zh: "草稿编号", vi: "Mã bản nháp", th: "รหัสฉบับร่าง" },
+  "Open Postiz": { en: "Open publishing console", zh: "打开发布控制台", vi: "Mở bảng điều khiển xuất bản", th: "เปิดคอนโซลการเผยแพร่" },
+  "Open Postiz instead": { en: "Connect in publishing console", zh: "前往发布控制台连接", vi: "Kết nối trong bảng điều khiển xuất bản", th: "เชื่อมต่อในคอนโซลการเผยแพร่" },
+  "Reconnect in Postiz": { en: "Reconnect in publishing console", zh: "前往发布控制台重新连接", vi: "Kết nối lại trong bảng điều khiển xuất bản", th: "เชื่อมต่อใหม่ในคอนโซลการเผยแพร่" },
+  "Not handed to Postiz yet": { en: "Not submitted yet", zh: "尚未提交", vi: "Chưa gửi", th: "ยังไม่ได้ส่ง" },
+  "Draft accepted by Postiz": { en: "Draft accepted", zh: "草稿已接收", vi: "Đã nhận bản nháp", th: "รับฉบับร่างแล้ว" },
+  "Delete draft": { en: "Delete draft", zh: "删除草稿", vi: "Xóa bản nháp", th: "ลบฉบับร่าง" },
+  "Deleting draft…": { en: "Deleting draft…", zh: "正在删除草稿…", vi: "Đang xóa bản nháp…", th: "กำลังลบฉบับร่าง…" },
+  "Delete this local draft permanently? Nothing has been sent to Postiz for it.": {
+    en: "Permanently delete this local draft and any unsaved edits? No draft has been accepted for publishing.",
+    zh: "永久删除这条本地草稿及未保存的修改？尚无草稿被发布服务接收。",
+    vi: "Xóa vĩnh viễn bản nháp cục bộ và các thay đổi chưa lưu? Chưa có bản nháp nào được nhận để xuất bản.",
+    th: "ลบฉบับร่างในเครื่องและการแก้ไขที่ยังไม่บันทึกอย่างถาวรหรือไม่? ยังไม่มีฉบับร่างที่ได้รับเพื่อเผยแพร่"
+  },
+  "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.": {
+    en: "The publishing service is not configured. Ask an administrator to configure its server address and API credentials.",
+    zh: "发布服务尚未配置，请联系管理员配置服务地址和 API 凭据。",
+    vi: "Chưa cấu hình dịch vụ xuất bản. Nhờ quản trị viên thiết lập địa chỉ máy chủ và thông tin xác thực API.",
+    th: "ยังไม่ได้ตั้งค่าบริการเผยแพร่ ขอให้ผู้ดูแลตั้งค่าที่อยู่เซิร์ฟเวอร์และข้อมูลรับรอง API"
+  },
+  "Direct authorisation requires POSTIZ_JWT_SECRET to match the Postiz server's JWT_SECRET.": {
+    en: "Direct authorisation requires matching signing credentials on the publishing service. Ask an administrator to check the configuration.",
+    zh: "直接授权需要发布服务的签名凭据匹配，请联系管理员检查配置。",
+    vi: "Ủy quyền trực tiếp cần thông tin ký khớp với dịch vụ xuất bản. Nhờ quản trị viên kiểm tra cấu hình.",
+    th: "การอนุญาตโดยตรงต้องใช้ข้อมูลรับรองการลงนามที่ตรงกับบริการเผยแพร่ ขอให้ผู้ดูแลตรวจสอบการตั้งค่า"
+  }
+};
+
+function presentSystemCopy(language: UiLanguage, source: string, translated: string): string {
+  const override = publishingCopy[source]?.[language];
+  if (override) return override;
+  const engineName = { en: "publishing service", zh: "发布服务", vi: "dịch vụ xuất bản", th: "บริการเผยแพร่" }[language];
+  const configurationName = { en: "publishing service configuration", zh: "发布服务配置", vi: "cấu hình dịch vụ xuất bản", th: "การตั้งค่าบริการเผยแพร่" }[language];
+  return translated.split(/(https?:\/\/[^\s<>"']+)/gi).map((fragment, index) => {
+    // Error payloads may contain an engine-branded endpoint. Hide that displayed address without
+    // changing the actual href/src values, which do not go through the system-copy translator.
+    if (index % 2) return /postiz/i.test(fragment) ? engineName : fragment;
+    return fragment.replace(/POSTIZ_[A-Z0-9_]+/gi, configurationName).replace(/postiz/gi, engineName);
+  }).join("");
+}
+
 export function translate(language: UiLanguage, text: string): string {
-  if (language === "en") return text;
-  if (language === "zh" && feishuChineseMessages[text]) return feishuChineseMessages[text];
-  if (language === "th") return thMessages[text] || text;
-  return messages[text]?.[language === "zh" ? 0 : 1] || text;
+  const translated = language === "en" ? text
+    : language === "zh" ? feishuChineseMessages[text] || messages[text]?.[0] || text
+      : language === "th" ? thMessages[text] || text
+        : messages[text]?.[1] || text;
+  return presentSystemCopy(language, text, translated);
 }
 
 export function missingTranslations(language: UiLanguage): string[] {

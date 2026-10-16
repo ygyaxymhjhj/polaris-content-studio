@@ -169,14 +169,13 @@ export default function PostsView({
 
   async function deletePost(post: ManualPostListItem) {
     if (busyPostId) return;
-    const label = post.title || post.excerpt.slice(0, 60) || t("this post");
     if (!window.confirm(t("Delete this local draft permanently? Nothing has been sent to Postiz for it."))) return;
     setBusyPostId(post.id);
     setActionError("");
     try {
       const response = await fetch(`/api/posts/${post.id}`, { method: "DELETE" });
       const data = (await response.json().catch(() => ({}))) as { error?: string };
-      if (!response.ok) throw new Error(data.error || `Could not delete ${label}.`);
+      if (!response.ok) throw new Error(data.error || "The post could not be deleted.");
       void loadPosts();
     } catch (deleteError) {
       setActionError(deleteError instanceof Error ? deleteError.message : t("The post could not be deleted."));
@@ -315,8 +314,8 @@ export default function PostsView({
                   {busyPostId === post.id ? <Loader2 className="spin" size={15} /> : <Copy size={15} />}
                 </button>
                 {post.deletable && (
-                  <button type="button" className="icon-button danger" title={t("Delete local draft")} aria-label={t("Delete local draft")} disabled={busyPostId === post.id} onClick={() => void deletePost(post)}>
-                    <Trash2 size={15} />
+                  <button type="button" className="secondary-button danger" disabled={Boolean(busyPostId)} onClick={() => void deletePost(post)}>
+                    <Trash2 size={15} aria-hidden="true" /> {t("Delete local draft")}
                   </button>
                 )}
               </div>

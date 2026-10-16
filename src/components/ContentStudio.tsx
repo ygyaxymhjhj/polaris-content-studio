@@ -208,6 +208,13 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const [postsInitialStatus, setPostsInitialStatus] = useState<PostsStatusFilter>("all");
   // Bumped whenever the editor saves, so the list refetches when the user goes back to it.
   const [postsRefreshToken, setPostsRefreshToken] = useState(0);
+  const [postEditorSession, setPostEditorSession] = useState(0);
+  const [postDeletionPending, setPostDeletionPending] = useState(false);
+  const postDeletionLocation = useRef("");
+  const handlePostDeletionPending = useCallback((pending: boolean) => {
+    postDeletionLocation.current = pending ? window.location.href : "";
+    setPostDeletionPending(pending);
+  }, []);
   const viewRef = useRef<View>("overview");
   viewRef.current = view;
   const [config, setConfig] = useState<ProjectConfig>(() => alignSourceConfig(initialConfig, fixedArticle, new Set()));
@@ -362,9 +369,14 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
   useEffect(() => {
     function onPopState() {
+      if (postDeletionLocation.current) {
+        window.history.pushState({ polarisView: "posts" }, "", postDeletionLocation.current);
+        return;
+      }
       const query = new URLSearchParams(window.location.search);
       const requestedView = query.get("view");
       const nextView = requestedView && ALL_VIEWS.includes(requestedView as View) ? requestedView as View : "overview";
+      setPostEditorSession(session => session + 1);
       if (nextView === "posts") {
         const requestedPostId = query.get("postId");
         setActivePostId(requestedPostId && /^[a-f0-9-]{36}$/i.test(requestedPostId) ? requestedPostId : "");
@@ -1118,6 +1130,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }, []);
 
   const openPost = useCallback((postId: string) => {
+    setPostEditorSession(session => session + 1);
     setActivePostId(postId);
     setPostsComposing(false);
     setView("posts");
@@ -1125,6 +1138,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
   // Stable callbacks for the manual-post views: the editor lists these in effect dependencies.
   const startNewPost = useCallback(() => {
+    setPostEditorSession(session => session + 1);
     setActivePostId("");
     setPostsComposing(true);
     setView("posts");
@@ -1134,8 +1148,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
    * The editor upgrades its own entry from "?compose=new" to the saved id, so the back button
    * returns to the list instead of re-opening an empty composer that could create a second post.
    */
-  const handlePostOpened = useCallback((postId: string) => {
+  const handlePostOpened = useCallback((postId: string, newSession = false) => {
+    if (newSession) setPostEditorSession(session => session + 1);
     window.history.replaceState({ polarisView: "posts" }, "", `/?view=posts&postId=${postId}`);
+    if (postDeletionLocation.current) postDeletionLocation.current = window.location.href;
     setActivePostId(postId);
     setPostsComposing(false);
     setPostsRefreshToken(token => token + 1);
@@ -1154,7 +1170,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
   return (
     <LocaleContext.Provider value={uiLanguage}><div className={`app-shell ${view === "overview" || view === "posts" ? "posts-surface" : ""}`}>
-      <aside className="sidebar">
+      <aside className="sidebar" inert={postDeletionPending}>
         <div className="brand-lockup">
           <div className="brand-copy">
             <div className="brand-name">POLARIS</div>
@@ -1205,7 +1221,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         </header>
 
         <div className="content-wrap">
-          {submissionNotice && <div className="info-banner" role="status"><TriangleAlert size={16} aria-hidden="true" /><span>{submissionNotice}</span></div>}
+          {submissionNotice && <div className="info-banner" role="status"><TriangleAlert size={16} aria-hidden="true" /><span>{t(submissionNotice)}</span></div>}
           <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets: getPersistedAssets(assets), selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={changeCurrentProject} hidden={view === "export" || view === "accounts" || view === "settings" || view === "overview" || view === "posts"} />
           {view === "overview" && (
             <OverviewView
@@ -1222,7 +1238,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           )}
           {view === "posts" && (postsComposing || activePostId ? (
             <PostEditorView
-              key={postsComposing ? "compose" : activePostId}
+              key={postEditorSession}
               postId={postsComposing ? "new" : activePostId}
               accounts={socialAccounts}
               accountsLoading={channelsLoading}
@@ -1234,6 +1250,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               onSaved={markPostsSaved}
               onOpenAccounts={openAccountsView}
               onRefreshAccounts={refreshAccounts}
+              onDeletionPendingChange={handlePostDeletionPending}
             />
           ) : (
             <PostsView
@@ -1501,7 +1518,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                           {entry.scheduledAt ? ` · ${t("Scheduled at")} ${new Date(entry.scheduledAt).toLocaleString()}` : ""}
                         </div>
                         {entry.publishedUrl && <a href={entry.publishedUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>{t("View published post")}</a>}
-                        {entry.error && <div style={{ color: "var(--danger-text)" }}>{entry.error}</div>}
+                        {entry.error && <div style={{ color: "var(--danger-text)" }}>{t(entry.error)}</div>}
                       </div>
                     ))}
                   </div>

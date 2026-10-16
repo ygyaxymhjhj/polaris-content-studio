@@ -24,16 +24,29 @@ const accounts = [
 const virtualSources = new Map([
   [imageShimPath, transpile(`import React from 'react'; export default function Image({fill, unoptimized, sizes, ...properties}) { return <img {...properties} style={{width: '100%', height: '100%', objectFit: 'cover'}} />; }`)],
   [harnessPath, transpile(`
-    import React, { useState } from 'react';
+    import React, { useEffect, useState } from 'react';
     import { createRoot } from 'react-dom/client';
     import PostEditorView from '@/components/PostEditorView';
+    import PostsView from '@/components/PostsView';
     import { LocaleContext } from '@/lib/i18n';
     function Harness() {
-      const [postId, setPostId] = useState('new');
+      const [postId, setPostId] = useState(new URLSearchParams(location.search).get('postId') || 'new');
+      const [showList, setShowList] = useState(new URLSearchParams(location.search).has('list'));
+      const [editorSession, setEditorSession] = useState(0);
+      useEffect(() => {
+        const resetEditor = () => { setEditorSession(session => session + 1); setPostId('new'); setShowList(false); };
+        window.addEventListener('test-editor-reset', resetEditor);
+        return () => window.removeEventListener('test-editor-reset', resetEditor);
+      }, []);
       return <LocaleContext.Provider value="en"><main className="content-wrap">
-        <PostEditorView postId={postId} accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
-          postizUiUrl="" isAdmin={false} onBack={() => {}} onOpened={setPostId} onSaved={() => {}}
-          onOpenAccounts={() => {}} onRefreshAccounts={() => {}} />
+        {showList ? <PostsView accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
+          onOpenPost={setPostId} onNewPost={() => {}} onOpenAccounts={() => {}} initialStatus="all" refreshToken={0} />
+          : <PostEditorView key={editorSession} postId={postId} accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
+          postizUiUrl="" isAdmin={false} onBack={() => setShowList(true)} onOpened={(identifier, newSession) => {
+            if (newSession) setEditorSession(session => session + 1);
+            setPostId(identifier);
+          }} onSaved={() => {}}
+          onOpenAccounts={() => {}} onRefreshAccounts={() => {}} />}
       </main></LocaleContext.Provider>;
     }
     createRoot(document.getElementById('root')).render(<Harness />);
@@ -97,12 +110,61 @@ try {
   let holdSave;
   let releaseSave;
   let refusedAccount = '';
+  let deleteFailure = false;
+  let freezeOnDelete = false;
+  let conflictNextSave = false;
+  let holdCopy;
+  let releaseCopy;
+  let holdDelete;
+  let releaseDelete;
   const submissions = [];
   await page.route('**/api/posts**', async route => {
     const request = route.request();
     const body = request.postDataJSON();
     const pathname = new URL(request.url()).pathname;
     requests.push({ method: request.method(), pathname, body });
+    if (pathname.endsWith('/duplicate')) {
+      if (holdCopy) {
+        holdCopy();
+        holdCopy = null;
+        await new Promise(resolveCopy => { releaseCopy = resolveCopy; });
+      }
+      storedPost = { ...storedPost, id: '22222222-2222-4222-8222-222222222222', version: 1 };
+      await route.fulfill({ json: { post: storedPost } });
+      return;
+    }
+    if (request.method() === 'PATCH' && conflictNextSave) {
+      conflictNextSave = false;
+      await route.fulfill({ status: 409, json: { code: 'CONFLICT', error: 'Version conflict.' } });
+      return;
+    }
+    if (request.method() === 'DELETE') {
+      assert.equal(pathname, `/api/posts/${storedPost.id}`, 'delete uses the actual saved identifier');
+      if (freezeOnDelete) {
+        storedPost = { ...storedPost, editable: false, frozenReason: 'accepted', targets: [{ integrationId: 'channel-x',
+          platform: 'x', accountName: 'News desk', status: 'accepted', postizPostId: 'external-draft', warning: null, error: null }] };
+        await route.fulfill({ status: 409, json: { code: 'POST_FROZEN', error: 'A Postiz draft already exists. Delete it in Postiz instead.' } });
+        return;
+      }
+      if (holdDelete) {
+        holdDelete();
+        holdDelete = null;
+        await new Promise(resolveDelete => { releaseDelete = resolveDelete; });
+      }
+      if (deleteFailure) {
+        await route.fulfill({ status: 503, json: { error: 'Postiz refused deletion. Check POSTIZ_API_KEY configuration.' } });
+      } else {
+        storedPost = undefined;
+        await route.fulfill({ json: { deleted: true } });
+      }
+      return;
+    }
+    if (request.method() === 'GET' && pathname === '/api/posts') {
+      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: false, status: 'draft', platforms: [],
+        targetCount: storedPost.targets.length, acceptedCount: 0, deletable: storedPost.editable }] : [];
+      await route.fulfill({ json: { posts, total: posts.length, counts: { all: posts.length, draft: posts.length, pushing: 0, pushed: 0, attention: 0 } } });
+      return;
+    }
     if (pathname.endsWith('/submit')) {
       assert.equal(body.expectedVersion, storedPost.version);
       const integrationId = pathname.split('/').at(-2);
@@ -118,7 +180,7 @@ try {
       }
       const timestamp = new Date().toISOString();
       storedPost = {
-        id: '11111111-1111-4111-8111-111111111111', title: body.title || '', content: body.content,
+        id: request.method() === 'PATCH' ? pathname.split('/').at(-1) : '11111111-1111-4111-8111-111111111111', title: body.title || '', content: body.content,
         imageUrl: body.imageDataUrl === null ? null : body.imageDataUrl || storedPost?.imageUrl || null,
         version: (storedPost?.version || 0) + 1, editable: true, frozenReason: null,
         createdAt: timestamp, updatedAt: timestamp,
@@ -131,7 +193,7 @@ try {
   await page.goto(origin);
   const text = page.getByRole('textbox', { name: 'Post text', exact: true });
   const addPlatform = page.getByRole('button', { name: 'Add platform', exact: true });
-  const push = page.getByRole('button', { name: 'Push drafts to Postiz', exact: true });
+  const push = page.getByRole('button', { name: 'Push drafts', exact: true });
   await text.waitFor();
   assert.equal(await page.getByLabel('Internal title').count(), 0);
   assert.equal(await page.locator('.post-editor-counter, select').count(), 0);
@@ -139,19 +201,24 @@ try {
   assert.equal(await push.isDisabled(), true);
   await page.waitForTimeout(1400);
   assert.equal(requests.length, 0, 'untouched editor never creates a record');
+  assert.equal(await page.getByRole('button', { name: 'Delete draft', exact: true }).count(), 0);
   await addPlatform.click();
-  assert.equal(await page.getByLabel('Search accounts', { exact: true }).evaluate(element => document.activeElement === element), true);
-  await page.getByRole('button', { name: 'LinkedIn', exact: true }).click();
-  assert.equal(await page.getByRole('checkbox').count(), 1);
+  const picker = page.getByRole('group', { name: 'Choose accounts', exact: true });
+  assert.equal(await picker.locator('img, input[type="text"]').count(), 0, 'compact picker has no avatars or search field');
+  assert.equal(await page.getByRole('checkbox').count(), 4);
+  const pickerBounds = await picker.boundingBox();
+  assert.ok(pickerBounds.width <= 280 && pickerBounds.height <= 360, 'account picker stays compact');
+  assert.equal(await page.getByRole('checkbox', { name: /News desk/ }).evaluate(element => document.activeElement === element), true);
+  await page.screenshot({ path: '/tmp/polaris-account-picker-dark.png', fullPage: true });
   await page.getByRole('checkbox', { name: /Company page/ }).check();
-  await page.getByRole('button', { name: 'All', exact: true }).click();
   assert.equal(await page.getByRole('checkbox', { name: /Disconnected/ }).isDisabled(), true);
   await page.getByRole('checkbox', { name: /News desk/ }).check();
-  await page.getByLabel('Search accounts', { exact: true }).fill('Photo');
-  assert.equal(await page.getByRole('checkbox').count(), 1);
-  await page.getByLabel('Search accounts', { exact: true }).press('Escape');
+  await page.getByRole('checkbox', { name: /News desk/ }).press('Escape');
   assert.equal(await page.locator('.post-account-picker').count(), 0);
   assert.equal(await addPlatform.evaluate(element => document.activeElement === element), true);
+  await addPlatform.click();
+  await text.click();
+  assert.equal(await picker.count(), 0, 'click outside closes the picker');
   await page.getByRole('button', { name: 'Remove account: Company page', exact: true }).click();
   assert.equal(await page.locator('.post-editor-target').count(), 1, 'summary updates before autosave');
   await text.fill('Draft content that stays local until pushed.');
@@ -194,7 +261,11 @@ try {
   await addPlatform.click();
   await page.getByRole('checkbox', { name: /News desk/ }).check();
   await page.getByRole('checkbox', { name: /Company page/ }).check();
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  const mobilePickerBounds = await picker.boundingBox();
+  assert.ok(mobilePickerBounds.x >= 12 && mobilePickerBounds.x + mobilePickerBounds.width <= 363);
+  assert.ok(mobilePickerBounds.y >= 12 && mobilePickerBounds.y + mobilePickerBounds.height <= 801);
+  await page.screenshot({ path: '/tmp/polaris-account-picker-mobile.png', fullPage: true });
+  await page.getByRole('checkbox', { name: /Company page/ }).press('Escape');
   await push.click();
   const retry = page.getByRole('button', { name: 'Retry this account', exact: true });
   await retry.waitFor();
@@ -206,8 +277,144 @@ try {
   assert.equal(submissions.filter(submission => submission.integrationId === 'channel-linkedin').length, 2);
   await page.setViewportSize({ width: 812, height: 375 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+
+  // Local drafts expose a visible, cancellable action. A refused delete keeps all edits usable.
+  const deleteDraft = page.getByRole('button', { name: 'Delete draft', exact: true });
+  storedPost = undefined;
+  await page.goto(origin);
+  await text.fill('A local draft mentioning Postiz stays unchanged.');
+  await deleteDraft.waitFor();
+  const originalPost = structuredClone(storedPost);
+  const deleteCount = () => requests.filter(request => request.method === 'DELETE').length;
+  let confirmation = '';
+  page.once('dialog', async dialog => { confirmation = dialog.message(); await dialog.dismiss(); });
+  await deleteDraft.click();
+  assert.doesNotMatch(confirmation, /postiz/i);
+  assert.equal(deleteCount(), 0);
+  assert.equal(await text.inputValue(), originalPost.content);
+  assert.equal(await text.isEnabled(), true);
+
+  deleteFailure = true;
+  const deleteStarted = new Promise(resolveStarted => { holdDelete = resolveStarted; });
+  await text.fill('Unsaved edits survive a failed delete: Postiz.');
+  page.once('dialog', dialog => dialog.accept());
+  await deleteDraft.click();
+  await deleteStarted;
+  for (const control of [text, push, addPlatform,
+    page.getByRole('button', { name: 'Save draft', exact: true }),
+    page.getByRole('button', { name: 'Copy as new draft', exact: true }),
+    page.getByRole('button', { name: 'Back to posts', exact: true })]) {
+    assert.equal(await control.isDisabled(), true, 'deletion locks edits and competing actions');
+  }
+  await page.waitForTimeout(1400);
+  assert.equal(storedPost.content, originalPost.content, 'deletion parks the pending autosave');
+  releaseDelete();
+  await page.getByRole('alert').filter({ hasText: 'refused deletion' }).waitFor();
+  assert.doesNotMatch(await page.getByRole('alert').innerText(), /postiz/i);
+  assert.equal(await text.inputValue(), 'Unsaved edits survive a failed delete: Postiz.');
+  assert.equal(await text.isEnabled(), true);
+  await text.fill('Editing still works after deletion failure.');
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.content, 'Editing still works after deletion failure.');
+  deleteFailure = false;
+  page.once('dialog', dialog => dialog.accept());
+  await deleteDraft.click();
+  await page.getByRole('heading', { name: 'Create your first post', exact: true }).waitFor();
+  const afterDelete = requests.length;
+  await page.waitForTimeout(1500);
+  assert.equal(storedPost, undefined);
+  assert.equal(requests.length, afterDelete, 'successful deletion never resurrects the record');
+
+  // Deletion awaits either an in-flight initial create or PATCH and uses the returned id.
+  for (const saveMethod of ['POST', 'PATCH']) {
+    storedPost = undefined;
+    await page.goto(origin);
+    if (saveMethod === 'PATCH') {
+      await text.fill('Persisted draft before PATCH');
+      await deleteDraft.waitFor();
+    }
+    delayNextSave = true;
+    const savingStarted = new Promise(resolveStarted => { holdSave = resolveStarted; });
+    await text.fill(`In-flight ${saveMethod}`);
+    await savingStarted;
+    await text.fill('Newer edits must be discarded, not saved before deleting.');
+    const writesBeforeDelete = requests.filter(request => request.method !== 'GET').length;
+    page.once('dialog', dialog => dialog.accept());
+    await deleteDraft.click();
+    assert.equal(await text.isDisabled(), true);
+    const deletesBeforeRelease = deleteCount();
+    await page.waitForTimeout(1400);
+    assert.equal(deleteCount(), deletesBeforeRelease, 'delete waits for the save response');
+    releaseSave();
+    await page.getByRole('heading', { name: 'Create your first post', exact: true }).waitFor();
+    await page.waitForTimeout(1400);
+    assert.equal(requests.filter(request => request.method !== 'GET').length, writesBeforeDelete + 1, 'only DELETE follows the in-flight save');
+    assert.equal(storedPost, undefined);
+  }
+
+  // All three authoritative frozen states hide deletion; failed-only drafts remain deletable.
+  for (const targetStatus of ['accepted', 'submitting', 'pending_unknown', 'failed']) {
+    storedPost = { ...originalPost, content: 'Status verification draft.', editable: targetStatus === 'failed', frozenReason: targetStatus === 'failed' ? null : targetStatus,
+      targets: [{ integrationId: 'channel-x', platform: 'x', accountName: 'News desk', status: targetStatus,
+        postizPostId: null, warning: 'Postiz warning: review the draft.', error: 'Postiz refused the draft.', snapshotVersion: 0 }] };
+    await page.goto(`${origin}/?postId=${storedPost.id}`);
+    await text.waitFor();
+    assert.equal(await deleteDraft.count(), targetStatus === 'failed' ? 1 : 0);
+    assert.doesNotMatch(await page.locator('body').innerText(), /postiz/i, 'target errors and warnings pass through the presentation boundary');
+    if (targetStatus === 'failed') {
+      page.once('dialog', dialog => dialog.accept());
+      await deleteDraft.click();
+      await page.getByRole('heading', { name: 'Create your first post', exact: true }).waitFor();
+    }
+  }
+
+  storedPost = originalPost;
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  await text.fill('Preserve unsaved edits if the server freezes this draft.');
+  freezeOnDelete = true;
+  page.once('dialog', dialog => dialog.accept());
+  await deleteDraft.click();
+  await page.getByRole('alert').filter({ hasText: 'already exists' }).waitFor();
+  assert.equal(await deleteDraft.count(), 0, 'a frozen DELETE refusal refreshes authoritative state');
+  assert.equal(await text.isDisabled(), true);
+  assert.equal(await text.inputValue(), 'Preserve unsaved edits if the server freezes this draft.');
+  assert.doesNotMatch(await page.getByRole('alert').innerText(), /postiz/i);
+  const requestsAfterFreeze = requests.length;
+  await page.waitForTimeout(1400);
+  assert.equal(requests.length, requestsAfterFreeze, 'server-frozen drafts never resume autosave');
+  freezeOnDelete = false;
+
+  storedPost = originalPost;
+  await page.goto(`${origin}/?list=1`);
+  const listDelete = page.getByRole('button', { name: 'Delete local draft', exact: true });
+  await listDelete.waitFor();
+  assert.equal(await listDelete.innerText(), 'Delete local draft', 'list deletion has a visible text label');
+  page.once('dialog', dialog => dialog.accept());
+  await listDelete.click();
+  await page.getByRole('heading', { name: 'Create your first post', exact: true }).waitFor();
+
+  // A copied draft starts a fresh editor session; conflict and pending operations never leak.
+  storedPost = structuredClone(originalPost);
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  conflictNextSave = true;
+  await text.fill('Trigger a version conflict before copying.');
+  await page.getByRole('alert').filter({ hasText: 'changed in another tab' }).waitFor();
+  const copyStarted = new Promise(resolveStarted => { holdCopy = resolveStarted; });
+  await page.getByRole('button', { name: 'Copy as new draft', exact: true }).click();
+  await copyStarted;
+  assert.equal(await deleteDraft.isDisabled(), true, 'copy and delete are mutually exclusive');
+  assert.equal(await text.isDisabled(), true, 'copy prevents a competing autosave snapshot');
+  assert.equal(await page.getByRole('button', { name: 'Back to posts', exact: true }).isDisabled(), true);
+  releaseCopy();
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === 'A local draft mentioning Postiz stays unchanged.');
+  assert.equal(await page.getByRole('alert').count(), 0, 'fresh copy does not inherit conflict state');
+  await text.fill('The copied draft remains independently editable.');
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(requests.filter(request => request.method === 'PATCH').at(-1).pathname, '/api/posts/22222222-2222-4222-8222-222222222222');
   assert.deepEqual(errors, []);
-  console.log('PASS: real composer, account filtering/selection, image upload, autosave flush, new-post push, per-account retry without duplicates, frozen state, dark/light and mobile layout.');
+  console.log('PASS: compact picker, image upload, autosave flush, push/retry, mobile layout; delete cancellation/failure/success, in-flight POST/PATCH, frozen/failed-only states, neutral errors and visible list deletion.');
 } finally {
   if (browser) await browser.close();
   await new Promise(resolveClosed => server.close(resolveClosed));

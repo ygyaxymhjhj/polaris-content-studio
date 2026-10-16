@@ -1151,17 +1151,21 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .post-account-chip > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
 .post-account-chip button { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); }
 .post-account-chip button:hover { background: var(--surface-hover); color: var(--text-strong); }
-.post-account-picker { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--surface-card); }
-.post-account-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; font-size: 13px; }
-.post-account-picker-head .text-button { min-height: 36px; }
-.post-account-search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 7px; padding: 0 10px; color: var(--text-muted); }
-.post-account-search input { width: 100%; min-width: 0; height: 40px; border: 0; outline: none; background: transparent; color: var(--text-strong); font-size: 13px; }
-.post-account-search:focus-within { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-.post-account-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
-.post-account-filters button { min-height: 36px; border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; background: transparent; color: var(--text-muted); font-size: 12px; }
-.post-account-filters button[aria-pressed="true"] { border-color: var(--border-strong); background: var(--surface-muted); color: var(--text-strong); }
-.post-account-picker-list { display: grid; gap: 4px; max-height: 310px; overflow-y: auto; margin-bottom: 12px; padding: 2px; }
+.post-account-picker { position: fixed; z-index: 70; width: min(280px, calc(100vw - 24px)); overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 10px; padding: 6px; background: var(--surface-card); box-shadow: var(--shadow-panel); }
+.post-account-picker-list { display: grid; gap: 2px; }
 .post-account-picker-list > p { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13px; }
+.post-picker-account { position: relative; display: flex; align-items: center; gap: 12px; min-height: 64px; border-radius: 6px; padding: 10px; cursor: pointer; transition: background-color .18s ease; }
+.post-picker-account:hover, .post-picker-account.selected { background: var(--surface-hover); }
+.post-picker-account:has(input:focus-visible) { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+.post-picker-account:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.post-picker-account input { position: absolute; width: 18px; height: 18px; margin: 0; opacity: 0; }
+.post-picker-platform { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; background: var(--surface-muted); color: var(--text-strong); font: 500 16px/1 "DM Sans", sans-serif; }
+.post-picker-account .post-editor-account-copy { flex: 1; gap: 4px; }
+.post-picker-account .post-editor-account-copy strong { font-size: 13px; font-weight: 500; }
+.post-picker-account .post-editor-account-copy small { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.post-picker-check { flex: 0 0 auto; color: var(--accent-text); }
+.post-account-picker > .text-button { width: 100%; min-height: 36px; justify-content: space-between; margin-top: 4px; border-top: 1px solid var(--border); padding: 8px 10px; font-size: 11px; }
+.post-account-picker > .post-editor-panel-note { padding: 8px 10px; margin: 0; }
 .post-draft-destination { display: flex; align-items: center; gap: 9px; margin: 20px 0 16px; color: var(--text-muted); font-size: 11px; }
 .post-draft-destination span { display: grid; gap: 4px; }
 .post-draft-destination strong { color: var(--text); font-size: 12px; font-weight: 500; }
@@ -1192,7 +1196,7 @@ html[lang="vi"] .topbar .system-status { display: none; }
   .overview-metric-value { font-size: 26px; }
 }
 @media (pointer: coarse) {
-  .post-editor :is(button, .post-account-search input) { min-height: 44px; }
+  .post-editor button { min-height: 44px; }
   .post-editor-back, .post-media-remove, .post-account-chip button { min-width: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {

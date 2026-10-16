@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Loader2, Plus, Search, X } from "lucide-react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Loader2, Plus, X } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { MAX_POST_TARGETS } from "@/lib/post-types";
 import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
@@ -17,19 +17,52 @@ export default function PostAccountPicker({ accounts, selectedIds, disabled, loa
   const translate = useTranslation();
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
-  const searchInput = useRef<HTMLInputElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [platformFilter, setPlatformFilter] = useState("all");
-  const platforms = useMemo(() => [...new Set(accounts.map(account => account.identifier))], [accounts]);
-  const matchingAccounts = accounts.filter(account => (
-    (platformFilter === "all" || account.identifier === platformFilter)
-    && `${account.name} ${account.identifier}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())
-  ));
+  const [anchor, setAnchor] = useState({ top: 0, left: 0, maxHeight: 320 });
+
+  const positionPanel = useCallback(() => {
+    if (!trigger.current || !panel.current) return;
+    const bounds = trigger.current.getBoundingClientRect();
+    const margin = 12;
+    const gap = 8;
+    const below = window.innerHeight - bounds.bottom - margin - gap;
+    const above = bounds.top - margin - gap;
+    const openAbove = below < 200 && above > below;
+    const maxHeight = Math.max(80, Math.min(360, openAbove ? above : below));
+    const height = Math.min(panel.current.scrollHeight, maxHeight);
+    setAnchor({
+      left: Math.max(margin, Math.min(bounds.left, window.innerWidth - panel.current.offsetWidth - margin)),
+      top: Math.max(margin, openAbove ? bounds.top - gap - height : bounds.bottom + gap),
+      maxHeight
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open || disabled) return;
+    positionPanel();
+    panel.current?.querySelector<HTMLInputElement>('input:not(:disabled)')?.focus({ preventScroll: true });
+  }, [open, disabled, positionPanel]);
+
+  useLayoutEffect(() => {
+    if (open && !disabled) positionPanel();
+  }, [open, disabled, selectedIds.length, accounts.length, loading, positionPanel]);
 
   useEffect(() => {
-    if (open) searchInput.current?.focus();
-  }, [open]);
+    if (!open || disabled) return;
+    function dismissOutside(event: PointerEvent) {
+      const target = event.target as Node;
+      if (!trigger.current?.contains(target) && !panel.current?.contains(target)) setOpen(false);
+    }
+    document.addEventListener("pointerdown", dismissOutside);
+    window.addEventListener("resize", positionPanel);
+    window.addEventListener("scroll", positionPanel, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      window.removeEventListener("resize", positionPanel);
+      window.removeEventListener("scroll", positionPanel, true);
+    };
+  }, [open, disabled, positionPanel]);
 
   function closePicker() {
     setOpen(false);
@@ -64,39 +97,30 @@ export default function PostAccountPicker({ accounts, selectedIds, disabled, loa
         </button>
       </div>
       {open && !disabled && (
-        <div className="post-account-picker" id={panelId} onKeyDown={event => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            closePicker();
-          }
-        }}>
-          <div className="post-account-picker-head">
-            <strong>{translate("Choose accounts")}</strong>
-            <button type="button" className="text-button" onClick={closePicker}><Check size={14} aria-hidden="true" /> {translate("Done")}</button>
-          </div>
-          <label className="post-account-search">
-            <Search size={15} aria-hidden="true" />
-            <input ref={searchInput} value={search} onChange={event => setSearch(event.target.value)} aria-label={translate("Search accounts")} placeholder={translate("Search accounts")} />
-          </label>
-          <div className="post-account-filters" aria-label={translate("Filter by platform")}>
-            {["all", ...platforms].map(platform => (
-              <button key={platform} type="button" aria-pressed={platformFilter === platform} onClick={() => setPlatformFilter(platform)}>
-                {platform === "all" ? translate("All") : PLATFORM_META[platform as Platform]?.label || platform}
-              </button>
-            ))}
-          </div>
+        <div className="post-account-picker" id={panelId} ref={panel} style={anchor}
+          role="group" aria-label={translate("Choose accounts")}
+          onBlur={event => {
+            if (!event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== trigger.current) setOpen(false);
+          }} onKeyDown={event => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closePicker();
+            }
+          }}>
           <div className="post-account-picker-list">
             {loading && !accounts.length ? <p role="status"><Loader2 size={15} className="spin" aria-hidden="true" /> {translate("Loading accounts…")}</p>
-              : matchingAccounts.length ? matchingAccounts.map(account => {
+              : accounts.length ? accounts.map(account => {
                 const selected = selectedIds.includes(account.id);
                 return (
-                  <label key={account.id} className={`post-editor-account ${selected ? "selected" : ""} ${account.disabled ? "disabled" : ""}`}>
+                  <label key={account.id} className={`post-picker-account ${selected ? "selected" : ""} ${account.disabled ? "disabled" : ""}`}>
                     <input type="checkbox" checked={selected} disabled={account.disabled || (!selected && selectedIds.length >= MAX_POST_TARGETS)} onChange={() => toggleAccount(account.id)} />
-                    <span className="posts-platform-mark">{PLATFORM_META[account.identifier as Platform]?.short || account.identifier.slice(0, 2).toUpperCase()}</span>
+                    <span className="post-picker-platform" aria-hidden="true">{PLATFORM_META[account.identifier as Platform]?.short || account.identifier.slice(0, 2).toUpperCase()}</span>
                     <span className="post-editor-account-copy">
-                      <strong>{account.name}</strong>
-                      <small>{account.disabled ? translate("Needs reconnect in Postiz") : PLATFORM_META[account.identifier as Platform]?.label || account.identifier}</small>
+                      <strong>{PLATFORM_META[account.identifier as Platform]?.label || account.identifier}</strong>
+                      <small>{account.name}</small>
+                      {account.disabled && <small>{translate("Needs reconnect in Postiz")}</small>}
                     </span>
+                    {selected && <Check className="post-picker-check" size={16} aria-hidden="true" />}
                   </label>
                 );
               }) : <p>{translate("No matching accounts")}</p>}

@@ -10,7 +10,8 @@ import {
   Loader2,
   Save,
   Send,
-  ShieldCheck
+  ShieldCheck,
+  Trash2
 } from "lucide-react";
 import { LocaleContext, translate } from "@/lib/i18n";
 import AssetImageEditor from "@/components/AssetImageEditor";
@@ -35,6 +36,7 @@ import {
  */
 
 type Account = SocialAccount;
+type DeletionOperation = { phase: "idle" | "pending" | "deleted" } | { phase: "failed"; error: string };
 
 export default function PostEditorView({
   postId,
@@ -47,7 +49,8 @@ export default function PostEditorView({
   onOpened,
   onSaved,
   onOpenAccounts,
-  onRefreshAccounts
+  onRefreshAccounts,
+  onDeletionPendingChange
 }: {
   /** "new" starts an empty composer; the URL is upgraded to the saved id by onOpened. */
   postId: string | "new";
@@ -57,10 +60,11 @@ export default function PostEditorView({
   postizUiUrl: string;
   isAdmin: boolean;
   onBack: () => void;
-  onOpened: (postId: string) => void;
+  onOpened: (postId: string, newSession?: boolean) => void;
   onSaved: () => void;
   onOpenAccounts: () => void;
   onRefreshAccounts: () => void;
+  onDeletionPendingChange?: (pending: boolean) => void;
 }) {
   // A stable translator: every callback below lists it as a dependency, and useTranslation returns
   // a fresh function each render, which would re-create the autosave and push callbacks constantly.
@@ -86,6 +90,24 @@ export default function PostEditorView({
   const pushFlight = useRef(false);
   const [savedRevision, setSavedRevision] = useState(0);
   const [copiedNotice, setCopiedNotice] = useState("");
+  const [copying, setCopying] = useState(false);
+  const copyFlight = useRef(false);
+  const editorMounted = useRef(false);
+  useEffect(() => {
+    editorMounted.current = true;
+    return () => { editorMounted.current = false; };
+  }, []);
+  const [deletion, setDeletion] = useState<DeletionOperation>({ phase: "idle" });
+  const deletionOperation = useRef(deletion);
+  const deletionBlocked = deletion.phase === "pending" || deletion.phase === "deleted";
+
+  const updateDeletion = useCallback((operation: DeletionOperation) => {
+    deletionOperation.current = operation;
+    setDeletion(operation);
+    onDeletionPendingChange?.(operation.phase === "pending");
+  }, [onDeletionPendingChange]);
+
+  useEffect(() => () => onDeletionPendingChange?.(false), [onDeletionPendingChange]);
 
   const postRef = useRef<ManualPostDetail | null>(null);
   const versionRef = useRef(0);
@@ -110,10 +132,10 @@ export default function PostEditorView({
     setSavedRevision((revision) => revision + 1);
   }, []);
 
-  // Load the post (or reset for a new one). A reload of the id we already hold only refreshes the
-  // server state, so edits typed while the URL was being upgraded from "new" are not clobbered.
+  // Upgrading "new" to its saved id keeps this editor and its in-flight operation intact.
   useEffect(() => {
     if (postId === "new") {
+      updateDeletion({ phase: "idle" });
       setPost(null); postRef.current = null; versionRef.current = 0;
       setTitle(""); setContent(""); setImage(""); setImageDirty(false); setImageName("");
       setTargetIds([]);
@@ -122,6 +144,8 @@ export default function PostEditorView({
       setLoading(false); setLoadError(""); setConflict(false); setSaveError(""); setSubmitError(""); setFrozenNotice("");
       return;
     }
+    if (postRef.current?.id === postId) return;
+    updateDeletion({ phase: "idle" });
     let cancelled = false;
     setLoading(true);
     setLoadError("");
@@ -144,7 +168,7 @@ export default function PostEditorView({
       }
     })();
     return () => { cancelled = true; };
-  }, [postId, applyDetail]);
+  }, [postId, applyDetail, updateDeletion]);
 
   const payloadKey = useMemo(
     () => JSON.stringify([title, content, imageDirty, [...targetIds].sort().join(",")]),
@@ -155,20 +179,20 @@ export default function PostEditorView({
   const dirty = payloadKey !== savedPayload.current;
   void savedRevision;
   const editable = post ? post.editable : true;
-  const controlsLocked = !editable || preparingPush || Boolean(submitting.length);
+  const controlsLocked = !editable || preparingPush || Boolean(submitting.length) || deletionBlocked || copying;
+  const canDelete = editable && !post?.frozenReason && (!post || post.targets.every(target => target.status === "not_started" || target.status === "failed"));
 
-  const reloadPost = useCallback(async () => {
+  const reloadPost = useCallback(async (resetFields = true) => {
     const current = postRef.current;
     if (!current) return;
     try {
       const response = await fetch(`/api/posts/${current.id}`, { cache: "no-store" });
       const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string };
       if (!response.ok || !data.post) throw new Error(data.error || "The post could not be reloaded.");
-      applyDetail(data.post, { resetFields: true });
+      applyDetail(data.post, { resetFields });
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "The post could not be reloaded.");
     } finally {
-      // The local edits are gone either way; a stale conflict banner would only confuse.
       setConflict(false);
     }
   }, [applyDetail]);
@@ -202,7 +226,7 @@ export default function PostEditorView({
       setImageDirty(false);
     }
     setSavedRevision((revision) => revision + 1);
-    onOpened(detail.id);
+    if (editorMounted.current) onOpened(detail.id);
     onSaved();
     return detail;
   }, [onOpened, onSaved]);
@@ -228,7 +252,7 @@ export default function PostEditorView({
     if (response.status === 409) {
       if (data.code === "POST_FROZEN") {
         setFrozenNotice(data.error || "This post is now read-only because a draft was handed to Postiz.");
-        await reloadPost();
+        await reloadPost(deletionOperation.current.phase !== "pending");
         return null;
       }
       setConflict(true);
@@ -250,6 +274,8 @@ export default function PostEditorView({
   // Every value this reads comes from refs that are refreshed on each render, so the identity only
   // changes when the parent hands over new callbacks.
   const save = useCallback(async (): Promise<ManualPostDetail | null> => {
+    if (copyFlight.current) return null;
+    if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted") return null;
     if (saveFlight.current) return saveFlight.current;
     const flight = (async (): Promise<ManualPostDetail | null> => {
       const payload = payloadRef.current;
@@ -279,23 +305,25 @@ export default function PostEditorView({
   // Debounced autosave. It stays parked while accounts are submitting: those requests carry the
   // current version, and a save landing in between would invalidate them mid-flight.
   useEffect(() => {
-    if (!editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
+    if (copying || deletionBlocked || !editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
     const timer = window.setTimeout(() => { void save(); }, 1200);
     return () => window.clearTimeout(timer);
-  }, [editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, imageDirty, targetIds, postId]);
+  }, [copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, imageDirty, targetIds, postId]);
 
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
-      if (dirty || saving || preparingPush || submitting.length) {
+      if (deletion.phase !== "deleted" && (dirty || saving || preparingPush || submitting.length || deletionBlocked)) {
         event.preventDefault();
         event.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", preventLoss);
     return () => window.removeEventListener("beforeunload", preventLoss);
-  }, [dirty, saving, preparingPush, submitting.length]);
+  }, [deletion.phase, deletionBlocked, dirty, saving, preparingPush, submitting.length]);
 
   const pushTargets = useCallback(async (integrationIds: string[]) => {
+    if (copyFlight.current) return;
+    if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted") return;
     if (!integrationIds.length || pushFlight.current || accountsLoading || accountsError || imageBusy || conflict) return;
     pushFlight.current = true;
     setPreparingPush(true);
@@ -348,22 +376,58 @@ export default function PostEditorView({
   }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict]);
 
   async function copyAsNewDraft() {
+    if (deletionBlocked || copyFlight.current) return;
     const current = postRef.current;
     if (!current || pushFlight.current || imageBusy || saving) return;
+    copyFlight.current = true;
+    setCopying(true);
     setCopiedNotice("");
     try {
       const response = await fetch(`/api/posts/${current.id}/duplicate`, { method: "POST" });
       const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string };
       if (!response.ok || !data.post) throw new Error(data.error || "The post could not be copied.");
-      onOpened(data.post.id);
+      if (editorMounted.current) onOpened(data.post.id, true);
     } catch (error) {
       setCopiedNotice(error instanceof Error ? error.message : "The post could not be copied.");
+    } finally {
+      copyFlight.current = false;
+      setCopying(false);
     }
   }
 
   async function leaveToPosts() {
+    if (deletionBlocked || copyFlight.current) return;
     if (dirty && !await save()) return;
     onBack();
+  }
+
+  async function deleteDraft() {
+    if (copyFlight.current) return;
+    if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted" || !canDelete || pushFlight.current || imageBusy) return;
+    if (!postRef.current && !saveFlight.current) return;
+    if (!window.confirm(t("Delete this local draft permanently? Nothing has been sent to Postiz for it."))) return;
+    updateDeletion({ phase: "pending" });
+    try {
+      // Let an existing create/PATCH settle; never save newer edits just to discard them.
+      await saveFlight.current;
+      const current = postRef.current;
+      if (!current) throw new Error("The draft has not been saved. Keep editing or try saving again.");
+      if (!current.editable || current.frozenReason || current.targets.some(target => target.status !== "not_started" && target.status !== "failed")) {
+        throw new Error("This post is read-only. It cannot be deleted here.");
+      }
+      const response = await fetch(`/api/posts/${current.id}`, { method: "DELETE" });
+      const data = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+      if (!response.ok) {
+        if (data.code === "POST_FROZEN") await reloadPost(false);
+        throw new Error(data.error || "The post could not be deleted.");
+      }
+      // Keep autosave parked until navigation unmounts this editor.
+      updateDeletion({ phase: "deleted" });
+      onSaved();
+      onBack();
+    } catch (error) {
+      updateDeletion({ phase: "failed", error: error instanceof Error ? error.message : "The post could not be deleted." });
+    }
   }
 
   const accountsById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
@@ -419,7 +483,7 @@ export default function PostEditorView({
   return (
     <section className="post-editor" aria-labelledby="post-editor-title">
       <header className="post-editor-head">
-        <button type="button" className="post-editor-back" aria-label={t("Back to posts")} disabled={preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void leaveToPosts()}>
+        <button type="button" className="post-editor-back" aria-label={t("Back to posts")} disabled={copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void leaveToPosts()}>
           <ArrowLeft size={17} aria-hidden="true" />
         </button>
         <div className="post-editor-title-block">
@@ -433,12 +497,18 @@ export default function PostEditorView({
           </div>
         </div>
         <div className="post-editor-actions">
+          {canDelete && (post || saving) && (
+            <button type="button" className="secondary-button danger" disabled={copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void deleteDraft()}>
+              {deletion.phase === "pending" ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
+              {t(deletion.phase === "pending" ? "Deleting draft…" : "Delete draft")}
+            </button>
+          )}
           {post && (
-            <button type="button" className="secondary-button" disabled={preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}>
+            <button type="button" className="secondary-button" disabled={copying || deletionBlocked || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}>
               <Copy size={14} aria-hidden="true" /> {t("Copy as new draft")}
             </button>
           )}
-          <button type="button" className="secondary-button" disabled={!editable || !dirty || saving || imageBusy || preparingPush || Boolean(submitting.length) || conflict} onClick={() => void save()}>
+          <button type="button" className="secondary-button" disabled={controlsLocked || !dirty || saving || imageBusy || conflict} onClick={() => void save()}>
             <Save size={14} aria-hidden="true" /> {t("Save draft")}
           </button>
         </div>
@@ -455,7 +525,7 @@ export default function PostEditorView({
                 ? t("A submission is running. This view unlocks only while no draft exists in Postiz.")
                 : t("A draft already exists in Postiz for at least one account, so the local copy stays as it was submitted. Copy it as a new draft to change the text.")}
             <div className="frozen-actions">
-              <button type="button" className="secondary-button" disabled={preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
+              <button type="button" className="secondary-button" disabled={copying || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
               {isAdmin && postizUiUrl && <a className="text-button" href={postizUiUrl} target="_blank" rel="noopener noreferrer">{t("Open Postiz")} <ExternalLink size={13} aria-hidden="true" /></a>}
             </div>
           </div>
@@ -465,12 +535,14 @@ export default function PostEditorView({
       {conflict && (
         <div className="info-banner" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />
-          <div>{t("This post changed in another tab. Reload it before saving; your local edits in this tab will be replaced.")} <button type="button" className="text-button" onClick={() => void reloadPost()}>{t("Reload post")}</button></div>
+          <div>{t("This post changed in another tab. Reload it before saving; your local edits in this tab will be replaced.")} <button type="button" className="text-button" disabled={deletionBlocked} onClick={() => void reloadPost()}>{t("Reload post")}</button></div>
         </div>
       )}
       {saveError && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(saveError)}</div></div>}
       {submitError && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(submitError)}</div></div>}
       {copiedNotice && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(copiedNotice)}</div></div>}
+      {deletion.phase === "pending" && <div className="info-banner" role="status">{t("Deleting draft…")}</div>}
+      {deletion.phase === "failed" && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(deletion.error)}</div></div>}
       {accountsError && (
         <div className="info-banner" role="status">
           <AlertTriangle size={16} aria-hidden="true" />
@@ -511,7 +583,7 @@ export default function PostEditorView({
             disabled={controlsLocked}
             loading={accountsLoading}
             onChange={setTargetIds}
-            onOpenAccounts={onOpenAccounts}
+            onOpenAccounts={() => { if (!deletionBlocked) onOpenAccounts(); }}
           />
         </div>
 
@@ -543,14 +615,14 @@ export default function PostEditorView({
                         </div>
                       )}
                       {target.status === "pending_unknown" && <div className="post-editor-target-warning">{t("Result unconfirmed. Open Postiz and check before doing anything else.")}</div>}
-                      {target.status === "failed" && target.error && <div className="post-editor-target-error">{target.error}</div>}
-                      {target.warning && target.status !== "pending_unknown" && <div className="post-editor-target-warning">{target.warning}</div>}
+                      {target.status === "failed" && target.error && <div className="post-editor-target-error">{t(target.error)}</div>}
+                      {target.warning && target.status !== "pending_unknown" && <div className="post-editor-target-warning">{t(target.warning)}</div>}
                       {blocker && canRetry && <div className="post-editor-target-warning">{blocker}</div>}
                       {target.status === "failed" && (
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker)}
+                          disabled={copying || deletionBlocked || preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker)}
                           onClick={() => void pushTargets([target.integrationId])}
                         >
                           {isSubmitting ? <><Loader2 className="spin" size={13} aria-hidden="true" /> {t("Submitting…")}</> : <><Send size={13} aria-hidden="true" /> {target.status === "failed" ? t("Retry this account") : t("Submit to Postiz draft")}</>}
@@ -565,7 +637,7 @@ export default function PostEditorView({
             )}
             <div className="post-draft-destination"><ShieldCheck size={15} aria-hidden="true" /><span>{t("Destination")}<strong>{t("Postiz drafts")}</strong></span></div>
             <button type="button" className="primary-button post-push-drafts"
-            disabled={!pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
+            disabled={copying || deletionBlocked || !pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
               onClick={() => void pushTargets(pendingPushIds)}>
               {preparingPush || submitting.length ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
               {preparingPush || submitting.length ? t("Submitting…") : t("Push drafts to Postiz")}

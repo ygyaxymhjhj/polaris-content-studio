@@ -297,8 +297,8 @@ export default function FeishuSettingsPanel({ canManageMembers }: { canManageMem
             <div><dt>{t("Last test")}</dt><dd>{settings.lastTestAt ? <>{displayTime(settings.lastTestAt)} · {t(settings.lastTestOk === true ? "Successful" : settings.lastTestOk === false ? "Failed" : "Not tested")}</> : t("Not tested")}</dd></div>
             <div><dt>{t("Last worker update")}</dt><dd>{displayTime(settings.lastWorkerAt)}</dd></div>
           </dl>
-          {settings.lastTestError && <p className="feishu-feedback feishu-error">{t("Last test error")}: {redactError(settings.lastTestError)}</p>}
-          {settings.lastDeliveryError && <p className="feishu-feedback feishu-error">{t("Last delivery error (redacted)")}: {redactError(settings.lastDeliveryError)}</p>}
+          {settings.lastTestError && <p className="feishu-feedback feishu-error">{t("Last test error")}: {t(redactError(settings.lastTestError))}</p>}
+          {settings.lastDeliveryError && <p className="feishu-feedback feishu-error">{t("Last delivery error (redacted)")}: {t(redactError(settings.lastDeliveryError))}</p>}
         </>
       )}
       {notice && <p className="feishu-feedback" role="status">{t(notice)}</p>}

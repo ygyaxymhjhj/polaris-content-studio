@@ -12,14 +12,21 @@ human decision inside Postiz. The AI workspace, its projects and their export fl
   manual posts only.
 - **Posts** (`/?view=posts`) is the list: status tabs with live counts, search over the title and
   body, platform/account/edited-within filters, and paging. A row opens the editor; the row actions
-  copy the post as a new draft or delete a purely local one.
+  copy the post as a new draft or delete a purely local one with a visible text button.
 - **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and one image share a
-  compact composer; **Platforms > Add platform** expands a searchable account picker with platform
-  filters and multi-selection. There is no internal-title field, character counter, profile group,
+  compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
+  usernames and multi-selection, without avatars or search/filter controls. There is no internal-title field, character counter, profile group,
   simulated feed, publish-now option or scheduler. The right-hand summary lists chosen accounts,
-  their results and the **Push drafts to Postiz** action. Existing internal titles are preserved
+  their results and the **Push drafts** action. Existing internal titles are preserved
   but are not shown or sent to Postiz. The composer creates the record on the first effective edit; afterwards every
   change is autosaved with a version check, so a second tab cannot overwrite it silently.
+- **Delete draft** is available in the editor after autosave starts or a local draft is loaded.
+  Confirmation discards unsaved edits. Deletion waits for an existing create/update request and
+  pauses further autosaves until the result is known. A failure leaves the draft editable;
+  accepted, submitting and unconfirmed targets remain protected by the server's deletion guard.
+- **Engine-neutral UI.** System labels and errors use draft/publishing-service terminology in all
+  four languages. The internal API integration, stored IDs and console URLs are unchanged; user
+  post text and account names are not rewritten.
 
 ## What the statuses mean
 
