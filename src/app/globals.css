@@ -1217,3 +1217,14 @@ html[data-theme-mode="auto"] .theme-toggle-auto { display: block; }
   .sidebar-preferences > .theme-toggle { border-radius: 12px 12px 0 0; border-bottom: 0; }
   .sidebar-preferences > .language-menu { border-radius: 0 0 12px 12px; }
 }
+
+/* Desktop rail: compact pointer-sized preference buttons; the phone rail keeps 44px touch targets. */
+@media (min-width: 761px) {
+  .brand-lockup:has(.sidebar-preferences) { row-gap: 10px; }
+  .sidebar-preferences {gap: 0; }
+  .sidebar-preferences >.theme-toggle{ border-radius: 10px 0 0 10px;}
+  .sidebar-preferences > .language-menu { border-radius: 0 10px 10px 0; }
+  .sidebar-preferences>.theme-toggle > .theme-toggle-trigger,
+  .sidebar-preferences>.language-menu >.language-menu-trigger { width: 30px;height: 30px; border-radius: 7px; }
+  .sidebar-preferences> .theme-toggle > .theme-toggle-trigger> .theme-toggle-auto { right: 4px;bottom: 4px; width:4px;height: 4px;}
+}

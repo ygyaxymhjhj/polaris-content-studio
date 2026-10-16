@@ -94,7 +94,7 @@ export default function LanguageMenu({ language, onChange }: {
           }
         }}
       >
-        <Globe size={18} strokeWidth={1.7} aria-hidden="true" />
+        <Globe size={15} strokeWidth={1.7} aria-hidden="true" />
       </button>
       {open && (
         <div className="language-menu-popover" ref={menu} id={menuId} role="menu"

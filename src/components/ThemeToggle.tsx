@@ -119,8 +119,8 @@ export default function ThemeToggle({ language: languageOverride }: { language?:
         }}
       >
         <span className="theme-toggle-glyph" aria-hidden="true">
-          <Sun className="theme-glyph theme-glyph-light" size={16} strokeWidth={1.7} />
-          <Moon className="theme-glyph theme-glyph-dark" size={16} strokeWidth={1.7} />
+          <Sun className="theme-glyph theme-glyph-light" size={15} strokeWidth={1.7} />
+          <Moon className="theme-glyph theme-glyph-dark" size={15} strokeWidth={1.7} />
         </span>
         <span className="theme-toggle-auto" aria-hidden="true" />
       </button>
