@@ -1156,11 +1156,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     <LocaleContext.Provider value={uiLanguage}><div className={`app-shell ${view === "overview" || view === "posts" ? "posts-surface" : ""}`}>
       <aside className="sidebar">
         <div className="brand-lockup">
-          <div className="brand-mark"><span>✦</span></div>
           <div className="brand-copy">
             <div className="brand-name">POLARIS</div>
-            <div className="brand-product">Content Studio</div>
           </div>
+          <span className="brand-short" aria-label="Polaris">P</span>
           <div className="sidebar-preferences" role="group" aria-label={t("Appearance")}>
             <ThemeToggle />
             <LanguageMenu language={uiLanguage} onChange={changeUiLanguage} />

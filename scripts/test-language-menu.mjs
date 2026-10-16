@@ -126,6 +126,16 @@ try {
   const options = page.locator('.language-menu-option');
   const popover = page.locator('.language-menu-popover');
   await trigger.waitFor();
+  const wordmarkBounds = await page.locator('.brand-copy .brand-name').boundingBox();
+  const appearanceBounds = await page.locator('.theme-toggle-trigger').boundingBox();
+  const languageTriggerBounds = await trigger.boundingBox();
+  assert.equal(await page.locator('.brand-lockup .brand-mark, .brand-lockup .brand-product').count(), 0);
+  assert.ok(wordmarkBounds.x + wordmarkBounds.width <= appearanceBounds.x, 'Wordmark must not overlap preferences');
+  assert.equal(appearanceBounds.y, languageTriggerBounds.y, 'Preferences share one header row');
+  assert.ok(Math.abs(wordmarkBounds.y + wordmarkBounds.height / 2 - appearanceBounds.y - appearanceBounds.height / 2) < 1);
+  for (const preference of ['.theme-toggle', '.language-menu']) {
+    assert.equal(await page.locator(`.sidebar-preferences > ${preference}`).evaluate(element => getComputedStyle(element).backgroundColor), 'rgba(0, 0, 0, 0)');
+  }
   const assertFocused = async locator => assert.equal(await locator.evaluate(element => element === document.activeElement), true);
   const assertBounds = async () => {
     const bounds = await popover.boundingBox();
