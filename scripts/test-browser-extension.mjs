@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { chromium } from 'playwright';
-import { signIn } from './_login.mjs';
+import { openWorkspace, signIn } from './_login.mjs';
 
 const extension = path.resolve('browser-extension');
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'polaris-extension-test-'));
@@ -12,6 +12,7 @@ let account;
 try {
   const app = await context.newPage();
   account = await signIn(app, process.env.TEST_BASE_URL || 'http://localhost:3002');
+  await openWorkspace(app);
   // The source panel opens on the URL tab; the paste textarea only exists on the text tab.
   await app.locator('.segmented-tab').nth(1).click();
   await app.waitForFunction(() => document.documentElement.dataset.polarisArticleImport === 'v1');

@@ -13,6 +13,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Gauge,
   Hash,
   History,
   Layers3,
@@ -50,6 +51,9 @@ import MembersPanel from "@/components/MembersPanel";
 import FeishuSettingsPanel from "@/components/FeishuSettingsPanel";
 import ConnectAccountsDialog from "@/components/ConnectAccountsDialog";
 import SocialAccountsView from "@/components/SocialAccountsView";
+import OverviewView from "@/components/OverviewView";
+import PostsView from "@/components/PostsView";
+import PostEditorView from "@/components/PostEditorView";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, markSubmissionSucceeded, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
 import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
@@ -73,12 +77,19 @@ import {
   SourceAnalysis
 } from "@/lib/types";
 
-type View = "workspace" | "facts" | "assets" | "export" | "accounts" | "settings";
+type View = "overview" | "posts" | "workspace" | "facts" | "assets" | "export" | "accounts" | "settings";
+
+/** Views that belong to the AI project shell. Background generation may only move the user between these. */
+const AI_VIEWS: View[] = ["workspace", "facts", "assets"];
+const ALL_VIEWS: View[] = ["overview", "posts", "workspace", "facts", "assets", "export", "accounts", "settings"];
+type PostsStatusFilter = "all" | "draft" | "pushing" | "pushed" | "attention";
 
 /** "Alex Lee" -> "AL", a single CJK name -> its first character. */
 const initials = (name: string) => name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: "overview", label: "Overview", icon: Gauge },
+  { id: "posts", label: "Posts", icon: Send },
   { id: "workspace", label: "Workspace", icon: LayoutDashboard },
   { id: "facts", label: "Source references", icon: ClipboardCheck },
   { id: "assets", label: "Content assets", icon: Layers3 },
@@ -191,7 +202,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     try { localStorage.setItem("polaris-ui-language", value); } catch { /* Optional preference. */ }
   }
   const t = (text: string) => translate(uiLanguage, text);
-  const [view, setView] = useState<View>("workspace");
+  const [view, setView] = useState<View>("overview");
+  // Manual-post routing: the list, the composer and an existing post all live under view "posts".
+  const [activePostId, setActivePostId] = useState("");
+  const [postsComposing, setPostsComposing] = useState(false);
+  const [postsInitialStatus, setPostsInitialStatus] = useState<PostsStatusFilter>("all");
+  // Bumped whenever the editor saves, so the list refetches when the user goes back to it.
+  const [postsRefreshToken, setPostsRefreshToken] = useState(0);
+  const viewRef = useRef<View>("overview");
+  viewRef.current = view;
   const [config, setConfig] = useState<ProjectConfig>(() => alignSourceConfig(initialConfig, fixedArticle, new Set()));
   const editedConfig = useRef(new Set<keyof ProjectConfig>());
   const importedSource = useRef<ImportedSource | null>(fixedArticle);
@@ -298,8 +317,14 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const requestedView = query.get("view");
-    const allowedViews: View[] = ["workspace", "facts", "assets", "export", "accounts", "settings"];
-    if (requestedView && allowedViews.includes(requestedView as View)) setView(requestedView as View);
+    if (requestedView && ALL_VIEWS.includes(requestedView as View)) {
+      setView(requestedView as View);
+      if (requestedView === "posts") {
+        const requestedPostId = query.get("postId");
+        if (requestedPostId && /^[a-f0-9-]{36}$/i.test(requestedPostId)) setActivePostId(requestedPostId);
+        else if (query.get("compose") === "new") setPostsComposing(true);
+      }
+    }
     const outcome = query.get("connection");
     if (outcome !== "returned" && outcome !== "invalid") return;
     setConnectionNotice(outcome === "returned"
@@ -311,6 +336,48 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       window.opener.postMessage({ type: "POLARIS_POSTIZ_RETURNED", outcome }, window.location.origin);
       window.close();
     }
+  }, []);
+
+  /**
+   * Address-bar sync. Every view change — whether it came from the sidebar, a card or the storage
+   * bar — is reflected in the URL so refresh, sharing and back/forward keep working. The first run
+   * replaces the entry instead of pushing, so loading "/" does not add a duplicate history step.
+   */
+  const firstRouteSync = useRef(true);
+  useEffect(() => {
+    const url = view === "posts"
+      ? postsComposing ? "/?view=posts&compose=new"
+        : activePostId ? `/?view=posts&postId=${activePostId}`
+          : "/?view=posts"
+      : `/?view=${view}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current === url) { firstRouteSync.current = false; return; }
+    const state = { polarisView: view };
+    if (firstRouteSync.current) {
+      firstRouteSync.current = false;
+      window.history.replaceState(state, "", url);
+    } else {
+      window.history.pushState(state, "", url);
+    }
+  }, [view, activePostId, postsComposing]);
+
+  useEffect(() => {
+    function onPopState() {
+      const query = new URLSearchParams(window.location.search);
+      const requestedView = query.get("view");
+      const nextView = requestedView && ALL_VIEWS.includes(requestedView as View) ? requestedView as View : "overview";
+      if (nextView === "posts") {
+        const requestedPostId = query.get("postId");
+        setActivePostId(requestedPostId && /^[a-f0-9-]{36}$/i.test(requestedPostId) ? requestedPostId : "");
+        setPostsComposing(query.get("compose") === "new" && !requestedPostId);
+      } else {
+        setActivePostId("");
+        setPostsComposing(false);
+      }
+      setView(nextView);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   useEffect(() => {
@@ -434,7 +501,12 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     return [...list].sort((a, b) => DEFAULT_PLATFORMS.indexOf(a.platform) - DEFAULT_PLATFORMS.indexOf(b.platform) || a.id.localeCompare(b.id));
   }, [assetFilter, assets]);
 
-  function restoreProject(snapshot: ProjectSnapshot) {
+  /**
+   * `source` tells apart the silent restore on page load from the user asking for a project:
+   * an automatic restore must never drag someone away from Overview or Posts, where they are
+   * working on something unrelated to the AI project that happens to load in the background.
+   */
+  function restoreProject(snapshot: ProjectSnapshot, source: "auto" | "manual" = "manual") {
     clearDerivedContent();
     importedSource.current = snapshot.importedSource;
     editedConfig.current = new Set(snapshot.editedConfig);
@@ -442,7 +514,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setSourcePending(snapshot.sourcePending); setSourceError(""); setBrowserArticle(null);
     setAnalysis(snapshot.analysis); setAssets(snapshot.assets); setSelectedPlatforms(snapshot.selectedPlatforms);
     setThreads(snapshot.threads); setUsedFallback(snapshot.usedFallback); setGenerationRun(snapshot.generationRun);
-    setView(snapshot.assets.length ? "assets" : "workspace");
+    const staysOnManualPosts = viewRef.current === "overview" || viewRef.current === "posts";
+    if (source === "manual" || !staysOnManualPosts) setView(snapshot.assets.length ? "assets" : "workspace");
   }
 
   function notify(message: string) {
@@ -625,7 +698,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setAssets([]);
     setUsedFallback(false);
     setPendingPlatforms(platforms);
-    setView("assets");
+    // The pack fills in as it arrives, but it must not steal the navigation if the user has moved
+    // on to Overview or Posts while the analysis was running.
+    if (AI_VIEWS.includes(viewRef.current)) setView("assets");
     const queue = [...platforms];
     let failed = 0;
     async function worker() {
@@ -1028,11 +1103,58 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       notify("Generate content first.");
       return;
     }
+    if (viewName === "posts") {
+      setActivePostId("");
+      setPostsComposing(false);
+      setPostsInitialStatus("all");
+    }
     setView(viewName);
   }
 
+  const openPostsWithStatus = useCallback((status: PostsStatusFilter) => {
+    setPostsInitialStatus(status);
+    setActivePostId("");
+    setPostsComposing(false);
+    setView("posts");
+  }, []);
+
+  const openPost = useCallback((postId: string) => {
+    setActivePostId(postId);
+    setPostsComposing(false);
+    setView("posts");
+  }, []);
+
+  // Stable callbacks for the manual-post views: the editor lists these in effect dependencies.
+  const startNewPost = useCallback(() => {
+    setActivePostId("");
+    setPostsComposing(true);
+    setView("posts");
+  }, []);
+
+  /**
+   * The editor upgrades its own entry from "?compose=new" to the saved id, so the back button
+   * returns to the list instead of re-opening an empty composer that could create a second post.
+   */
+  const handlePostOpened = useCallback((postId: string) => {
+    window.history.replaceState({ polarisView: "posts" }, "", `/?view=posts&postId=${postId}`);
+    setActivePostId(postId);
+    setPostsComposing(false);
+    setPostsRefreshToken(token => token + 1);
+  }, []);
+
+  const backToPosts = useCallback(() => {
+    setActivePostId("");
+    setPostsComposing(false);
+    setView("posts");
+  }, []);
+
+  const openAccountsView = useCallback(() => setView("accounts"), []);
+  const openWorkspaceView = useCallback(() => setView("workspace"), []);
+  const markPostsSaved = useCallback(() => setPostsRefreshToken(token => token + 1), []);
+  const refreshAccounts = useCallback(() => { void loadChannels(); }, [loadChannels]);
+
   return (
-    <LocaleContext.Provider value={uiLanguage}><div className="app-shell">
+    <LocaleContext.Provider value={uiLanguage}><div className={`app-shell ${view === "overview" || view === "posts" ? "shell-dark" : ""}`}>
       <aside className="sidebar">
         <div className="brand-lockup">
           <div className="brand-mark"><span>✦</span></div>
@@ -1077,7 +1199,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Growth OS</span><span className="slash">/</span><strong>{config.name || t("New project")}</strong></div>
+          <div className="breadcrumbs"><span>Growth OS</span><span className="slash">/</span><strong>{view === "overview" ? t("Overview") : view === "posts" ? t("Posts") : config.name || t("New project")}</strong></div>
           <div className="topbar-actions">
             <label className="locale-switcher"><span>{t("Interface language")}</span><select aria-label={t("Interface language")} value={uiLanguage} onChange={(event) => changeUiLanguage(event.target.value as UiLanguage)}><option value="en">{t("English")}</option><option value="zh">简体中文</option><option value="vi">Tiếng Việt</option><option value="th">ไทย</option></select></label>
             <div className="system-status"><span className="status-dot" /> {t("All systems operational")}</div>
@@ -1089,7 +1211,47 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
         <div className="content-wrap">
           {submissionNotice && <div className="info-banner" role="status"><TriangleAlert size={16} aria-hidden="true" /><span>{submissionNotice}</span></div>}
-          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets: getPersistedAssets(assets), selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={changeCurrentProject} hidden={view === "export" || view === "accounts" || view === "settings"} />
+          <ProjectStorage snapshot={{ schemaVersion: 1, config, sourceText, sourceName, sourcePending, importedSource: importedSource.current, editedConfig: [...editedConfig.current], analysis, assets: getPersistedAssets(assets), selectedPlatforms, threads, usedFallback, generationRun }} busy={loading !== null || rewriting || selectedAsset !== null} onRestore={restoreProject} onProjectChange={changeCurrentProject} hidden={view === "export" || view === "accounts" || view === "settings" || view === "overview" || view === "posts"} />
+          {view === "overview" && (
+            <OverviewView
+              accounts={socialAccounts}
+              accountsLoading={channelsLoading}
+              accountsError={channelsError}
+              onRefreshAccounts={refreshAccounts}
+              onOpenAccounts={openAccountsView}
+              onOpenPosts={openPostsWithStatus}
+              onNewPost={startNewPost}
+              onOpenWorkspace={openWorkspaceView}
+              refreshToken={postsRefreshToken}
+            />
+          )}
+          {view === "posts" && (postsComposing || activePostId ? (
+            <PostEditorView
+              key={postsComposing ? "compose" : activePostId}
+              postId={postsComposing ? "new" : activePostId}
+              accounts={socialAccounts}
+              accountsLoading={channelsLoading}
+              accountsError={channelsError}
+              postizUiUrl={postizUiUrl}
+              isAdmin={user.role === "admin"}
+              onBack={backToPosts}
+              onOpened={handlePostOpened}
+              onSaved={markPostsSaved}
+              onOpenAccounts={openAccountsView}
+              onRefreshAccounts={refreshAccounts}
+            />
+          ) : (
+            <PostsView
+              accounts={socialAccounts}
+              accountsLoading={channelsLoading}
+              accountsError={channelsError}
+              initialStatus={postsInitialStatus}
+              onOpenPost={openPost}
+              onNewPost={startNewPost}
+              onOpenAccounts={openAccountsView}
+              refreshToken={postsRefreshToken}
+            />
+          ))}
           {view === "workspace" && (sourceError || sourcePending) && (
             <div className="info-banner" role="alert"><TriangleAlert size={18} /><div>{t(sourceError || "The new URL has not been imported. Fetch successfully, paste new text, or upload an article file first.")}<p>{t("Currently loaded source")}: {importedSource.current?.sourceUrl || sourceName || "—"}</p></div></div>
           )}

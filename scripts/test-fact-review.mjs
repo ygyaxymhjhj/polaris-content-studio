@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { signIn } from './_login.mjs';
+import { openWorkspace, signIn } from './_login.mjs';
 const source = 'This is a fictional review test. The company opens at 09:00. '.repeat(10);
 const analysis = { summaryShort: 'Review test', summaryLong: 'Fictional test data.', keyTerms: ['Test'], riskFlags: ['Review the source.'], facts: Array.from({length:58}, (_,i)=>({id:`F${String(i+1).padStart(3,'0')}`,type:'claim',text:`Test fact ${i+1}`,sourceExcerpt:i===57?'Invented quotation':'The company opens at 09:00.',sourceLocation:'Test paragraph',verified:false,usableOnSocial:true,riskLevel:'low'})) };
 const browser = await chromium.launch();
@@ -12,6 +12,7 @@ try {
  await page.route('**/api/generate',async r=>{requests.push(r.request().postDataJSON());await r.fulfill({json:{assets:[],usedFallback:false}});});
  await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
  account = await signIn(page, process.env.TEST_BASE_URL || 'http://localhost:3002');
+ await openWorkspace(page);
  await page.locator('.segmented-tab').nth(1).click();
  await page.locator('.source-textarea').fill(source);
  await page.getByRole('button',{name:'Generate social drafts',exact:true}).click();

@@ -406,13 +406,25 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
     }
   }
 
+  const result = await createDraftPost(config, draftPayload(req, images));
+  if (!result.ok) return { success: false, error: result.error };
+  // Acceptance and tracking are separate: never invent an ID or invite a duplicate submission.
+  return result.postId
+    ? { success: true, postId: result.postId }
+    : { success: true, warning: "Postiz accepted the draft, but post tracking is unavailable because it returned no post ID." };
+}
+
+/**
+ * Builds the create-draft payload. The `date` is required by the Postiz create endpoint and is the
+ * moment the draft was written, not a publish time: promoting the draft inside Postiz sets the real
+ * one, and `type` stays "draft" so nothing here can go live on its own.
+ */
+function draftPayload(req: PostizPublishRequest, images: Array<{ id: string; path: string }>) {
   const normalizedPlatform = (req.platform || "x").toLowerCase();
   const settings = DEFAULT_POSTIZ_SETTINGS[normalizedPlatform] || { __type: normalizedPlatform };
 
-  const payload = {
+  return {
     type: "draft",
-    // Postiz requires a date on every create call, drafts included. It is the moment the draft was
-    // written, not a publish time; promoting the draft in Postiz sets the real one.
     date: new Date().toISOString(),
     shortLink: false,
     tags: [],
@@ -429,7 +441,17 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
       }
     ]
   };
+}
 
+type DraftPostResult =
+  | { ok: true; postId: string | null }
+  | { ok: false; error: string; uncertain: boolean };
+
+/**
+ * Creates one Postiz draft. A transport failure is reported as uncertain because the request may
+ * still have been processed upstream; HTTP error responses are definite refusals.
+ */
+async function createDraftPost(config: PostizConfig, payload: object): Promise<DraftPostResult> {
   try {
     const base = getPostizApiBaseUrl(config.apiUrl);
     const response = await fetch(`${base}/public/v1/posts`, {
@@ -445,7 +467,7 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
-      return { success: false, error: `Postiz API error (${response.status}): ${errText.slice(0, 300)}` };
+      return { ok: false, uncertain: false, error: `Postiz API error (${response.status}): ${errText.slice(0, 300)}` };
     }
 
     const responseData: unknown = await response.json().catch(() => null);
@@ -453,16 +475,55 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
     if (isPostizRecord(firstItem)) {
       for (const upstreamId of [firstItem.postId, firstItem.id]) {
         if (typeof upstreamId === "string" && upstreamId.trim()) {
-          return { success: true, postId: upstreamId };
+          return { ok: true, postId: upstreamId };
         }
       }
     }
-    // Acceptance and tracking are separate: never invent an ID or invite a duplicate submission.
-    return { success: true, warning: "Postiz accepted the draft, but post tracking is unavailable because it returned no post ID." };
+    return { ok: true, postId: null };
   } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Failed to create the Postiz draft"
-    };
+    return { ok: false, uncertain: true, error: error instanceof Error ? error.message : "Failed to create the Postiz draft" };
   }
+}
+
+export interface StrictDraftResult {
+  success: boolean;
+  postId?: string;
+  error?: string;
+  warning?: string;
+  /**
+   * True when the create call failed at the transport layer: Postiz may or may not have created the
+   * draft, so callers must not retry automatically.
+   */
+  uncertain?: boolean;
+}
+
+/**
+ * Creates a Postiz draft for content that must not degrade silently. Unlike publishToPostiz, a
+ * failed image upload aborts the submission instead of sending a text-only draft, and transport
+ * failures are flagged as uncertain so the caller can record "needs review" instead of a failure.
+ * Polaris still only ever creates drafts.
+ */
+export async function createStrictDraft(req: PostizPublishRequest): Promise<StrictDraftResult> {
+  const config = getPostizConfig();
+  if (!config) {
+    return { success: false, error: "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY." };
+  }
+
+  let images: Array<{ id: string; path: string }> = [];
+  if (req.imageUrl) {
+    const uploaded = await uploadMediaToPostiz(config, req.imageUrl);
+    if (!uploaded) {
+      // No create call happens here, so the result is a definite failure rather than uncertain.
+      return { success: false, error: "The post image could not be uploaded to Postiz. No draft was created for this account." };
+    }
+    images = [uploaded];
+  }
+
+  const result = await createDraftPost(config, draftPayload(req, images));
+  if (!result.ok) {
+    return { success: false, error: result.error, ...(result.uncertain ? { uncertain: true } : {}) };
+  }
+  return result.postId
+    ? { success: true, postId: result.postId }
+    : { success: true, warning: "Postiz accepted the draft but returned no post ID, so publication tracking is unavailable." };
 }

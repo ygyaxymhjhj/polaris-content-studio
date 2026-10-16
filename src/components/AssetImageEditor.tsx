@@ -11,6 +11,10 @@ interface AssetImageEditorProps {
   originalImageUrl?: string;
   title: string;
   disabled?: boolean;
+  /** Manual posts only accept uploaded files, so the URL input can be hidden. */
+  allowUrlInput?: boolean;
+  /** Label for a value that is neither an uploaded data URL nor the original article image. */
+  urlSourceLabel?: string;
   onChange: (imageUrl: string) => void;
   onBusyChange: (busy: boolean) => void;
 }
@@ -20,6 +24,8 @@ export default function AssetImageEditor({
   originalImageUrl,
   title,
   disabled = false,
+  allowUrlInput = true,
+  urlSourceLabel,
   onChange,
   onBusyChange
 }: AssetImageEditorProps) {
@@ -39,7 +45,7 @@ export default function AssetImageEditor({
   const previewFailed = !!value && failedPreviewUrl === value;
   const sourceLabel = isEmbeddedImage
     ? t("Uploaded image")
-    : value === originalImageUrl ? t("Article image") : t("Image link");
+    : value === originalImageUrl ? t("Article image") : urlSourceLabel ? t(urlSourceLabel) : t("Image link");
 
   useEffect(() => () => {
     // A closed editor or an AI candidate must never receive a late file-read result.
@@ -173,21 +179,23 @@ export default function AssetImageEditor({
       </div>
 
       <p id={`${fieldId}-help`} className="asset-image-help">{t("JPG, PNG or WebP, up to 5 MB. Large images are optimized automatically.")}</p>
-      <label className="field-label asset-image-url" htmlFor={`${fieldId}-url`}>
-        {t("Or use an image link")}
-        <input
-          id={`${fieldId}-url`}
-          type="url"
-          inputMode="url"
-          value={isEmbeddedImage ? "" : value}
-          disabled={locked}
-          placeholder={isEmbeddedImage ? t("Paste a link to replace the uploaded image") : "https://..."}
-          aria-describedby={`${fieldId}-help`}
-          onChange={(event) => changeImage(event.target.value.trim())}
-        />
-      </label>
+      {allowUrlInput && (
+        <label className="field-label asset-image-url" htmlFor={`${fieldId}-url`}>
+          {t("Or use an image link")}
+          <input
+            id={`${fieldId}-url`}
+            type="url"
+            inputMode="url"
+            value={isEmbeddedImage ? "" : value}
+            disabled={locked}
+            placeholder={isEmbeddedImage ? t("Paste a link to replace the uploaded image") : "https://..."}
+            aria-describedby={`${fieldId}-help`}
+            onChange={(event) => changeImage(event.target.value.trim())}
+          />
+        </label>
+      )}
       {uploadError && <p className="asset-image-error" role="alert">{uploadError}</p>}
-      {previewFailed && <p className="asset-image-error">{t("Check the image link or upload a local file instead.")}</p>}
+      {previewFailed && allowUrlInput && <p className="asset-image-error">{t("Check the image link or upload a local file instead.")}</p>}
       <div className="asset-image-status" role="status">
         {uploading ? t("Processing image…") : currentUpload ? t(currentUpload.optimized ? "Image optimized and added to the draft. Save changes to keep it." : "Image added to the draft. Save changes to keep it.") : ""}
       </div>

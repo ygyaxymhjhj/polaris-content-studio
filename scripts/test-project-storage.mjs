@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { signIn } from './_login.mjs';
+import { openWorkspace, signIn } from './_login.mjs';
 
 const base=process.env.TEST_BASE_URL || 'http://localhost:3002';
 const browser=await chromium.launch();
@@ -12,12 +12,13 @@ try {
  await page.route('**/api/analyze',r=>r.fulfill({json:{summaryShort:'Storage test',summaryLong:'Fictional source.',keyTerms:['Test'],riskFlags:[],facts:[{id:'F001',type:'claim',text:'Example Company opens at 09:00.',sourceExcerpt:'Example Company opens at 09:00 and closes at 17:00.',sourceLocation:'Test',verified:false,usableOnSocial:true,riskLevel:'low'}]}}));
  await page.route('**/api/generate',r=>{const p=r.request().postDataJSON().platforms[0];return r.fulfill({json:{assets:[{id:`storage-${p}`,platform:p,assetType:'test',title:'Storage test '+p,content:'Persisted fictional content.',cta:'Read the test',factIds:['F001'],riskFlags:[],status:'needs_review',generationMode:'ai',meta:{note:'test'},updatedAt:new Date().toISOString()}],usedFallback:false}});});
  alice=await signIn(page,base,{displayName:'Storage Alice'});
+ await openWorkspace(page);
  // The source panel opens on the URL tab; the paste textarea only exists on the text tab.
  await page.locator('.segmented-tab').nth(1).click();
  await page.locator('.source-textarea').fill(source);
  // Current flow: analyse the source, then generate from the confirmed facts in the references view.
  await page.locator('.distribution-panel .panel-actions .primary-button').click();
- await page.locator('.main-nav .nav-item').nth(1).click();
+ await page.locator('.main-nav .nav-item').filter({hasText:'Source references'}).click();
  await page.getByRole('button',{name:/Generate confirmed facts/}).click();
  await page.waitForFunction(()=>document.querySelectorAll('.asset-card:not(.skeleton)').length===5);
  await page.waitForFunction(()=>document.querySelector('.project-storage [role=status]')?.textContent==='Saved to MySQL');

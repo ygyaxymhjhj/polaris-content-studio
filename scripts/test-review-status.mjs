@@ -218,6 +218,8 @@ try {
     ...submissionContext, rewriteSequence: { current: 1 }, PACK_CONCURRENCY: 5,
     setRewriting: noOperation, setThreads: noOperation, clearCandidates: noOperation, setLoading: noOperation,
     setGenerationRun: noOperation, setUsedFallback: noOperation, setPendingPlatforms: noOperation, setView: noOperation,
+    // generatePack only navigates while the user is still inside the AI project shell.
+    AI_VIEWS: ["workspace", "facts", "assets"], viewRef: { current: "workspace" },
     setAssets: update => { submissionAssets = typeof update === "function" ? update(submissionAssets) : update; },
     fetch: async () => Response.json({ assets: [] })
   });

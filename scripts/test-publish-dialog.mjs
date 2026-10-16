@@ -4,7 +4,7 @@
 // Needs a running app and MySQL; the AI and Postiz calls are mocked, so no paid requests.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { signIn } from './_login.mjs';
+import { openWorkspace, signIn } from './_login.mjs';
 
 const base = process.env.TEST_BASE_URL || 'http://localhost:3002';
 const accounts = [
@@ -67,6 +67,7 @@ try {
   }));
 
   account = await signIn(page, base, { displayName: 'Dialog Test' });
+  await openWorkspace(page);
   await page.locator('.segmented-tab').nth(1).click();
   await page.locator('.source-textarea').fill('Fictional regression source. Example Company opens at 09:00 and closes at 17:00. '.repeat(4));
   await page.locator('.distribution-panel .panel-actions .primary-button').click();

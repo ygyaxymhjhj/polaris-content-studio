@@ -153,6 +153,51 @@ CREATE TABLE IF NOT EXISTS social_notification_outbox (
   CONSTRAINT social_notification_audit_fk FOREIGN KEY (publish_audit_id) REFERENCES social_publishes(id)
 ) ENGINE=InnoDB;
 
+-- Manual posts are written by hand in Polaris and never join an AI project snapshot. There is no
+-- media library yet, so the validated image (and its list thumbnail) live inline as data URLs;
+-- the thumbnail column keeps list payloads small without returning the full image.
+CREATE TABLE IF NOT EXISTS posts (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  owner_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  title VARCHAR(255) NOT NULL DEFAULT '',
+  content TEXT NOT NULL,
+  image_data MEDIUMTEXT NULL,
+  image_thumb MEDIUMTEXT NULL,
+  image_name VARCHAR(255) NULL,
+  image_width INT UNSIGNED NULL,
+  image_height INT UNSIGNED NULL,
+  version INT UNSIGNED NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX posts_owner_updated (owner_user_id, updated_at),
+  CONSTRAINT posts_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- One row per account a manual post should reach. 'not_started' and 'failed' targets leave the
+-- post editable; 'accepted', 'submitting' and 'pending_unknown' freeze it so every account got the
+-- same content. snapshot_version records the post version that was handed to Postiz.
+CREATE TABLE IF NOT EXISTS post_targets (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  post_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  integration_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  platform VARCHAR(32) NOT NULL DEFAULT '',
+  account_name VARCHAR(255) NOT NULL DEFAULT '',
+  status ENUM('not_started','submitting','accepted','failed','pending_unknown') NOT NULL DEFAULT 'not_started',
+  snapshot_version INT UNSIGNED NOT NULL DEFAULT 0,
+  attempt_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  attempt_started_at DATETIME(3) NULL,
+  postiz_post_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  audit_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  warning VARCHAR(512) NULL,
+  error VARCHAR(512) NULL,
+  submitted_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY post_targets_post_account (post_id, integration_id),
+  INDEX post_targets_post_status (post_id, status),
+  CONSTRAINT post_targets_post_fk FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- The app only reads/writes its own database; schema changes run separately as admin.
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.projects TO 'polaris_app'@'%';
@@ -169,3 +214,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.social_connect_at
 GRANT SELECT, INSERT, UPDATE ON polaris_content_studio.workspace_feishu_config TO 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE ON polaris_content_studio.social_post_tracking TO 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE ON polaris_content_studio.social_notification_outbox TO 'polaris_app'@'%';
+-- Manual posts belong to their owner and can be removed while nothing reached Postiz, hence DELETE.
+GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.posts TO 'polaris_app'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.post_targets TO 'polaris_app'@'%';

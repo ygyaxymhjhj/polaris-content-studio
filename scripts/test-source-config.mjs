@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import { signIn } from "./_login.mjs";
+import { openWorkspace, signIn } from "./_login.mjs";
 
 const browser = await chromium.launch({ headless: true });
 let account;
@@ -14,6 +14,7 @@ try {
   await page.route('**/api/generate', route => route.fulfill({ json: { assets: [], usedFallback: false } }));
   await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
   account = await signIn(page, process.env.TEST_BASE_URL || "http://localhost:3000");
+  await openWorkspace(page);
   const field = name => page.getByLabel(name, { exact: true });
   const url = page.locator('.url-input-row input');
   await url.fill(article.sourceUrl);

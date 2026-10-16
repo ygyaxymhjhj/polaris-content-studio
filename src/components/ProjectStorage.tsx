@@ -10,7 +10,11 @@ function uuid() {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 const lastKey = "polaris-last-project";
-export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange, hidden = false }: { snapshot: ProjectSnapshot; busy: boolean; onRestore: (snapshot: ProjectSnapshot) => void; onProjectChange?: (projectId: string) => void; hidden?: boolean }) {
+export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange, hidden = false }: { snapshot: ProjectSnapshot; busy: boolean; /**
+ * `source` distinguishes the silent restore on page load from the user picking a project, so the
+ * parent can avoid stealing navigation while the user is working on manual posts.
+ */
+onRestore: (snapshot: ProjectSnapshot, source: "auto" | "manual") => void; onProjectChange?: (projectId: string) => void; hidden?: boolean }) {
   const t = useTranslation();
   // Stringifying the whole snapshot (which can carry ~1MB image data URLs per asset) on every
   // render made typing janky in image-heavy projects. The raw snapshot lives in a ref for saves,
@@ -71,7 +75,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
           if (serialize() === initial) {
             const restoredSerialized = JSON.stringify(checked);
             applyProject(item.id, item.version); saved.current = restoredSerialized; setSerialized(restoredSerialized);
-            restore.current(checked); setChoice(item.id);
+            restore.current(checked, "auto"); setChoice(item.id);
           }
         }
         enabled.current = true; setReady(true); setStatus(project.current.version ? "Saved to MySQL" : "Ready to save");
@@ -142,7 +146,7 @@ export default function ProjectStorage({ snapshot, busy, onRestore, onProjectCha
       if (serialize() !== before) throw new Error("The page changed while loading. Please try again.");
       const restoredSerialized = JSON.stringify(checked);
       applyProject(item.id, item.version); saved.current = restoredSerialized; setSerialized(restoredSerialized); conflict.current = false;
-      restore.current(checked); remember(item.id); setStatus("Saved to MySQL");
+      restore.current(checked, "manual"); remember(item.id); setStatus("Saved to MySQL");
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to restore project"); }
     finally { switching.current = false; setWorking(false); }
   }

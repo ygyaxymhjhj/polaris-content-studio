@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
-import { signIn } from './_login.mjs';
+import { openWorkspace, signIn } from './_login.mjs';
 const browser = await chromium.launch();
 let account;
 try {
@@ -10,6 +10,7 @@ try {
   page.on('request', r => { if (r.url().includes('/api/analyze')) analyzeRequests++; });
   await page.route('**/api/fetch-article', r => r.fulfill({ status: 424, json: { code: 'SOURCE_ACCESS_DENIED', error: 'Denied' } }));
   account = await signIn(page, process.env.TEST_BASE_URL || 'http://localhost:3002');
+  await openWorkspace(page);
   // The source panel opens on the URL tab; switch to paste/text tab to read textarea value
   await page.locator('.segmented-tab').nth(1).click();
   const oldText = await page.locator('.source-textarea').inputValue();

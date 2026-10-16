@@ -30,6 +30,9 @@ try {
  await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
  await page.goto(process.env.TEST_BASE_URL || 'http://localhost:3002');
  await page.locator('.locale-switcher select').selectOption('en');
+ // The app opens on Overview now; this flow starts in the AI workspace.
+ await page.locator('.main-nav .nav-item').filter({ hasText: 'Workspace' }).click();
+ await page.locator('.workspace-hero').waitFor();
  await page.locator('.source-textarea').fill(text);
  await page.getByRole('button', { name: 'Generate social drafts', exact: true }).click();
  await page.getByRole('button', { name: 'Regenerate', exact: true }).waitFor();

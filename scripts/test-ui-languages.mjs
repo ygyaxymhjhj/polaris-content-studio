@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
-import { signIn } from "./_login.mjs";
+import { openWorkspace, signIn } from "./_login.mjs";
 
 // Run against an existing dev server: node scripts/test-ui-languages.mjs
 const browser = await chromium.launch({ headless: true });
@@ -11,6 +11,7 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.route('**/api/projects**', r => r.fulfill({json:{enabled:false,projects:[]}}));
   account = await signIn(page, process.env.TEST_BASE_URL || "http://localhost:3000");
+  await openWorkspace(page);
   const language = page.locator('.locale-switcher select');
   await language.selectOption("zh");
   await page.getByRole("button", { name: "生成社媒文案全案", exact: true }).waitFor();

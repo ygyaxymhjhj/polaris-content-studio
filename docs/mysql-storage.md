@@ -63,6 +63,19 @@ Restore is destructive to this app's database and is not part of normal deployme
 - Existing volumes: run `deploy/mysql/migrations/2026-10-08-social-publishes.sql` manually as admin (docker exec command in the file header; idempotent). Fresh volumes get the table from `init.sql`.
 - Query API: `GET /api/social/publishes?assetId=…` or `projectId=…` (limit 50), visible to every signed-in member. Model and rationale: `docs/social-account-model.md`.
 
+## Manual posts (posts / post_targets)
+
+Manual posts are written by hand in Overview → Posts and never join an AI project snapshot, so they get their own two tables. `posts` holds the owner, an internal title, the body, one validated image (data URL plus a list thumbnail), and a version. `post_targets` holds one row per selected account with its platform/name snapshot, status, Postiz draft id and audit id.
+
+`polaris_app` has SELECT/INSERT/UPDATE/DELETE on both tables. Posts are private to their owner: every query is scoped by `owner_user_id`, and an administrator does not bypass that. Deleting a post needs no extra cleanup because `post_targets` follows through the foreign key.
+
+- Target statuses: `not_started`, `submitting`, `accepted`, `failed`, `pending_unknown`. A post's list status is derived from these (`draft`, `pushing`, `pushed`, `attention`); there is no single `published` flag that could claim more than Postiz confirmed.
+- The post stays editable and deletable only while no target is accepted, submitting or unconfirmed. A failed target can be retried with the same frozen content; changing the text after any account accepted the draft requires "Copy as new draft".
+- A submission is claimed inside a short transaction (`status='submitting'` plus an attempt id), the Postiz call happens without holding the lock, and the result is written back conditionally on that attempt id. Repeating a request for an accepted target returns the stored result instead of creating a second draft.
+- An in-flight claim older than two minutes is swept to `pending_unknown` when the owner next reads the lists; nothing resubmits it automatically. Transport failures after the claim follow the same path, because Postiz may already hold the draft.
+- Images are re-validated server-side with sharp (single-frame JPEG/PNG/WebP, ≤1.5 MiB, ≤2048 px on the longest edge, pixel-count guarded, remote URLs refused) and served only through `GET /api/posts/{id}/image` after an ownership check. A failed image upload aborts the hand-off instead of sending a text-only draft.
+- Schema: `deploy/mysql/init.sql` plus `deploy/mysql/migrations/2026-10-15-manual-posts.sql` (idempotent, includes the grants). Workflow and page behaviour: `docs/manual-posts.md`.
+
 ## Tests
 
 ```sh
@@ -77,6 +90,10 @@ TEST_BASE_URL=http://localhost:3002 node scripts/test-publish-dialog.mjs
 
 `test-publish-dialog.mjs` drives the draft dialog with mocked channels, and asserts that selecting an account only selects it: it must not open the connect dialog, while the Manage accounts button still must.
 
+`node scripts/test-manual-posts.mjs` needs no database or network: it exercises the strict draft client, the submission orchestration against a synthetic row, image validation with the real decoder, and the create-post validation, including the "never submit twice" and "unknown result is not retried" rules.
+
 These scripts delete only the rows they create. Every browser test signs in first, so all of them need a reachable MySQL and the `MYSQL_*` variables in `.env.local`; `scripts/_login.mjs` creates a throwaway account per run and removes it, along with its projects, afterwards. Normal workflow regressions should mock `/api/projects` when persistence is irrelevant, to avoid leaving test fixtures in real history.
+
+The app now opens on Overview, so the AI-workspace browser scripts call `openWorkspace(page)` from `scripts/_login.mjs` right after signing in. `scripts/test-project-storage.mjs` locates the references view by name instead of the old sidebar index.
 
 Note: `scripts/test-fact-review.mjs`, `test-ui-languages.mjs`, `test-source-handoff.mjs` and `test-source-config.mjs` still address UI that has since been restructured (the source panel now splits URL and paste into tabs, and generation moved behind confirmed facts), so they fail on stale selectors. They sign in correctly; repairing them is a separate task.

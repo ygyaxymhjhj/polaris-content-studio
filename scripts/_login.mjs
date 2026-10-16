@@ -18,6 +18,15 @@ export async function openDatabase() {
   });
 }
 
+/**
+ * The app now opens on Overview, so every AI-workspace regression starts by navigating there.
+ * Clicking the sidebar item is what a user does; the URL follows because the view keeps it in sync.
+ */
+export async function openWorkspace(page) {
+  await page.locator(".main-nav .nav-item").filter({ hasText: "Workspace" }).click();
+  await page.locator(".workspace-hero").waitFor({ timeout: 30000 });
+}
+
 export async function signIn(page, base, { displayName = "UI Test", password = "ui-test-password", language = "en" } = {}) {
   const db = await openDatabase();
   const userId = randomUUID();
@@ -52,7 +61,10 @@ export async function signIn(page, base, { displayName = "UI Test", password = "
     cleanup: async () => {
       try {
         // Projects are keyed by owner_hash, not by a foreign key, so they need removing explicitly.
+        // Manual posts carry an owner_user_id foreign key, but deleting them first keeps the cleanup
+        // working on a database whose schema predates that constraint.
         await db.execute("DELETE FROM projects WHERE owner_hash=?", [ownerHashFor(userId)]);
+        await db.execute("DELETE FROM posts WHERE owner_user_id=?", [userId]);
         await db.execute("DELETE FROM users WHERE id=?", [userId]);
       } finally { await db.end(); }
     }
