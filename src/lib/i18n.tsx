@@ -589,6 +589,25 @@ for (const [key, value] of Object.entries(manualPostMessages)) {
   if (!messages[key]) messages[key] = value;
 }
 
+// Appearance switch. Automatic mode follows the device clock, never the operating system setting.
+const themeMessages: Record<string, [string, string]> = {
+  "Appearance": ["外观", "Giao diện"],
+  "Automatic": ["自动", "Tự động"],
+  "Light": ["浅色", "Sáng"],
+  "Dark": ["深色", "Tối"],
+  "Follows this device's local time": ["跟随本机本地时间", "Theo giờ máy này"],
+  "Light from": ["浅色时段", "Dùng giao diện sáng từ"],
+  "Always light": ["始终使用白色主题", "Luôn dùng giao diện sáng"],
+  "Always dark": ["始终使用黑色主题", "Luôn dùng giao diện tối"],
+  "Automatic — currently light": ["自动 · 当前为浅色", "Tự động · hiện đang sáng"],
+  "Automatic — currently dark": ["自动 · 当前为深色", "Tự động · hiện đang tối"],
+  "Light theme is on": ["当前固定为浅色", "Đang cố định giao diện sáng"],
+  "Dark theme is on": ["当前固定为深色", "Đang cố định giao diện tối"]
+};
+for (const [key, value] of Object.entries(themeMessages)) {
+  if (!messages[key]) messages[key] = value;
+}
+
 // Thai strings for the manual-post views. Keys mirror manualPostMessages exactly.
 const manualPostThaiMessages: Record<string, string> = {
   "MANUAL POSTS": "โพสต์แบบเขียนเอง",
@@ -714,6 +733,22 @@ const manualPostThaiMessages: Record<string, string> = {
   "The submission failed.": "การส่งล้มเหลว",
   "Add post text before submitting to Postiz.": "กรอกเนื้อหาก่อนส่งไป Postiz"
 };
+// Thai strings for the appearance switch, mirroring themeMessages.
+const themeThaiMessages: Record<string, string> = {
+  "Appearance": "ธีม",
+  "Automatic": "อัตโนมัติ",
+  "Light": "สว่าง",
+  "Dark": "มืด",
+  "Follows this device's local time": "ตามเวลาท้องถิ่นของเครื่องนี้",
+  "Light from": "ใช้ธีมสว่างตั้งแต่",
+  "Always light": "ใช้ธีมสว่างเสมอ",
+  "Always dark": "ใช้ธีมมืดเสมอ",
+  "Automatic — currently light": "อัตโนมัติ · ขณะนี้เป็นธีมสว่าง",
+  "Automatic — currently dark": "อัตโนมัติ · ขณะนี้เป็นธีมมืด",
+  "Light theme is on": "กำลังใช้ธีมสว่างแบบคงที่",
+  "Dark theme is on": "กำลังใช้ธีมมืดแบบคงที่"
+};
+
 const thMessages: Record<string, string> = {
   "Review rejected": "ไม่ผ่านการอนุมัติ",
   "Pending review": "รอการอนุมัติ",
@@ -1208,6 +1243,10 @@ const thMessages: Record<string, string> = {
   "Key points extracted automatically. Drafts reviewed before publishing.": "ระบบดึงประเด็นสำคัญและภาพหลักอัตโนมัติ ฉบับร่างของแต่ละแพลตฟอร์มจะถูกส่งไป Postiz เพื่อตรวจก่อนเผยแพร่",
   "Sign in to continue.": "กรุณาเข้าสู่ระบบเพื่อดำเนินการต่อ"
 };
+
+for (const [key, value] of Object.entries(themeThaiMessages)) {
+  if (!thMessages[key]) thMessages[key] = value;
+}
 
 for (const [key, value] of Object.entries(manualPostThaiMessages)) {
   // Same rule as the shared dictionary: never reword an existing translation.

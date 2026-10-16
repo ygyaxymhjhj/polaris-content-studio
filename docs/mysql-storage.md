@@ -92,6 +92,8 @@ TEST_BASE_URL=http://localhost:3002 node scripts/test-publish-dialog.mjs
 
 `node scripts/test-manual-posts.mjs` needs no database or network: it exercises the strict draft client, the submission orchestration against a synthetic row, image validation with the real decoder, and the create-post validation, including the "never submit twice" and "unknown result is not retried" rules.
 
+`node scripts/test-theme.mjs` also needs no database: it covers the automatic light/dark window, the pre-paint theme script, invalid stored values and the switch itself. With `TEST_BASE_URL` pointing at a running server it adds the browser checks. Rules and behaviour: `docs/appearance-theme.md`.
+
 These scripts delete only the rows they create. Every browser test signs in first, so all of them need a reachable MySQL and the `MYSQL_*` variables in `.env.local`; `scripts/_login.mjs` creates a throwaway account per run and removes it, along with its projects, afterwards. Normal workflow regressions should mock `/api/projects` when persistence is irrelevant, to avoid leaving test fixtures in real history.
 
 The app now opens on Overview, so the AI-workspace browser scripts call `openWorkspace(page)` from `scripts/_login.mjs` right after signing in. `scripts/test-project-storage.mjs` locates the references view by name instead of the old sidebar index.

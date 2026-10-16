@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { translate, type UiLanguage } from "@/lib/i18n";
 import { AUTHORIZATION_POPUP_STORAGE_KEY, CONNECTION_MESSAGES, type ConnectionOutcome } from "@/lib/social-connect-result";
+import ThemeToggle from "@/components/ThemeToggle";
 import styles from "./complete.module.css";
 
 type Props = {
@@ -47,7 +48,9 @@ export default function ConnectionComplete({ outcome, returnPath, retryPath }: P
       <section className={`login-panel ${styles.panel}`} aria-labelledby="connection-result-title">
         <div className="brand-lockup login-brand">
           <span className="brand-mark" aria-hidden="true">P</span>
-          <div><div className="brand-name">POLARIS</div><div className="brand-product">Content Studio</div></div>
+          <div className="brand-copy"><div className="brand-name">POLARIS</div><div className="brand-product">Content Studio</div></div>
+          {/* This page has no locale provider, so the language is handed over explicitly. */}
+          <ThemeToggle language={language} />
         </div>
         <h1 id="connection-result-title">{localize(succeeded ? "Authorisation completed" : "Authorisation needs attention")}</h1>
         <p className={succeeded ? "login-intro" : `login-error ${styles.message}`} role={succeeded ? "status" : "alert"}>

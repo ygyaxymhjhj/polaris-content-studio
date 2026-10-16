@@ -54,6 +54,7 @@ import SocialAccountsView from "@/components/SocialAccountsView";
 import OverviewView from "@/components/OverviewView";
 import PostsView from "@/components/PostsView";
 import PostEditorView from "@/components/PostEditorView";
+import ThemeToggle from "@/components/ThemeToggle";
 import type { ProjectSnapshot } from "@/lib/project-schema";
 import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, markSubmissionSucceeded, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
 import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
@@ -1154,14 +1155,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const refreshAccounts = useCallback(() => { void loadChannels(); }, [loadChannels]);
 
   return (
-    <LocaleContext.Provider value={uiLanguage}><div className={`app-shell ${view === "overview" || view === "posts" ? "shell-dark" : ""}`}>
+    <LocaleContext.Provider value={uiLanguage}><div className={`app-shell ${view === "overview" || view === "posts" ? "posts-surface" : ""}`}>
       <aside className="sidebar">
         <div className="brand-lockup">
           <div className="brand-mark"><span>✦</span></div>
-          <div>
+          <div className="brand-copy">
             <div className="brand-name">POLARIS</div>
             <div className="brand-product">Content Studio</div>
           </div>
+          <ThemeToggle />
         </div>
 
         <div className="workspace-label">{t("WORKSPACE")}</div>

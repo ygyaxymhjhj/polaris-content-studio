@@ -157,7 +157,8 @@ try {
   }
   assert.equal(translate("zh", "Draft rejected"), "草稿不通过");
   assert.equal(translate("zh", "When a draft is not approved"), "审核不通过时");
-  assert.match(await fs.readFile("src/app/globals.css", "utf8"), /\.publish-pill\.rejected\s*\{[^}]*#fff0ee/);
+  // The rejection pill must draw from the shared danger token so both themes stay readable.
+  assert.match(await fs.readFile("src/app/globals.css", "utf8"), /\.publish-pill\.rejected\s*\{[^}]*var\(--danger-surface\)/);
   console.log("PASS: actual React card/badge SSR and four-locale labels, without changing copy/images");
 
   let storedAssets = [rejected];

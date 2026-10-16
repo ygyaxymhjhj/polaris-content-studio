@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { LocaleContext, translate, type UiLanguage } from "@/lib/i18n";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export default function LoginForm() {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
@@ -56,10 +57,12 @@ export default function LoginForm() {
         <form className="login-panel" onSubmit={submit}>
           <div className="brand-lockup login-brand">
             <div className="brand-mark"><span>✦</span></div>
-            <div>
+            <div className="brand-copy">
               <div className="brand-name">POLARIS</div>
               <div className="brand-product">Content Studio</div>
             </div>
+            {/* type="button" keeps this out of the form submit path. */}
+            <ThemeToggle language={uiLanguage} />
           </div>
           <h1>{t("Sign in")}</h1>
           <p className="login-intro">{t("Internal workspace. Ask an administrator for an account.")}</p>
