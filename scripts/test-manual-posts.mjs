@@ -183,12 +183,12 @@ async function executeStatement(rawStatement, parameters = []) {
   if (statement.startsWith("SELECT content, image_data, version FROM posts")) {
     return [[{ content: db.post.content, image_data: db.post.image_data, version: db.post.version }]];
   }
-  if (statement.startsWith("SELECT status, attempt_started_at FROM post_targets")) {
-    return [targetMissing ? [] : [{ status: db.target.status, attempt_started_at: db.target.attempt_started_at }]];
+  if (statement.startsWith("SELECT CASE") && statement.includes("t.attempt_started_at")) {
+    return [targetMissing ? [] : [{ ...db.target }]];
   }
   if (statement.startsWith("UPDATE post_targets SET status='submitting'")) {
     db.attemptId = parameters[0];
-    db.target = { ...db.target, status: "submitting", attempt_started_at: parameters[1] };
+    db.target = { ...db.target, status: "submitting", attempt_started_at: parameters[1], audit_id: null, postiz_post_id: null, submitted_at: null };
     return [{ affectedRows: 1 }];
   }
   if (statement.startsWith("UPDATE post_targets SET status='pending_unknown'")) {
@@ -196,18 +196,15 @@ async function executeStatement(rawStatement, parameters = []) {
     return [{ affectedRows: 1 }];
   }
   if (statement.startsWith("UPDATE post_targets SET status=?, postiz_post_id=?")) {
-    const [status, upstreamId, warning, error, , , , , attemptId] = parameters;
+    const [status, upstreamId, auditId, warning, error, submittedAt, , , , attemptId] = parameters;
     if (db.target.status !== "submitting" || db.attemptId !== attemptId) return [{ affectedRows: 0 }];
-    db.target = { ...db.target, status, postiz_post_id: upstreamId, warning, error };
+    db.target = { ...db.target, status, postiz_post_id: upstreamId, audit_id: auditId, warning, error, submitted_at: submittedAt };
     return [{ affectedRows: 1 }];
   }
   if (statement.startsWith("UPDATE post_targets SET status='accepted', postiz_post_id=?")) {
-    const [upstreamId, warning] = parameters;
-    db.target = { ...db.target, status: "accepted", postiz_post_id: upstreamId, warning };
-    return [{ affectedRows: 1 }];
-  }
-  if (statement.startsWith("UPDATE post_targets SET audit_id=?")) {
-    db.target = { ...db.target, audit_id: parameters[0] };
+    const [upstreamId, auditId, warning, error, submittedAt, , , , attemptId] = parameters;
+    if (db.target.status !== "pending_unknown" || db.attemptId !== attemptId) return [{ affectedRows: 0 }];
+    db.target = { ...db.target, status: "accepted", postiz_post_id: upstreamId, audit_id: auditId, warning, error, submitted_at: submittedAt };
     return [{ affectedRows: 1 }];
   }
   throw new Error(`Unexpected statement in the fake database: ${statement}`);
@@ -256,6 +253,7 @@ function detail() {
   };
 }
 
+const storageSql = loadModule("../src/lib/posts.ts", { "@/lib/project-db": {}, "./post-types": postTypes });
 const submission = loadModule("../src/lib/post-submission.ts", {
   "@/lib/project-db": { database: fakeDatabase, databaseConfigured: () => true },
   "@/lib/social-accounts": { getSocialAccount: async () => accountRecord },
@@ -267,6 +265,8 @@ const submission = loadModule("../src/lib/post-submission.ts", {
     fetchPostizIntegrations: async () => { postizCalls.integrations += 1; return { configured: true, accounts: liveAccounts }; }
   },
   "@/lib/posts": {
+    POST_TARGET_REVIEW_JOINS: storageSql.POST_TARGET_REVIEW_JOINS,
+    POST_TARGET_STATUS_SQL: storageSql.POST_TARGET_STATUS_SQL,
     SUBMISSION_STALE_MS: 120_000,
     databaseEpoch: (value) => {
       if (typeof value !== "string" || !value) return 0;

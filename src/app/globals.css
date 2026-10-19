@@ -995,7 +995,7 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .overview-activity-dot.updated { background: #8e8b99; }
 .overview-activity-dot.submitted { background: var(--warn-text); }
 .overview-activity-dot.accepted { background: #49b98a; }
-.overview-activity-dot.failed { background: #d9776f; }
+.overview-activity-dot.failed, .overview-activity-dot.rejected { background: #d9776f; }
 .overview-activity-dot.pending { background: #c99b5a; }
 .overview-activity-copy { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .overview-activity-copy strong { font-size: 12px; font-weight: 600; }
@@ -1049,7 +1049,7 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .posts-status-pill.draft { color: var(--text-muted); background: var(--surface-muted); }
 .posts-status-pill.pushing { color: var(--warn-text); background: var(--warn-surface); }
 .posts-status-pill.pushed { color: var(--ok-text); background: var(--ok-surface); }
-.posts-status-pill.attention { color: var(--danger-text); background: var(--danger-surface); }
+.posts-status-pill.attention, .posts-status-pill.rejected { color: var(--danger-text); background: var(--danger-surface); }
 .posts-row-excerpt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .posts-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--text-muted); font: 10px "DM Mono", monospace; }
 .posts-row-progress { display: inline-flex; align-items: center; gap: 5px; }
@@ -1111,13 +1111,13 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .post-editor-targets { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .post-editor-target { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; background: var(--surface-sunken); }
 .post-editor-target.accepted { border-color: var(--ok-border); }
-.post-editor-target.failed, .post-editor-target.pending_unknown { border-color: var(--danger-border); }
+.post-editor-target.failed, .post-editor-target.rejected, .post-editor-target.pending_unknown { border-color: var(--danger-border); }
 .post-editor-target-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .post-editor-target-name { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .post-editor-target-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
 .target-state { font: 9px "DM Mono", monospace; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); }
 .target-state.accepted { color: var(--ok-text); }
-.target-state.failed { color: var(--danger-text); }
+.target-state.failed, .target-state.rejected { color: var(--danger-text); }
 .target-state.pending_unknown { color: var(--warn-text); }
 .target-state.submitting { color: var(--info-text); }
 .post-editor-target-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--text-muted); font: 10px "DM Mono", monospace; overflow-wrap: anywhere; }

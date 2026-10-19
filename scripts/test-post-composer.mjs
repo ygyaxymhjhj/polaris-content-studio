@@ -117,6 +117,14 @@ try {
   let releaseCopy;
   let holdDelete;
   let releaseDelete;
+  let holdRead;
+  let releaseRead;
+  let submitPendingUnknown = false;
+  let submissionFailure = false;
+  let listReadFailure = false;
+  let heldSubmissionId = '';
+  let holdSubmission;
+  let releaseSubmission;
   const submissions = [];
   await page.route('**/api/posts**', async route => {
     const request = route.request();
@@ -160,18 +168,51 @@ try {
       return;
     }
     if (request.method() === 'GET' && pathname === '/api/posts') {
-      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: false, status: 'draft', platforms: [],
-        targetCount: storedPost.targets.length, acceptedCount: 0, deletable: storedPost.editable }] : [];
-      await route.fulfill({ json: { posts, total: posts.length, counts: { all: posts.length, draft: posts.length, pushing: 0, pushed: 0, attention: 0 } } });
+      if (listReadFailure) {
+        await route.fulfill({ status: 503, json: { error: 'Temporary list connection failure.' } });
+        return;
+      }
+      const rejectedCount = storedPost?.targets.filter(target => target.status === 'rejected').length || 0;
+      const acceptedCount = storedPost?.targets.filter(target => target.status === 'accepted').length || 0;
+      const status = rejectedCount ? 'attention' : acceptedCount ? 'pushed' : 'draft';
+      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: false, status, platforms: [], rejectedCount,
+        targetCount: storedPost.targets.length, acceptedCount, deletable: storedPost.editable }] : [];
+      await route.fulfill({ json: { posts, total: posts.length, counts: { all: posts.length, draft: status === 'draft' ? posts.length : 0,
+        pushing: 0, pushed: status === 'pushed' ? posts.length : 0, attention: rejectedCount ? posts.length : 0 } } });
+      return;
+    }
+    if (request.method() === 'GET') {
+      const snapshot = structuredClone(storedPost);
+      if (holdRead) {
+        holdRead();
+        holdRead = null;
+        await new Promise(resolveRead => { releaseRead = resolveRead; });
+      }
+      await route.fulfill({ json: { post: snapshot } });
       return;
     }
     if (pathname.endsWith('/submit')) {
       assert.equal(body.expectedVersion, storedPost.version);
       const integrationId = pathname.split('/').at(-2);
-      submissions.push({ integrationId, content: storedPost.content });
+      const shownTarget = storedPost.targets.find(target => target.integrationId === integrationId);
+      if (shownTarget.status === 'rejected') assert.equal(body.expectedAuditId, shownTarget.auditId, 'rejected retry binds the shown review attempt');
+      else assert.equal(body.expectedAuditId, undefined, 'first and failed submissions remain compatible');
+      submissions.push({ integrationId, content: storedPost.content, body });
+      if (submissionFailure) {
+        await route.fulfill({ status: 503, json: { error: 'Synthetic resubmission failure' } });
+        return;
+      }
       const refused = integrationId === refusedAccount;
       storedPost = { ...storedPost, editable: false, frozenReason: 'accepted', targets: storedPost.targets.map(target => target.integrationId === integrationId
-        ? { ...target, status: refused ? 'failed' : 'accepted', error: refused ? 'Synthetic upstream refusal' : null, postizPostId: refused ? null : `draft-${integrationId}` } : target) };
+        ? { ...target, status: refused ? 'failed' : submitPendingUnknown ? 'pending_unknown' : 'accepted', auditId: `audit-${submissions.length}`,
+          error: refused ? 'Synthetic upstream refusal' : null, postizPostId: refused ? null : `draft-${integrationId}-${submissions.length}` } : target) };
+      if (integrationId === heldSubmissionId) {
+        const snapshot = structuredClone(storedPost);
+        holdSubmission?.();
+        await new Promise(resolveSubmission => { releaseSubmission = resolveSubmission; });
+        await route.fulfill({ json: { post: snapshot } });
+        return;
+      }
     } else if (request.method() !== 'GET') {
       if (delayNextSave) {
         delayNextSave = false;
@@ -185,7 +226,7 @@ try {
         version: (storedPost?.version || 0) + 1, editable: true, frozenReason: null,
         createdAt: timestamp, updatedAt: timestamp,
         targets: body.integrationIds.map(integrationId => ({ integrationId, platform: accounts.find(account => account.id === integrationId).identifier,
-          accountName: accounts.find(account => account.id === integrationId).name, status: 'not_started', snapshotVersion: 0, postizPostId: null, warning: null, error: null }))
+          accountName: accounts.find(account => account.id === integrationId).name, status: 'not_started', snapshotVersion: 0, postizPostId: null, auditId: null, warning: null, error: null }))
       };
     }
     await route.fulfill({ json: { post: storedPost } });
@@ -238,7 +279,7 @@ try {
   assert.equal(await text.isDisabled(), true, 'content locks while the latest save is flushed');
   releaseSave();
   await page.getByText('This post is read-only.', { exact: true }).waitFor();
-  assert.deepEqual(submissions, [{ integrationId: 'channel-x', content: latestContent }]);
+  assert.deepEqual(submissions.map(({ integrationId, content }) => ({ integrationId, content })), [{ integrationId: 'channel-x', content: latestContent }]);
   assert.equal(await text.isDisabled(), true);
   assert.equal(await addPlatform.isDisabled(), true);
   assert.equal(await push.isDisabled(), true);
@@ -352,11 +393,11 @@ try {
     assert.equal(storedPost, undefined);
   }
 
-  // All three authoritative frozen states hide deletion; failed-only drafts remain deletable.
-  for (const targetStatus of ['accepted', 'submitting', 'pending_unknown', 'failed']) {
-    storedPost = { ...originalPost, content: 'Status verification draft.', editable: targetStatus === 'failed', frozenReason: targetStatus === 'failed' ? null : targetStatus,
+  // All authoritative frozen states hide deletion; failed-only drafts remain deletable.
+  for (const targetStatus of ['accepted', 'rejected', 'submitting', 'pending_unknown', 'failed']) {
+    storedPost = { ...originalPost, content: 'Status verification draft.', editable: targetStatus === 'failed', frozenReason: targetStatus === 'failed' ? null : targetStatus === 'rejected' ? 'accepted' : targetStatus,
       targets: [{ integrationId: 'channel-x', platform: 'x', accountName: 'News desk', status: targetStatus,
-        postizPostId: null, warning: 'Postiz warning: review the draft.', error: 'Postiz refused the draft.', snapshotVersion: 0 }] };
+        postizPostId: 'status-draft', auditId: 'status-audit', warning: 'Postiz warning: review the draft.', error: 'Postiz refused the draft.', snapshotVersion: 0 }] };
     await page.goto(`${origin}/?postId=${storedPost.id}`);
     await text.waitFor();
     assert.equal(await deleteDraft.count(), targetStatus === 'failed' ? 1 : 0);
@@ -413,8 +454,159 @@ try {
   await text.fill('The copied draft remains independently editable.');
   await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
   assert.equal(requests.filter(request => request.method === 'PATCH').at(-1).pathname, '/api/posts/22222222-2222-4222-8222-222222222222');
+
+  // Focus refresh observes a rejection without reopening, unfreezing or changing the snapshot.
+  const reviewTarget = {
+    integrationId: 'channel-x', platform: 'x', accountName: 'News desk', status: 'accepted',
+    auditId: 'review-audit-original', postizPostId: 'review-draft-original', snapshotVersion: originalPost.version,
+    warning: 'Keep this review warning.', error: null, submittedAt: new Date().toISOString()
+  };
+  const reviewPost = { ...originalPost, content: 'An immutable review snapshot.', editable: false, frozenReason: 'accepted', targets: [reviewTarget] };
+  storedPost = structuredClone(reviewPost);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await page.locator('.post-editor-target.accepted').waitFor();
+  storedPost.targets[0].status = 'rejected';
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const resubmit = page.getByRole('button', { name: 'Resubmit for review', exact: true });
+  await resubmit.waitFor();
+  assert.equal(await text.isDisabled(), true);
+  assert.equal(await deleteDraft.count(), 0);
+  assert.equal(await text.inputValue(), reviewPost.content);
+  assert.equal(await page.locator('.post-editor-target-meta').count(), 0, 'rejection does not retain accepted tracking progress');
+  assert.equal(await page.getByRole('button', { name: 'Refresh status', exact: true }).locator('.spin').count(), 0, 'background refresh has no spinner');
+  assert.match(await page.locator('.info-banner.frozen').innerText(), /copy it as a new draft/i);
+  assert.doesNotMatch(await page.locator('body').innerText(), /postiz/i);
+
+  // Background refresh never clears an action error, and hidden/in-flight pages do not poll twice.
+  submissionFailure = true;
+  await resubmit.click();
+  await page.getByRole('alert').filter({ hasText: 'Synthetic resubmission failure' }).waitFor();
+  const refreshedAfterFailure = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/posts/${storedPost.id}`);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await refreshedAfterFailure;
+  assert.equal(await page.getByRole('alert').filter({ hasText: 'Synthetic resubmission failure' }).count(), 1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    window.dispatchEvent(new Event('focus'));
+  });
+  const hiddenRequests = requests.length;
+  await page.waitForTimeout(80);
+  assert.equal(requests.length, hiddenRequests, 'hidden editor skips refresh');
+  await page.evaluate(() => { delete document.hidden; });
+  submissionFailure = false;
+
+  const staleReadStarted = new Promise(resolveStarted => { holdRead = resolveStarted; });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await staleReadStarted;
+  const requestsDuringRead = requests.length;
+  await page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.waitForTimeout(80);
+  assert.equal(requests.length, requestsDuringRead, 'one status read at a time');
+  submitPendingUnknown = true;
+  await resubmit.click();
+  await page.locator('.post-editor-target.pending_unknown').waitFor();
+  const staleResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/posts/${storedPost.id}`);
+  releaseRead();
+  await staleResponse;
+  await page.waitForTimeout(80);
+  assert.equal(await page.locator('.post-editor-target.pending_unknown').count(), 1, 'a pre-resubmit rejection cannot replace the new pending audit');
+  assert.equal(await resubmit.count(), 0);
+  assert.equal(submissions.at(-1).body.expectedAuditId, 'review-audit-original');
+  submitPendingUnknown = false;
+
+  // Bulk hand-off includes each rejected account's own shown audit and skips accepted accounts.
+  storedPost = { ...structuredClone(reviewPost), targets: [
+    { ...reviewTarget, status: 'rejected', auditId: 'bulk-review-x' },
+    { ...reviewTarget, integrationId: 'channel-linkedin', platform: 'linkedin', accountName: 'Company page', status: 'rejected', auditId: 'bulk-review-linkedin' },
+    { ...reviewTarget, integrationId: 'channel-instagram', platform: 'instagram', accountName: 'Photo desk' }
+  ] };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await page.locator('.post-editor-target.rejected').first().waitFor();
+  const bulkStart = submissions.length;
+  await push.click();
+  await page.waitForFunction(() => document.querySelectorAll('.post-editor-target.accepted').length === 3);
+  assert.deepEqual(submissions.slice(bulkStart).map(submission => [submission.integrationId, submission.body.expectedAuditId]).sort(),
+    [['channel-linkedin', 'bulk-review-linkedin'], ['channel-x', 'bulk-review-x']]);
+  assert.ok(submissions.slice(bulkStart).every(submission => submission.content === reviewPost.content));
+
+  // Status-only merging preserves unsaved text, local account selection and the PATCH version.
+  storedPost = { ...structuredClone(reviewPost), editable: true, frozenReason: null };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  await text.fill('Unsaved text must survive remote status synchronization.');
+  await addPlatform.click();
+  await page.getByRole('checkbox', { name: /Company page/ }).check();
+  await page.getByRole('checkbox', { name: /Company page/ }).press('Escape');
+  const writesBeforeStatus = requests.filter(request => request.method !== 'GET').length;
+  storedPost = { ...storedPost, content: 'Other tab content must not overwrite the form.', version: storedPost.version + 1,
+    editable: false, frozenReason: 'accepted', targets: [{ ...reviewTarget, status: 'rejected' }] };
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await resubmit.waitFor();
+  assert.equal(await text.inputValue(), 'Unsaved text must survive remote status synchronization.');
+  assert.equal(await page.locator('.post-account-chip').filter({ hasText: 'Company page' }).count(), 1, 'refresh keeps locally selected accounts');
+  assert.match(await page.locator('.post-editor-save-state').innerText(), /Unsaved changes/);
+  await page.waitForTimeout(1400);
+  assert.equal(requests.filter(request => request.method !== 'GET').length, writesBeforeStatus, 'remote freeze cancels autosave without discarding edits');
+
+  // A status refresh must not silently adopt another tab's content version for autosave.
+  storedPost = { ...structuredClone(reviewPost), editable: true, frozenReason: null };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  const originalVersion = storedPost.version;
+  await text.fill('Keep this edit until the version conflict is resolved.');
+  storedPost = { ...storedPost, version: originalVersion + 1, content: 'Saved elsewhere.' };
+  conflictNextSave = true;
+  const versionRefresh = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/posts/${storedPost.id}`);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await versionRefresh;
+  await page.getByRole('alert').filter({ hasText: 'changed in another tab' }).waitFor();
+  assert.equal(requests.filter(request => request.method === 'PATCH').at(-1).body.version, originalVersion, 'polling preserves optimistic concurrency');
+  assert.equal(await text.inputValue(), 'Keep this edit until the version conflict is resolved.');
+
+  // List focus refresh updates the badge, accepted progress and attention count quietly.
+  storedPost = structuredClone(reviewPost);
+  await page.goto(`${origin}/?list=1`);
+  await page.locator('.posts-row').waitFor();
+  assert.match(await page.locator('.posts-row-progress').innerText(), /1 \/ 1/);
+  storedPost.targets[0].status = 'rejected';
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.locator('.posts-status-pill.rejected').waitFor();
+  assert.equal(await page.locator('.posts-status-pill.rejected').textContent(), 'Review rejected');
+  assert.match(await page.locator('.posts-row-progress').innerText(), /0 \/ 1/);
+  assert.match(await page.getByRole('tab', { name: /Needs attention/ }).innerText(), /1/);
+  assert.equal(await listDelete.count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Refresh', exact: true }).locator('.spin').count(), 0);
+  listReadFailure = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: 'Temporary list connection failure' }).waitFor();
+  listReadFailure = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.getByRole('alert').filter({ hasText: 'Temporary list connection failure' }).waitFor({ state: 'hidden' });
+  await page.setViewportSize({ width: 375, height: 812 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'rejected list badge fits a mobile viewport');
+
+  // A late account A response contains account B's old rejection. It must not roll back B's result.
+  storedPost = structuredClone(reviewPost);
+  storedPost.targets = ['channel-x', 'channel-linkedin'].map((integrationId, index) => ({
+    ...storedPost.targets[0], integrationId, platform: index ? 'linkedin' : 'x',
+    accountName: index ? 'Company page' : 'News desk', status: 'rejected', auditId: `old-audit-${index}`
+  }));
+  storedPost.editable = false;
+  storedPost.frozenReason = 'rejected';
+  heldSubmissionId = 'channel-x';
+  const submissionHeld = new Promise(resolveHeld => { holdSubmission = resolveHeld; });
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await page.getByRole('button', { name: 'Resubmit for review', exact: true }).first().waitFor();
+  await push.click();
+  await submissionHeld;
+  await page.locator('.post-editor-target.accepted').filter({ hasText: 'Company page' }).waitFor();
+  releaseSubmission();
+  await page.waitForFunction(() => document.querySelectorAll('.post-editor-target.accepted').length === 2);
+  assert.equal(await page.getByRole('button', { name: 'Resubmit for review', exact: true }).count(), 0);
+  heldSubmissionId = '';
   assert.deepEqual(errors, []);
-  console.log('PASS: compact picker, image upload, autosave flush, push/retry, mobile layout; delete cancellation/failure/success, in-flight POST/PATCH, frozen/failed-only states, neutral errors and visible list deletion.');
+  console.log('PASS: compact picker, image upload, autosave flush, push/retry, mobile layout; safe deletion and copy; rejected sync, audit-bound individual/bulk resubmit, stale-poll protection, hidden/in-flight guards, preserved unsaved fields/selection, neutral copy and list attention counts.');
 } finally {
   if (browser) await browser.close();
   await new Promise(resolveClosed => server.close(resolveClosed));

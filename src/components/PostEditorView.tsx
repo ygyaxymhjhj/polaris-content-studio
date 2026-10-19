@@ -8,6 +8,7 @@ import {
   Copy,
   ExternalLink,
   Loader2,
+  RefreshCw,
   Save,
   Send,
   ShieldCheck,
@@ -21,6 +22,7 @@ import {
   POST_CONTENT_MAX_LENGTH,
   POST_TARGET_STATUS_LABEL,
   formatPostTimestamp,
+  isTargetSetEditable,
   platformRuleFor,
   type ManualPostDetail,
   type PostTarget
@@ -92,6 +94,10 @@ export default function PostEditorView({
   const [copiedNotice, setCopiedNotice] = useState("");
   const [copying, setCopying] = useState(false);
   const copyFlight = useRef(false);
+  const operationEpoch = useRef(0);
+  const statusRequest = useRef<AbortController | null>(null);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
+  const [statusError, setStatusError] = useState("");
   const editorMounted = useRef(false);
   useEffect(() => {
     editorMounted.current = true;
@@ -182,9 +188,68 @@ export default function PostEditorView({
   const controlsLocked = !editable || preparingPush || Boolean(submitting.length) || deletionBlocked || copying;
   const canDelete = editable && !post?.frozenReason && (!post || post.targets.every(target => target.status === "not_started" || target.status === "failed"));
 
+  const refreshStatus = useCallback(async (quiet = true) => {
+    const current = postRef.current;
+    const operationPending = () => Boolean(saveFlight.current || pushFlight.current || copyFlight.current
+      || deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted");
+    if (!current || document.hidden || statusRequest.current || operationPending()) return;
+    const controller = new AbortController();
+    statusRequest.current = controller;
+    const epoch = operationEpoch.current;
+    const targetBindings = JSON.stringify(current.targets.map(target => [target.integrationId, target.auditId, target.postizPostId, target.status]));
+    if (!quiet) setRefreshingStatus(true);
+    try {
+      const response = await fetch(`/api/posts/${current.id}`, { cache: "no-store", signal: controller.signal });
+      const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string };
+      const latest = postRef.current;
+      if (!editorMounted.current || controller.signal.aborted || epoch !== operationEpoch.current || operationPending()
+        || latest !== current || versionRef.current !== current.version
+        || targetBindings !== JSON.stringify(latest.targets.map(target => [target.integrationId, target.auditId, target.postizPostId, target.status]))) return;
+      if (!response.ok || !data.post) throw new Error(data.error || "The post could not be reloaded.");
+      const serverPost = data.post;
+      if (serverPost.id !== current.id || serverPost.version < current.version) return;
+      // Refresh delivery state only. Keep local fields, account selection, dirty baseline and the
+      // content version used by PATCH: a different tab's edits must still cause a save conflict.
+      const detail: ManualPostDetail = {
+        ...current,
+        editable: serverPost.editable,
+        frozenReason: serverPost.frozenReason,
+        updatedAt: serverPost.updatedAt,
+        targets: current.targets.map(target => serverPost.targets.find(candidate => candidate.integrationId === target.integrationId) ?? target)
+      };
+      postRef.current = detail;
+      setPost(detail);
+      if (!quiet) setStatusError("");
+    } catch (error) {
+      if (!quiet && editorMounted.current && !controller.signal.aborted && epoch === operationEpoch.current) {
+        setStatusError(error instanceof Error ? error.message : "The post could not be reloaded.");
+      }
+    } finally {
+      if (statusRequest.current === controller) statusRequest.current = null;
+      if (!quiet && editorMounted.current) setRefreshingStatus(false);
+    }
+  }, []);
+
+  const shouldPollStatus = Boolean(post?.targets.some(target => ["accepted", "rejected", "submitting", "pending_unknown"].includes(target.status)));
+  useEffect(() => {
+    if (!shouldPollStatus) return;
+    const refresh = () => { void refreshStatus(); };
+    const timer = window.setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      statusRequest.current?.abort();
+      statusRequest.current = null;
+    };
+  }, [shouldPollStatus, refreshStatus]);
+
   const reloadPost = useCallback(async (resetFields = true) => {
     const current = postRef.current;
     if (!current) return;
+    operationEpoch.current += 1;
     try {
       const response = await fetch(`/api/posts/${current.id}`, { cache: "no-store" });
       const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string };
@@ -281,7 +346,9 @@ export default function PostEditorView({
       const payload = payloadRef.current;
       const key = JSON.stringify([payload.title, payload.content, payload.imageDirty, [...payload.targetIds].sort().join(",")]);
       const current = postRef.current;
+      if (current && !current.editable) return current;
       if (key === savedPayload.current) return current;
+      operationEpoch.current += 1;
       setSaveError("");
       setSaving(true);
       try {
@@ -325,6 +392,8 @@ export default function PostEditorView({
     if (copyFlight.current) return;
     if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted") return;
     if (!integrationIds.length || pushFlight.current || accountsLoading || accountsError || imageBusy || conflict) return;
+    const shownTargets = new Map(postRef.current?.targets.map(target => [target.integrationId, target]));
+    operationEpoch.current += 1;
     pushFlight.current = true;
     setPreparingPush(true);
     setSubmitError("");
@@ -352,11 +421,28 @@ export default function PostEditorView({
           const response = await fetch(`/api/posts/${saved.id}/targets/${encodeURIComponent(integrationId)}/submit`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ expectedVersion: versionRef.current })
+            body: JSON.stringify({
+              expectedVersion: versionRef.current,
+              ...(shownTargets.get(integrationId)?.status === "rejected"
+                ? { expectedAuditId: shownTargets.get(integrationId)?.auditId }
+                : {})
+            })
           });
           const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string; code?: string };
           if (response.ok && data.post) {
-            setPost(data.post); postRef.current = data.post; versionRef.current = data.post.version;
+            const current = postRef.current;
+            const returnedTarget = data.post.targets.find(target => target.integrationId === integrationId);
+            if (!current || current.id !== saved.id || !returnedTarget || !editorMounted.current) continue;
+            // Parallel submissions return whole-post snapshots. Only this account's result belongs
+            // to this response; sibling states may already be newer than its server snapshot.
+            const mergedTargets = current.targets.map(target => target.integrationId === integrationId ? returnedTarget : target);
+            const frozenReason = (["accepted", "rejected", "submitting", "pending_unknown"] as const)
+              .find(status => mergedTargets.some(target => target.status === status)) ?? null;
+            const detail: ManualPostDetail = {
+              ...current, targets: mergedTargets, editable: isTargetSetEditable(mergedTargets), frozenReason,
+              updatedAt: data.post.updatedAt, version: Math.max(current.version, data.post.version)
+            };
+            setPost(detail); postRef.current = detail; versionRef.current = detail.version;
             setSavedRevision((revision) => revision + 1);
           } else {
             setSubmitError(data.error || "The submission failed.");
@@ -379,6 +465,7 @@ export default function PostEditorView({
     if (deletionBlocked || copyFlight.current) return;
     const current = postRef.current;
     if (!current || pushFlight.current || imageBusy || saving) return;
+    operationEpoch.current += 1;
     copyFlight.current = true;
     setCopying(true);
     setCopiedNotice("");
@@ -406,6 +493,7 @@ export default function PostEditorView({
     if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted" || !canDelete || pushFlight.current || imageBusy) return;
     if (!postRef.current && !saveFlight.current) return;
     if (!window.confirm(t("Delete this local draft permanently? Nothing has been sent to Postiz for it."))) return;
+    operationEpoch.current += 1;
     updateDeletion({ phase: "pending" });
     try {
       // Let an existing create/PATCH settle; never save newer edits just to discard them.
@@ -444,8 +532,8 @@ export default function PostEditorView({
     submittedAt: null
   }));
 
-  const trimmedContent = content.trim();
-  const hasImage = Boolean(image);
+  const trimmedContent = (editable ? content : post?.content ?? content).trim();
+  const hasImage = Boolean(editable ? image : post?.imageUrl);
 
   /** Per-account blockers; each one only ever gates its own account. */
   function targetBlocker(target: PostTarget): string {
@@ -456,7 +544,8 @@ export default function PostEditorView({
   }
 
   const pendingPushIds = targets
-    .filter((target) => (target.status === "not_started" || target.status === "failed") && !submitting.includes(target.integrationId) && !targetBlocker(target))
+    .filter((target) => editable || post?.targets.some(savedTarget => savedTarget.integrationId === target.integrationId))
+    .filter((target) => (target.status === "not_started" || target.status === "failed" || (target.status === "rejected" && Boolean(target.auditId))) && !submitting.includes(target.integrationId) && !targetBlocker(target))
     .map((target) => target.integrationId);
 
   if (loading) {
@@ -497,6 +586,11 @@ export default function PostEditorView({
           </div>
         </div>
         <div className="post-editor-actions">
+          {shouldPollStatus && (
+            <button type="button" className="secondary-button" disabled={refreshingStatus || copying || deletionBlocked || preparingPush || saving || imageBusy || Boolean(submitting.length)} onClick={() => void refreshStatus(false)}>
+              <RefreshCw size={14} className={refreshingStatus ? "spin" : undefined} aria-hidden="true" /> {t("Refresh status")}
+            </button>
+          )}
           {canDelete && (post || saving) && (
             <button type="button" className="secondary-button danger" disabled={copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void deleteDraft()}>
               {deletion.phase === "pending" ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
@@ -519,7 +613,9 @@ export default function PostEditorView({
           <ShieldCheck size={17} aria-hidden="true" />
           <div>
             <strong>{t("This post is read-only.")}</strong>{" "}
-            {post?.frozenReason === "pending_unknown"
+            {post?.targets.some(target => target.status === "rejected")
+              ? t("Review was rejected. The original post stays read-only. Resubmit the same content for review, or copy it as a new draft to make changes.")
+              : post?.frozenReason === "pending_unknown"
               ? t("A submission result is unconfirmed. Check Postiz before changing anything.")
               : post?.frozenReason === "submitting"
                 ? t("A submission is running. This view unlocks only while no draft exists in Postiz.")
@@ -540,6 +636,7 @@ export default function PostEditorView({
       )}
       {saveError && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(saveError)}</div></div>}
       {submitError && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(submitError)}</div></div>}
+      {statusError && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(statusError)}</div></div>}
       {copiedNotice && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(copiedNotice)}</div></div>}
       {deletion.phase === "pending" && <div className="info-banner" role="status">{t("Deleting draft…")}</div>}
       {deletion.phase === "failed" && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(deletion.error)}</div></div>}
@@ -598,7 +695,7 @@ export default function PostEditorView({
                   const isSubmitting = submitting.includes(target.integrationId) || target.status === "submitting";
                   const blocker = targetBlocker(target);
                   const meta = PLATFORM_META[target.platform as Platform];
-                  const canRetry = target.status === "not_started" || target.status === "failed";
+                  const canRetry = target.status === "not_started" || target.status === "failed" || target.status === "rejected";
                   return (
                     <li key={target.integrationId} className={`post-editor-target ${target.status}`}>
                       <div className="post-editor-target-head">
@@ -615,17 +712,17 @@ export default function PostEditorView({
                         </div>
                       )}
                       {target.status === "pending_unknown" && <div className="post-editor-target-warning">{t("Result unconfirmed. Open Postiz and check before doing anything else.")}</div>}
-                      {target.status === "failed" && target.error && <div className="post-editor-target-error">{t(target.error)}</div>}
+                      {(target.status === "failed" || target.status === "rejected") && target.error && <div className="post-editor-target-error">{t(target.error)}</div>}
                       {target.warning && target.status !== "pending_unknown" && <div className="post-editor-target-warning">{t(target.warning)}</div>}
                       {blocker && canRetry && <div className="post-editor-target-warning">{blocker}</div>}
-                      {target.status === "failed" && (
+                      {(target.status === "failed" || target.status === "rejected") && (
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={copying || deletionBlocked || preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker)}
+                          disabled={copying || deletionBlocked || preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker) || (target.status === "rejected" && !target.auditId)}
                           onClick={() => void pushTargets([target.integrationId])}
                         >
-                          {isSubmitting ? <><Loader2 className="spin" size={13} aria-hidden="true" /> {t("Submitting…")}</> : <><Send size={13} aria-hidden="true" /> {target.status === "failed" ? t("Retry this account") : t("Submit to Postiz draft")}</>}
+                          {isSubmitting ? <><Loader2 className="spin" size={13} aria-hidden="true" /> {t("Submitting…")}</> : <><Send size={13} aria-hidden="true" /> {t(target.status === "rejected" ? "Resubmit for review" : "Retry this account")}</>}
                         </button>
                       )}
                     </li>

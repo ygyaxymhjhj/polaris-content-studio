@@ -99,15 +99,19 @@ export default function PostsView({
   const [actionError, setActionError] = useState("");
   const [busyPostId, setBusyPostId] = useState("");
   const requestSequence = useRef(0);
+  const activeRequest = useRef<number | null>(null);
+  const actionPending = useRef(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 350);
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  const loadPosts = useCallback(async () => {
+  const loadPosts = useCallback(async (quiet = false) => {
+    if (quiet && (document.hidden || activeRequest.current !== null || actionPending.current)) return;
     const sequence = ++requestSequence.current;
-    setLoading(true);
+    activeRequest.current = sequence;
+    if (!quiet) setLoading(true);
     try {
       const parameters = new URLSearchParams({ status, page: String(page), perPage: String(PER_PAGE) });
       if (debouncedSearch) parameters.set("search", debouncedSearch);
@@ -126,12 +130,24 @@ export default function PostsView({
       if (sequence !== requestSequence.current) return;
       setError(loadError instanceof Error ? loadError.message : "The posts list could not be loaded.");
     } finally {
+      if (activeRequest.current === sequence) activeRequest.current = null;
       if (sequence === requestSequence.current) setLoading(false);
     }
   }, [status, page, debouncedSearch, platform, account, within]);
 
   useEffect(() => {
     void loadPosts();
+    const refresh = () => { void loadPosts(true); };
+    const timer = window.setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      requestSequence.current += 1;
+      activeRequest.current = null;
+    };
   }, [loadPosts, refreshToken]);
 
   // Filters are a fresh query, not a deeper page of the previous one.
@@ -152,7 +168,8 @@ export default function PostsView({
   }
 
   async function duplicatePost(post: ManualPostListItem) {
-    if (busyPostId) return;
+    if (actionPending.current) return;
+    actionPending.current = true;
     setBusyPostId(post.id);
     setActionError("");
     try {
@@ -163,13 +180,15 @@ export default function PostsView({
     } catch (duplicateError) {
       setActionError(duplicateError instanceof Error ? duplicateError.message : "The post could not be copied.");
     } finally {
+      actionPending.current = false;
       setBusyPostId("");
     }
   }
 
   async function deletePost(post: ManualPostListItem) {
-    if (busyPostId) return;
+    if (actionPending.current) return;
     if (!window.confirm(t("Delete this local draft permanently? Nothing has been sent to Postiz for it."))) return;
+    actionPending.current = true;
     setBusyPostId(post.id);
     setActionError("");
     try {
@@ -180,6 +199,7 @@ export default function PostsView({
     } catch (deleteError) {
       setActionError(deleteError instanceof Error ? deleteError.message : t("The post could not be deleted."));
     } finally {
+      actionPending.current = false;
       setBusyPostId("");
     }
   }
@@ -296,7 +316,9 @@ export default function PostsView({
                 <span className="posts-row-body">
                   <span className="posts-row-title-line">
                     <strong>{post.title || t("Untitled post")}</strong>
-                    <span className={`posts-status-pill ${post.status}`}>{t(POST_STATUS_LABEL[post.status])}</span>
+                    <span className={`posts-status-pill ${post.status}${(post.rejectedCount ?? 0) > 0 ? " rejected" : ""}`}>
+                      {t((post.rejectedCount ?? 0) > 0 ? "Review rejected" : POST_STATUS_LABEL[post.status])}
+                    </span>
                   </span>
                   <span className="posts-row-excerpt">{post.excerpt || t("No text yet")}</span>
                   <span className="posts-row-meta">

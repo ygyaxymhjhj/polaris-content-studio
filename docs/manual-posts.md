@@ -35,20 +35,52 @@ human decision inside Postiz. The AI workspace, its projects and their export fl
 | Not submitted | Selected, never handed over | Submit now |
 | Submitting | A claim is in flight | Wait |
 | Draft accepted | Postiz accepted the draft | Nothing; the local copy is read-only |
+| Review rejected | The current draft was rejected during review | Resubmit this account for review; copy the post to edit content |
 | Failed | Postiz refused the draft (or the image upload failed) | Retry this account |
 | Needs review | The result could not be confirmed | Check Postiz; no automatic retry |
 
 The post-level status is derived from these rows: `draft` (nothing sent), `pushing` (something in
 flight), `pushed` (every selected account accepted) and `attention` (a failure, an unconfirmed
-result, or a partial delivery).
+result, rejection, or a partial delivery). A rejected account no longer contributes to the accepted
+progress count, and the list shows a rejection badge under Needs attention.
+
+## Review synchronization and resubmission
+
+The background worker already observes review facts in `social_post_tracking`. Manual posts now
+join that record through the target's **current** `audit_id`, upstream post ID, owning user,
+post ID and integration ID. An unrelated or older audit cannot change the current target.
+The database target remains `accepted` to preserve the fact that its content was handed over;
+`rejected` is a read-time projection. No schema migration or rejection backfill is needed.
+
+- The deployed review contract is `DRAFT` plus `saveAction: "pass"`, not `ERROR` or the word "pass"
+  alone. See `docs/feishu-notifications.md`. Missing facts do not prove rejection.
+- The production worker checks approximately once a minute. Open list/editor views quietly refresh
+  local status every 15 seconds and on focus/visibility changes; the editor also has Refresh status.
+  These reads do not force a live upstream scan, so worker downtime or upstream errors delay updates.
+- Status refresh preserves typed text, image edits, selected accounts and optimistic content version.
+  Responses started before saving/deleting/submitting cannot overwrite a newer operation.
+- A rejected retry uses the existing submit endpoint with `expectedVersion` and the displayed
+  `expectedAuditId`. The server checks ownership/enabled accounts, verifies a fresh upstream rejection
+  without holding a database transaction, then locks and rechecks the same binding before claiming.
+- A successful retry creates a **new draft**, appends audit history, and replaces the current target's
+  audit/upstream IDs atomically for that attempt. Old tracking observations cannot re-reject it.
+- A definite retry failure restores the original rejected binding and leaves it frozen. A transport
+  uncertainty becomes Needs review and cannot be blindly retried. Double clicks and stale review IDs
+  do not create another draft.
+- Rejection does not unlock the shared content, even when all accounts rejected it. Copy as new draft
+  is the editing path, because other selected accounts may already have accepted the shared snapshot.
+
+Old rejected drafts are retained remotely for history. Do not manually promote an older draft after
+resubmitting it. Live verification and local claims cannot form an atomic transaction with the remote
+engine, so a simultaneous administrator change can still race with creation of the replacement draft.
 
 ## Rules worth knowing before using it
 
 - **Pushing is per account.** Each selected account receives its own Postiz draft of the same text
-  and image. Accounts that already accepted are never submitted again; a failed account can be
+  and image. Accounts with a current non-rejected acceptance are never submitted again; a failed account can be
   retried on its own. The post is not blocked for everyone when one platform refuses it, and
   Instagram alone requires an image.
-- **A successful hand-off freezes the text and image.** While any account is accepted, submitting
+- **A successful hand-off freezes the text and image.** While any account is accepted, rejected, submitting
   or unconfirmed, the editor is read-only and the account selection cannot change, so every account
   received the same content. To change the wording afterwards, use *Copy as new draft* and submit
   the copy; the original draft stays in Postiz for an administrator to edit there.
@@ -82,7 +114,7 @@ Verified against the official documentation:
   `shortLink: false`, `tags: []` and one entry in `posts` containing `integration: { id }`,
   `value: [{ content, image: [{ id, path }] }]` and provider-specific `settings.__type`.
   The `date` satisfies the API schema; `type: "draft"` prevents scheduling or publishing.
-- The returned `postId` is stored per account. Accepted accounts are not submitted again;
+- The returned `postId` is stored per account. Non-rejected accepted accounts are not submitted again;
   transport-uncertain results require manual review rather than automatic retries.
 
 ## Operating notes
@@ -92,6 +124,9 @@ Verified against the official documentation:
 - Schema changes ship in `deploy/mysql/init.sql` and
   `deploy/mysql/migrations/2026-10-15-manual-posts.sql`; the LAN deploy script replays both.
 - `node scripts/test-manual-posts.mjs` covers the hand-off rules without a database.
+- `node scripts/test-manual-post-reviews.mjs` exercises current-audit rejection projection and retry
+  safety using actual SQL expressions through an in-memory SQLite adapter. It does not validate
+  MySQL-specific row locks; use Node 22 with `node:sqlite` available.
 - `node scripts/test-post-composer.mjs` runs the real editor and image preparation in Chrome with
   mocked Polaris API responses: account selection, autosave/push races, read-only snapshots and
   responsive layouts. It does not create drafts in a live Postiz instance.

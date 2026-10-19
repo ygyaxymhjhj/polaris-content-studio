@@ -461,6 +461,10 @@ const messages: Record<string, [string, string]> = {
 
 // Manual posts: overview, list and editor. The hand-off only ever creates a Postiz draft.
 const manualPostMessages: Record<string, [string, string]> = {
+  "Refresh status": ["刷新状态", "Làm mới trạng thái"],
+  "Resubmit for review": ["重新提交审核", "Gửi lại để duyệt"],
+  "Review was rejected. The original post stays read-only. Resubmit the same content for review, or copy it as a new draft to make changes.": ["审核未通过，原贴文仍为只读。可以将相同内容重新提交审核；如需修改，请复制为新草稿。", "Bài đăng không được duyệt và bản gốc vẫn chỉ đọc. Gửi lại cùng nội dung để duyệt hoặc sao chép thành bản nháp mới để chỉnh sửa."],
+  "Rejections, failures, unknown results or partial delivery": ["包含拒审、失败、结果待确认或部分完成", "Có bài không được duyệt, lỗi, kết quả chưa xác định hoặc gửi một phần"],
   "Platforms": ["平台", "Nền tảng"],
   "Edit post": ["编辑贴文", "Chỉnh sửa bài đăng"],
   "Add media": ["添加媒体", "Thêm phương tiện"],
@@ -780,6 +784,10 @@ const themeThaiMessages: Record<string, string> = {
 };
 
 const thMessages: Record<string, string> = {
+  "Refresh status": "รีเฟรชสถานะ",
+  "Resubmit for review": "ส่งตรวจอนุมัติอีกครั้ง",
+  "Review was rejected. The original post stays read-only. Resubmit the same content for review, or copy it as a new draft to make changes.": "โพสต์ไม่ผ่านการอนุมัติและต้นฉบับยังเป็นแบบอ่านอย่างเดียว ส่งเนื้อหาเดิมเพื่อตรวจอีกครั้ง หรือคัดลอกเป็นฉบับร่างใหม่เพื่อแก้ไข",
+  "Rejections, failures, unknown results or partial delivery": "มีโพสต์ไม่ผ่านการอนุมัติ ข้อผิดพลาด ผลที่ยังไม่ยืนยัน หรือส่งได้บางส่วน",
   "Review rejected": "ไม่ผ่านการอนุมัติ",
   "Pending review": "รอการอนุมัติ",
   "First detected": "ตรวจพบครั้งแรก",

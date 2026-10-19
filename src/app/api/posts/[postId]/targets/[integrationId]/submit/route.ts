@@ -12,10 +12,13 @@ export const dynamic = "force-dynamic";
 const failure = (message: string, status: number, code?: string) => NextResponse.json({ error: message, ...(code ? { code } : {}) }, { status, headers: { "Cache-Control": "no-store" } });
 const postIdPattern = /^[a-f0-9-]{36}$/i;
 const integrationIdPattern = /^[a-zA-Z0-9_-]{1,64}$/;
-const submitSchema = z.object({ expectedVersion: z.number().int().min(1).max(2147483646) }).strict();
+const submitSchema = z.object({
+  expectedVersion: z.number().int().min(1).max(2147483646),
+  expectedAuditId: z.string().uuid().optional()
+}).strict();
 
 /**
- * Submits (or retries) one account of a manual post. The body carries only the expected version:
+ * Submits (or retries) one account of a manual post. A rejected retry also binds the current audit:
  * the content and image always come from the saved row, so a race between two tabs can never hand
  * Postiz text the owner has not seen.
  */
@@ -41,7 +44,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ po
       isAdmin: auth.user.role === "admin",
       postId,
       integrationId,
-      expectedVersion: parsed.data.expectedVersion
+      expectedVersion: parsed.data.expectedVersion,
+      expectedAuditId: parsed.data.expectedAuditId
     });
     switch (outcome.kind) {
       case "ok":

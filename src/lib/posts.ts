@@ -66,6 +66,7 @@ interface ListedPostRow extends RowDataPacket {
   has_image: number;
   target_count: number;
   accepted_count: number;
+  rejected_count: number;
   submitting_count: number;
   unsettled_count: number;
   unknown_count: number;
@@ -75,24 +76,42 @@ interface ListedPostRow extends RowDataPacket {
   updated_at: string;
 }
 
-/**
- * Per-post target counts and the derived status. Written once and shared by the list, the counts
- * and the overview so every screen classifies a post identically.
- */
+// Only the current, owner-bound manual audit can contribute a review. The worker deliberately
+// preserves a known rejected marker when a later response omits saveAction.
+export const POST_TARGET_REVIEW_JOINS = `
+  LEFT JOIN social_publishes audit ON audit.id = t.audit_id
+    AND audit.asset_id = t.post_id AND audit.integration_id = t.integration_id
+    AND audit.project_id IS NULL AND audit.published_by = p.owner_user_id
+    AND CAST(audit.postiz_post_id AS BINARY) = CAST(t.postiz_post_id AS BINARY)
+  LEFT JOIN social_post_tracking tracking ON tracking.publish_audit_id = audit.id
+    AND CAST(tracking.postiz_post_id AS BINARY) = CAST(t.postiz_post_id AS BINARY)
+`;
+
+export const POST_TARGET_STATUS_SQL = `CASE
+  WHEN t.status = 'accepted' AND tracking.review_status = 'rejected'
+    AND tracking.state = 'DRAFT' THEN 'rejected'
+  ELSE t.status END`;
+
+/** Shared classification for list results, filtered counts and overview counts. */
 const POST_STATUS_CTE = `
-  WITH post_rows AS (
+  WITH owner_posts AS (SELECT * FROM posts WHERE owner_user_id = ?),
+  target_rows AS (
+    SELECT t.*, ${POST_TARGET_STATUS_SQL} AS effective_status
+    FROM post_targets t JOIN owner_posts p ON p.id = t.post_id
+    ${POST_TARGET_REVIEW_JOINS}
+  ), post_rows AS (
     SELECT
       p.id, p.title, p.created_at, p.updated_at,
       LEFT(p.content, 400) AS excerpt,
       (p.image_thumb IS NOT NULL) AS has_image,
-      (SELECT COUNT(*) FROM post_targets t WHERE t.post_id = p.id) AS target_count,
-      (SELECT COUNT(*) FROM post_targets t WHERE t.post_id = p.id AND t.status = 'accepted') AS accepted_count,
-      (SELECT COUNT(*) FROM post_targets t WHERE t.post_id = p.id AND t.status = 'submitting') AS submitting_count,
-      (SELECT COUNT(*) FROM post_targets t WHERE t.post_id = p.id AND t.status IN ('failed','pending_unknown')) AS unsettled_count,
-      (SELECT COUNT(*) FROM post_targets t WHERE t.post_id = p.id AND t.status = 'pending_unknown') AS unknown_count,
-      (SELECT GROUP_CONCAT(DISTINCT t.platform ORDER BY t.platform) FROM post_targets t WHERE t.post_id = p.id) AS platforms
-    FROM posts p
-    WHERE p.owner_user_id = ?
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id) AS target_count,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'accepted') AS accepted_count,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'rejected') AS rejected_count,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'submitting') AS submitting_count,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status IN ('failed','pending_unknown','rejected')) AS unsettled_count,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'pending_unknown') AS unknown_count,
+      (SELECT GROUP_CONCAT(DISTINCT t.platform ORDER BY t.platform) FROM target_rows t WHERE t.post_id = p.id) AS platforms
+    FROM owner_posts p
   ),
   post_status AS (
     SELECT r.*,
@@ -124,6 +143,7 @@ function toListItem(row: ListedPostRow): ManualPostListItem {
     status: row.status,
     targetCount: Number(row.target_count),
     acceptedCount: Number(row.accepted_count),
+    rejectedCount: Number(row.rejected_count || 0),
     platforms: row.platforms ? String(row.platforms).split(",").filter(Boolean) : [],
     editable,
     deletable: editable,
@@ -133,12 +153,12 @@ function toListItem(row: ListedPostRow): ManualPostListItem {
 }
 
 /**
- * A post may be changed only while no target is accepted, submitting or unconfirmed. Failed and
+ * A post may be changed only while no target is accepted, rejected, submitting or unconfirmed. Failed and
  * not-started targets stay changeable: nothing reached Postiz, so the next attempt may send new
  * content. This is the same rule post_targets rows encode for the editor and the delete endpoint.
  */
-function listItemEditable(row: Pick<ListedPostRow, "accepted_count" | "submitting_count" | "unknown_count">): boolean {
-  return Number(row.accepted_count) === 0 && Number(row.submitting_count) === 0 && Number(row.unknown_count) === 0;
+function listItemEditable(row: Pick<ListedPostRow, "accepted_count" | "rejected_count" | "submitting_count" | "unknown_count">): boolean {
+  return Number(row.accepted_count) === 0 && Number(row.rejected_count || 0) === 0 && Number(row.submitting_count) === 0 && Number(row.unknown_count) === 0;
 }
 
 function toTarget(row: TargetRow): PostTarget {
@@ -161,11 +181,13 @@ export function toPostDetail(row: PostRow, targets: PostTarget[]): ManualPostDet
   const editable = isTargetSetEditable(targets);
   const frozenReason = targets.some((target) => target.status === "accepted")
     ? "accepted" as const
-    : targets.some((target) => target.status === "submitting")
-      ? "submitting" as const
-      : targets.some((target) => target.status === "pending_unknown")
-        ? "pending_unknown" as const
-        : null;
+    : targets.some((target) => target.status === "rejected")
+      ? "rejected" as const
+      : targets.some((target) => target.status === "submitting")
+        ? "submitting" as const
+        : targets.some((target) => target.status === "pending_unknown")
+          ? "pending_unknown" as const
+          : null;
   return {
     id: String(row.id),
     title: String(row.title || ""),
@@ -208,7 +230,10 @@ export async function loadPostRow(ownerUserId: string, postId: string): Promise<
 
 export async function listTargetRows(connection: Pick<PoolConnection, "execute"> | ReturnType<typeof database>, postId: string): Promise<PostTarget[]> {
   const [rows] = await connection.execute<TargetRow[]>(
-    "SELECT integration_id, platform, account_name, status, snapshot_version, postiz_post_id, audit_id, warning, error, submitted_at FROM post_targets WHERE post_id=? ORDER BY created_at",
+    `SELECT t.integration_id, t.platform, t.account_name, ${POST_TARGET_STATUS_SQL} AS status,
+            t.snapshot_version, t.postiz_post_id, t.audit_id, t.warning, t.error, t.submitted_at
+       FROM post_targets t JOIN posts p ON p.id = t.post_id ${POST_TARGET_REVIEW_JOINS}
+      WHERE t.post_id=? ORDER BY t.created_at`,
     [postId]
   );
   return rows.map(toTarget);
@@ -281,7 +306,7 @@ export async function listManualPosts(ownerUserId: string, filters: PostListFilt
   const [rows] = await database().execute<ListedPostRow[]>(
     `${POST_STATUS_CTE}
      SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.target_count,
-            r.accepted_count, r.submitting_count, r.unsettled_count, r.unknown_count, r.platforms, r.status
+            r.accepted_count, r.rejected_count, r.submitting_count, r.unsettled_count, r.unknown_count, r.platforms, r.status
        FROM post_status r
       WHERE ${conditions ? `(${conditions}) AND ` : ""}(? = 'all' OR r.status = ?)
       ORDER BY r.updated_at DESC
@@ -497,11 +522,15 @@ export async function overviewSnapshot(ownerUserId: string, withinMs: number): P
   const [targetRows] = await database().execute<(RowDataPacket & {
     post_id: string; title: string; platform: string; account_name: string; status: PostTargetStatus; submitted_at: string | null; updated_at: string;
   })[]>(
-    `SELECT t.post_id, p.title, t.platform, t.account_name, t.status, t.submitted_at, t.updated_at
-       FROM post_targets t JOIN posts p ON p.id = t.post_id
-      WHERE p.owner_user_id = ? AND t.snapshot_version > 0 AND t.updated_at >= ?
-      ORDER BY t.updated_at DESC LIMIT 60`,
-    [ownerUserId, since]
+    `SELECT t.post_id, p.title, t.platform, t.account_name, ${POST_TARGET_STATUS_SQL} AS status,
+            t.submitted_at,
+            CASE WHEN (${POST_TARGET_STATUS_SQL}) = 'rejected'
+              THEN COALESCE(tracking.rejected_detected_at, t.updated_at) ELSE t.updated_at END AS updated_at
+       FROM post_targets t JOIN posts p ON p.id = t.post_id ${POST_TARGET_REVIEW_JOINS}
+      WHERE p.owner_user_id = ? AND t.snapshot_version > 0
+        AND (t.updated_at >= ? OR ((${POST_TARGET_STATUS_SQL}) = 'rejected' AND tracking.rejected_detected_at >= ?))
+      ORDER BY updated_at DESC LIMIT 60`,
+    [ownerUserId, since, since]
   );
 
   const activity: OverviewActivity[] = [];
@@ -521,10 +550,11 @@ export async function overviewSnapshot(ownerUserId: string, withinMs: number): P
   }
   for (const row of targetRows) {
     const kind: OverviewActivity["kind"] = row.status === "accepted" ? "accepted"
-      : row.status === "failed" ? "failed"
+      : row.status === "rejected" ? "rejected"
+        : row.status === "failed" ? "failed"
         : row.status === "pending_unknown" ? "pending"
           : "submitted";
-    const at = row.submitted_at ? databaseEpoch(row.submitted_at) : databaseEpoch(row.updated_at);
+    const at = row.status !== "rejected" && row.submitted_at ? databaseEpoch(row.submitted_at) : databaseEpoch(row.updated_at);
     activity.push({
       id: `target-${row.post_id}-${row.account_name}-${kind}-${at}`,
       kind,

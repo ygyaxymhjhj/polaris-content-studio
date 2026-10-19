@@ -5,7 +5,7 @@ import type { Platform } from "./types";
  * import them without pulling mysql2 into the bundle.
  */
 
-export const POST_TARGET_STATUSES = ["not_started", "submitting", "accepted", "failed", "pending_unknown"] as const;
+export const POST_TARGET_STATUSES = ["not_started", "submitting", "accepted", "rejected", "failed", "pending_unknown"] as const;
 export type PostTargetStatus = typeof POST_TARGET_STATUSES[number];
 
 /** Derived, per-post view of its targets. "attention" covers failures, unknown results and partial delivery. */
@@ -36,6 +36,7 @@ export interface ManualPostListItem {
   status: ManualPostStatus;
   targetCount: number;
   acceptedCount: number;
+  rejectedCount?: number;
   platforms: string[];
   /** False once any target reached Postiz (or its result is unknown): the frozen snapshot is no longer editable. */
   editable: boolean;
@@ -56,7 +57,7 @@ export interface ManualPostDetail {
   version: number;
   editable: boolean;
   /** Why the post is read-only, when it is. */
-  frozenReason: "accepted" | "submitting" | "pending_unknown" | null;
+  frozenReason: "accepted" | "rejected" | "submitting" | "pending_unknown" | null;
   createdAt: string;
   updatedAt: string;
   targets: PostTarget[];
@@ -81,7 +82,7 @@ export interface PostsListResponse {
 
 export interface OverviewActivity {
   id: string;
-  kind: "created" | "updated" | "submitted" | "accepted" | "failed" | "pending";
+  kind: "created" | "updated" | "submitted" | "accepted" | "rejected" | "failed" | "pending";
   postId: string;
   title: string;
   platform: string | null;
@@ -98,13 +99,13 @@ export interface OverviewResponse {
 
 /** True while every target is still safe to change: nothing reached Postiz and nothing is in flight. */
 export function isTargetSetEditable(targets: Pick<PostTarget, "status">[]): boolean {
-  return !targets.some((target) => target.status === "accepted" || target.status === "submitting" || target.status === "pending_unknown");
+  return !targets.some((target) => target.status === "accepted" || target.status === "rejected" || target.status === "submitting" || target.status === "pending_unknown");
 }
 
 export function postStatusFromTargets(targets: Pick<PostTarget, "status">[]): ManualPostStatus {
   const accepted = targets.filter((target) => target.status === "accepted").length;
   const submitting = targets.filter((target) => target.status === "submitting").length;
-  const unsettled = targets.filter((target) => target.status === "failed" || target.status === "pending_unknown").length;
+  const unsettled = targets.filter((target) => target.status === "failed" || target.status === "pending_unknown" || target.status === "rejected").length;
   if (submitting > 0) return "pushing";
   if (unsettled > 0) return "attention";
   if (accepted > 0 && accepted === targets.length) return "pushed";
@@ -148,6 +149,7 @@ export const POST_TARGET_STATUS_LABEL: Record<PostTargetStatus, string> = {
   not_started: "Not submitted",
   submitting: "Submitting…",
   accepted: "Draft accepted",
+  rejected: "Review rejected",
   failed: "Failed",
   pending_unknown: "Needs review"
 };

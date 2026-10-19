@@ -101,7 +101,7 @@ export default function OverviewView({
       id: "attention",
       label: t("Needs attention"),
       value: String(counts.attention + counts.pushing),
-      hint: counts.pushing ? `${counts.pushing} ${t("submitting now")}` : t("Failures, unknown results or partial delivery"),
+      hint: counts.pushing ? `${counts.pushing} ${t("submitting now")}` : t("Rejections, failures, unknown results or partial delivery"),
       tone: counts.attention ? "warn" : undefined,
       onClick: () => onOpenPosts("attention")
     }
@@ -251,12 +251,13 @@ export default function OverviewView({
   );
 }
 
-function activityLabel(kind: OverviewResponse["activity"][number]["kind"]): string {
+function activityLabel(kind: OverviewResponse["activity"][number]["kind"] | "rejected"): string {
   switch (kind) {
     case "created": return "Post created";
     case "updated": return "Post updated";
     case "submitted": return "Draft submission started";
     case "accepted": return "Draft accepted by Postiz";
+    case "rejected": return "Review rejected";
     case "failed": return "Draft refused";
     case "pending": return "Submission needs review";
     default: return "Activity";

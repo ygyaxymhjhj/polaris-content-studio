@@ -50,7 +50,7 @@ function createStorageHarness(expectedTargets) {
       assert.equal(new Set(parameters.filter((_, index) => index % columns.length === 0)).size, expectedTargets.length);
       return [{ affectedRows: expectedTargets.length }];
     }
-    if (statement.startsWith("SELECT integration_id")) return [[]];
+    if (statement.startsWith("SELECT t.integration_id")) return [[]];
     if (statement.startsWith("SELECT id")) return [[{
       id: postId, title: "", content: "Draft", version: 1,
       created_at: "2026-10-16 10:00:00.000", updated_at: "2026-10-16 10:00:00.000"
@@ -93,6 +93,7 @@ test("the list exposes deletion for local drafts and protects every frozen targe
     { id: "local", status: "draft", accepted_count: 0, submitting_count: 0, unsettled_count: 0, unknown_count: 0 },
     { id: "failed", status: "attention", accepted_count: 0, submitting_count: 0, unsettled_count: 1, unknown_count: 0 },
     { id: "accepted", status: "pushed", accepted_count: 1, submitting_count: 0, unsettled_count: 0, unknown_count: 0 },
+    { id: "rejected", status: "attention", accepted_count: 0, rejected_count: 1, submitting_count: 0, unsettled_count: 1, unknown_count: 0 },
     { id: "submitting", status: "pushing", accepted_count: 0, submitting_count: 1, unsettled_count: 0, unknown_count: 0 },
     { id: "unknown", status: "attention", accepted_count: 0, submitting_count: 0, unsettled_count: 1, unknown_count: 1 }
   ];
@@ -113,6 +114,6 @@ test("the list exposes deletion for local drafts and protects every frozen targe
   });
   assert.deepEqual(result.items.map(post => [post.id, post.editable, post.deletable]), [
     ["local", true, true], ["failed", true, true], ["accepted", false, false],
-    ["submitting", false, false], ["unknown", false, false]
+    ["rejected", false, false], ["submitting", false, false], ["unknown", false, false]
   ]);
 });
