@@ -103,7 +103,6 @@ export default function MembersPanel({ canManageMembers }: { canManageMembers: b
     <div className="settings-card settings-card-wide">
       <div className="settings-card-icon"><Users size={18} /></div>
       <h2>{t("Members")}</h2>
-      <p className="members-intro">{t("Only administrators can add members, reset passwords and disable accounts. New accounts are members.")}</p>
 
       <div className="member-list">
         {members.map((member) => (

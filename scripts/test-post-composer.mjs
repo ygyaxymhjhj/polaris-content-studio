@@ -506,7 +506,8 @@ try {
   assert.equal(await text.inputValue(), reviewPost.content);
   assert.equal(await page.locator('.post-editor-target-meta').count(), 0, 'rejection does not retain accepted tracking progress');
   assert.equal(await page.getByRole('button', { name: 'Refresh status', exact: true }).locator('.spin').count(), 0, 'background refresh has no spinner');
-  assert.match(await page.locator('.info-banner.frozen').innerText(), /copy it as a new draft/i);
+  assert.match(await page.locator('.info-banner.frozen').innerText(), /read-only.*review rejected/is);
+  assert.equal(await page.locator('.info-banner.frozen').getByRole('button', { name: 'Copy as new draft', exact: true }).isEnabled(), true);
   assert.doesNotMatch(await page.locator('body').innerText(), /postiz/i);
 
   // Background refresh never clears an action error, and hidden/in-flight pages do not poll twice.
@@ -644,7 +645,9 @@ try {
   await page.getByRole('checkbox', { name: /News desk/ }).click();
   await page.getByRole('checkbox', { name: /News desk/ }).press('Escape');
   await push.click();
-  await page.getByText('Submission accepted. Processing in the background; you can close this dialog or leave this page.', { exact: true }).waitFor();
+  await page.locator('.post-editor-target.submitting').waitFor();
+  assert.equal(await page.locator('.post-editor-aside-foot, .post-draft-destination').count(), 0, 'The submission button and target status need no duplicate process note');
+  assert.equal(await page.getByText('Submission accepted. Processing in the background; you can close this dialog or leave this page.', { exact: true }).count(), 0, '202 is represented by the target status, not a permanent success banner');
   assert.equal(await page.locator('.post-editor-target.submitting').count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Back to posts', exact: true }).isEnabled(), true, '202 releases navigation while the worker remains pending');
   const pendingPostId = storedPost.id;

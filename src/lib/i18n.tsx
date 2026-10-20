@@ -1310,6 +1310,44 @@ for (const [key, value] of Object.entries(manualPostThaiMessages)) {
 
 // Presentation only: never apply this boundary to post content, account names or link targets.
 const publishingCopy: Record<string, Record<UiLanguage, string>> = {
+  "Submit all as Postiz drafts": { en: "Submit all drafts", zh: "批量提交草稿", vi: "Gửi tất cả bản nháp", th: "ส่งฉบับร่างทั้งหมด" },
+  "Submit to Postiz draft": { en: "Submit draft", zh: "提交草稿", vi: "Gửi bản nháp", th: "ส่งฉบับร่าง" },
+  "Connected to Postiz": { en: "Connected", zh: "已连接", vi: "Đã kết nối", th: "เชื่อมต่อแล้ว" },
+  "Postiz social account hosting": { en: "Publishing connection", zh: "发布连接", vi: "Kết nối xuất bản", th: "การเชื่อมต่อการเผยแพร่" },
+  "Source references and editable drafts.": { en: "Source references and editable drafts.", zh: "原文依据与可编辑草稿。", vi: "Nguồn tham chiếu và bản nháp có thể chỉnh sửa.", th: "แหล่งอ้างอิงและฉบับร่างที่แก้ไขได้" },
+  "asset": { en: "asset", zh: "条素材", vi: "nội dung", th: "รายการ" },
+  "assets": { en: "assets", zh: "条素材", vi: "nội dung", th: "รายการ" },
+  "channel": { en: "channel", zh: "个渠道", vi: "kênh", th: "ช่องทาง" },
+  "Draft queued.": { en: "Draft queued.", zh: "草稿已加入队列。", vi: "Đã xếp bản nháp vào hàng đợi.", th: "เพิ่มฉบับร่างเข้าคิวแล้ว" },
+  "Processing draft…": { en: "Processing draft…", zh: "正在处理草稿…", vi: "Đang xử lý bản nháp…", th: "กำลังประมวลผลฉบับร่าง…" },
+  "Turn an article into drafts for your social channels.": { en: "Turn an article into drafts for your social channels.", zh: "将文章转为各社交平台的草稿。", vi: "Chuyển bài viết thành bản nháp cho các kênh xã hội.", th: "เปลี่ยนบทความเป็นฉบับร่างสำหรับช่องทางโซเชียล" },
+  "Changes apply when you regenerate.": { en: "Changes apply when you regenerate.", zh: "修改将在重新生成时生效。", vi: "Thay đổi có hiệu lực khi tạo lại.", th: "การแก้ไขจะมีผลเมื่อสร้างใหม่" },
+  "Edit, preview and submit your social drafts.": { en: "Edit, preview and submit your social drafts.", zh: "编辑、预览并提交社交草稿。", vi: "Chỉnh sửa, xem trước và gửi bản nháp xã hội.", th: "แก้ไข ดูตัวอย่าง และส่งฉบับร่างโซเชียล" },
+  "Some drafts use local templates instead of AI. Review before use.": { en: "Some drafts use local templates instead of AI. Review before use.", zh: "部分草稿使用本地模板而非 AI 生成，请检查后使用。", vi: "Một số bản nháp dùng mẫu cục bộ thay vì AI. Kiểm tra trước khi dùng.", th: "ฉบับร่างบางรายการใช้เทมเพลตในเครื่องแทน AI กรุณาตรวจสอบก่อนใช้" },
+  "Older messages are no longer included in rewrites.": { en: "Older messages are no longer included in rewrites.", zh: "后续改写不再参考较早的对话。", vi: "Các tin nhắn cũ không còn được dùng khi viết lại.", th: "การเขียนใหม่จะไม่อ้างอิงข้อความเก่าแล้ว" },
+  "Download a package or submit your drafts.": { en: "Download a package or submit your drafts.", zh: "下载内容包或提交草稿。", vi: "Tải gói nội dung hoặc gửi bản nháp.", th: "ดาวน์โหลดแพ็กเกจหรือส่งฉบับร่าง" },
+  "Submitted drafts": { en: "Submitted drafts", zh: "已提交草稿", vi: "Bản nháp đã gửi", th: "ฉบับร่างที่ส่งแล้ว" },
+  "Write and manage your social drafts.": { en: "Write and manage your social drafts.", zh: "撰写和管理社交草稿。", vi: "Viết và quản lý bản nháp xã hội.", th: "เขียนและจัดการฉบับร่างโซเชียล" },
+  "Manage accounts and member assignments.": { en: "Manage accounts and member assignments.", zh: "管理账号及成员分配。", vi: "Quản lý tài khoản và phân công thành viên.", th: "จัดการบัญชีและการมอบหมายสมาชิก" },
+  "Manage your connected accounts.": { en: "Manage your connected accounts.", zh: "管理已连接的账号。", vi: "Quản lý các tài khoản đã kết nối.", th: "จัดการบัญชีที่เชื่อมต่อของคุณ" },
+  "Choose a platform to connect.": { en: "Choose a platform to connect.", zh: "选择要连接的平台。", vi: "Chọn nền tảng để kết nối.", th: "เลือกแพลตฟอร์มที่จะเชื่อมต่อ" },
+  "Saved to MySQL": { en: "Saved", zh: "已保存", vi: "Đã lưu", th: "บันทึกแล้ว" },
+  "Saving to MySQL…": { en: "Saving…", zh: "正在保存…", vi: "Đang lưu…", th: "กำลังบันทึก…" },
+  "Connecting storage…": { en: "Loading projects…", zh: "正在加载项目…", vi: "Đang tải dự án…", th: "กำลังโหลดโปรเจกต์…" },
+  "Ready to save": { en: "Ready to save", zh: "可以保存", vi: "Sẵn sàng lưu", th: "พร้อมบันทึก" },
+  "Review was rejected. The original post stays read-only. Resubmit the same content for review, or copy it as a new draft to make changes.": {
+    en: "Review rejected. Resubmit unchanged, or copy to edit.", zh: "审核未通过。可原文重提，或复制后修改。", vi: "Không được duyệt. Gửi lại nguyên bản hoặc sao chép để sửa.", th: "ไม่ผ่านการอนุมัติ ส่งเนื้อหาเดิมอีกครั้งหรือคัดลอกเพื่อแก้ไข"
+  },
+  "A submission result is unconfirmed. Check Postiz before changing anything.": {
+    en: "Submission unconfirmed. Check the publishing console; do not resubmit.", zh: "提交结果未确认，请到发布控制台核查，勿重复提交。", vi: "Chưa xác nhận kết quả. Kiểm tra bảng điều khiển; không gửi lại.", th: "ผลการส่งยังไม่ยืนยัน ตรวจสอบในคอนโซลและอย่าส่งซ้ำ"
+  },
+  "A submission is running. This view unlocks only while no draft exists in Postiz.": {
+    en: "Submission in progress. Editing is paused.", zh: "正在提交，暂不可编辑。", vi: "Đang gửi. Tạm dừng chỉnh sửa.", th: "กำลังส่ง ระงับการแก้ไขชั่วคราว"
+  },
+  "A draft already exists in Postiz for at least one account, so the local copy stays as it was submitted. Copy it as a new draft to change the text.": {
+    en: "A submitted draft exists. Copy to a new draft to edit.", zh: "已有提交的草稿。请复制为新草稿后编辑。", vi: "Đã có bản nháp được gửi. Sao chép thành bản mới để sửa.", th: "มีฉบับร่างที่ส่งแล้ว คัดลอกเป็นฉบับร่างใหม่เพื่อแก้ไข"
+  },
+  "Connected to the Postiz instance; submitted drafts wait there for review.": { en: "Publishing service connected.", zh: "发布服务已连接。", vi: "Đã kết nối dịch vụ xuất bản.", th: "เชื่อมต่อบริการเผยแพร่แล้ว" },
   "Push drafts to Postiz": { en: "Push drafts", zh: "提交草稿", vi: "Gửi bản nháp", th: "ส่งฉบับร่าง" },
   "Postiz drafts": { en: "Draft inbox", zh: "草稿箱", vi: "Hộp thư bản nháp", th: "กล่องฉบับร่าง" },
   "Postiz draft": { en: "Draft ID", zh: "草稿编号", vi: "Mã bản nháp", th: "รหัสฉบับร่าง" },

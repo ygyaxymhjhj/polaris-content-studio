@@ -29,8 +29,6 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
-  UserPlus,
-  Users,
   Wand2,
   X,
   Zap
@@ -1073,7 +1071,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (!isCurrentAttempt()) return { success: true, warning: hasWarning };
       updateAttempt(current => mergeDraftTask(current, task));
       if (announceResult) {
-        const message = t("Submission accepted. Processing in the background; you can close this dialog or leave this page.");
+        const message = t("Draft queued.");
         setSubmissionNotice(hasWarning ? t(task.warning || "") : "");
         notify(message);
       }
@@ -1366,7 +1364,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <AssetsView assets={assets} filteredAssets={filteredAssets} filter={assetFilter} setFilter={setAssetFilter} onOpen={openAsset} onPublish={(asset) => setPublishModalAsset(asset)} onGenerate={() => analysis && generateContent()} onExport={() => setView("export")} loading={loading} usedFallback={usedFallback} pendingPlatforms={pendingPlatforms} targetCount={selectedPlatforms.length} config={config} />
           )}
           {view === "export" && <ExportView assets={assets} submittedCount={assets.filter(asset => asset.publishStatus === "drafted").length} onExport={exportPackage} onBatchSubmitDrafts={batchSubmitDrafts} loading={loading} socialAccountsCount={socialAccounts.length} />}
-          {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} oauthConfigured={postizOAuthConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} isAdmin={user.role === "admin"} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
+          {view === "accounts" && <SocialAccountsView accounts={socialAccounts} configured={postizConfigured} uiUrl={postizUiUrl} loading={channelsLoading} error={channelsError} notice={connectionNotice} syncedAt={channelsSyncedAt} isAdmin={user.role === "admin"} onAddAccount={() => setConnectOpen(true)} onRefresh={loadChannels} />}
           {view === "settings" && <SettingsView canManageMembers={user.role === "admin"} postizConfigured={postizConfigured} socialAccounts={socialAccounts} onManageAccounts={() => setView("accounts")} />}
         </div>
       </main>
@@ -1449,14 +1447,14 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               </div>
 
               <div className="drawer-col rewrite-col">
-                <div className="col-head"><span className="eyebrow">{t("AI REWRITE")}</span><span className="col-hint">{t("Grounded in confirmed facts")}</span></div>
+                <div className="col-head"><span className="eyebrow">{t("AI REWRITE")}</span></div>
 
                 {!!rewriteError && <div className="rewrite-error"><TriangleAlert size={15} /><div><strong>{t("The rewrite did not run")}</strong><p>{rewriteError}</p><button className="text-button" onClick={requestRewrite}>{t("Try again")}</button></div></div>}
 
                 {!!activeThread.length && <div className="rewrite-thread">{activeThread.map((turn, index) => <div className={`thread-turn ${turn.role}`} key={`${turn.at}-${index}`}><span className="thread-role">{turn.role === "user" ? t("You") : "AI"}</span><p>{turn.text}</p></div>)}</div>}
                 {rewriting
                   ? <div className="thread-thinking"><Loader2 className="spin" size={14} /> {t("Revising…")}</div>
-                  : !activeThread.length && !candidates.length && <div className="thread-empty"><strong>{t("Ask for a specific change.")}</strong>{t("The AI edits the draft in place and keeps every other sentence as it stands. Only confirmed facts can be used.")}</div>}
+                  : !activeThread.length && !candidates.length && <div className="thread-empty">{t("Ask for a specific change.")}</div>}
 
                 <div className="preset-row">{presets.map((preset) => <button key={preset} className="preset-chip" onClick={() => setInstruction(t(preset))}>{t(preset)}</button>)}</div>
                 <label className="field-label">{t("What should change?")}<textarea className="rewrite-input" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder={t("e.g. Cut the first sentence and keep every number and date.")} /></label>
@@ -1464,7 +1462,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                   <label className="option-count">{t("Options")}<select aria-label={t("Options")} value={optionCount} onChange={(event) => setOptionCount(Number(event.target.value))}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></label>
                   <button className="primary-button" onClick={requestRewrite} disabled={rewriting || !instruction.trim()}>{rewriting ? <><Loader2 className="spin" size={15} /> {t("Revising…")}</> : <><Wand2 size={15} /> {t("Generate options")}</>}</button>
                 </div>
-                {droppedTurns > 0 && <div className="thread-note"><History size={12} /> {t("Older turns were dropped to fit the model's context window.")}</div>}
+                {droppedTurns > 0 && <div className="thread-note"><History size={12} /> {t("Older messages are no longer included in rewrites.")}</div>}
 
                 {!!candidates.length && <div className="candidate-section">
                   <div className="col-head"><span className="eyebrow">{t("OPTIONS TO REVIEW")}</span><button className="text-button" onClick={discardCandidates}>{t("Discard")}</button></div>
@@ -1512,8 +1510,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           <div className="publish-dialog">
             <div className="dialog-header">
               <div>
-                <span className="eyebrow">{t("POSTIZ MANAGED PUBLISHING")}</span>
-                <h3>{PLATFORM_META[publishModalAsset.platform].label} · {t("Draft check")}</h3>
+                <h3>{PLATFORM_META[publishModalAsset.platform].label} · {t("Submit draft")}</h3>
               </div>
               <button className="icon-button" aria-label={t("Close")} onClick={() => setPublishModalAsset(null)}><X size={18} /></button>
             </div>
@@ -1574,10 +1571,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 )}
               </div>
 
-              <div className="info-banner" style={{ marginTop: 8 }}>
-                <span>{t("This creates a Postiz draft only. An administrator reviews and publishes it inside Postiz.")}</span>
-              </div>
-              {publishModalAsset.publishStatus === "publishing" && <div className="info-banner" role="status">{t("Submission accepted. Processing in the background; you can close this dialog or leave this page.")}</div>}
+              {publishModalAsset.publishStatus === "publishing" && <p className="submission-status" role="status"><Loader2 size={14} className="spin" aria-hidden="true" />{t("Processing draft…")}</p>}
               {publishModalAsset.publishError && <div className="info-banner" role="alert">{t(publishModalAsset.publishError)}</div>}
               {publishModalAsset.submissionTask?.warning && <div className="info-banner" role="status">{t(publishModalAsset.submissionTask.warning)}</div>}
 
@@ -1606,7 +1600,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             <div className="dialog-footer">
               <button className="secondary-button" onClick={() => setPublishModalAsset(null)}>{t("Close")}</button>
               <button className="primary-button" disabled={publishing || channelsLoading || Boolean(channelsError) || !effectiveSelectedAccountId} onClick={() => submitDraft(publishModalAsset, effectiveSelectedAccountId)}>
-                {publishing ? <><Loader2 className="spin" size={15} /> {t("Submitting…")}</> : <><Send size={15} /> {t("Confirm submit draft")}</>}
+                {publishing ? <><Loader2 className="spin" size={15} /> {t("Submitting…")}</> : <><Send size={15} /> {t("Submit draft")}</>}
               </button>
             </div>
           </div>
@@ -1660,7 +1654,7 @@ function WorkspaceView({
         <div className="workspace-hero-content">
           <div className="eyebrow">{t("CONTENT GROWTH WORKSPACE")} · V1</div>
           <h1>{t("From one original article to a full-channel social media matrix")}</h1>
-          <p>{t("Key points and the lead image are extracted automatically; connected Postiz accounts receive each draft for review before anything goes live.")}</p>
+          <p>{t("Turn an article into drafts for your social channels.")}</p>
         </div>
       </div>
 
@@ -1693,7 +1687,7 @@ function WorkspaceView({
             <div className="url-import-body"><div className="url-import-label"><strong>{t("Fetch from an article URL")}</strong><span>{t("Text and lead image extracted automatically")}</span></div><div className="url-input-row"><input value={config.sourceUrl} onChange={(event) => updateConfig("sourceUrl", event.target.value)} placeholder="https://example.com/your-article" /><button className="primary-button" onClick={fetchArticle} disabled={loading === "fetch"}>{loading === "fetch" ? <><Loader2 className="spin" size={14} /> {t("Fetching…")}</> : <><Link2 size={14} /> {t("Fetch article")}</>}</button></div></div>
           </div>
         ) : (
-        <div className="source-grid">
+        <div className="source-grid" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
           <div className="dropzone-wrap">
             <label className={`dropzone ${sourceName ? "has-file" : ""}`}>
               <input type="file" accept=".docx,.json" onChange={handleFile} />
@@ -1704,7 +1698,7 @@ function WorkspaceView({
             </label>
             <div className="or-divider"><span>{t("or paste article text")}</span></div>
             <textarea className="source-textarea" placeholder={t("Paste the full article here…")} value={sourceText} onChange={(event) => setSourceText(event.target.value)} />
-            <div className="textarea-footer"><span>{sourceText.length.toLocaleString()} {t("characters")}</span><span>{t("Source only · no unsupported claims")}</span></div>
+            <div className="textarea-footer"><span>{sourceText.length.toLocaleString()} {t("characters")}</span></div>
           </div>
         </div>
         )}
@@ -1754,7 +1748,7 @@ function WorkspaceView({
         <div className="platform-selection">
           {platformGroups.map((group) => <div className="platform-group" key={group.label}><div className="platform-options">{group.platforms.map((platform) => { const meta = PLATFORM_META[platform]; const selected = selectedPlatforms.includes(platform); return <button key={platform} type="button" aria-pressed={selected} className={`platform-option ${selected ? "selected" : ""}`} onClick={() => togglePlatform(platform)}><span className="platform-icon" style={{ "--platform-accent": meta.accent } as React.CSSProperties}>{platformIcon(platform)}</span><span>{t(meta.label)}</span>{selected && <Check size={14} className="option-check" />}</button>; })}</div></div>)}
         </div>
-        <div className="panel-actions"><span className="action-note"><ShieldCheck size={15} /> {t("Facts stay human-reviewed; preview the real social layout and run the Postiz hand-off from the drawer.")}</span><button className="primary-button large" onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
+        <div className="panel-actions"><button className="primary-button large" style={{ marginLeft: "auto" }} onClick={analyzeArticle} disabled={loading !== null}>{loading === "analyze" ? <><Loader2 className="spin" size={17} /> {t("Preparing source references…")}</> : <><Sparkles size={17} /> {t("Generate social drafts")} <ArrowRight size={16} /></>}</button></div>
         {hasAnalysis && <button className="existing-analysis" onClick={() => goTo("facts")}>{t("View source references (optional)")} <ArrowRight size={14} /></button>}
       </section>
 
@@ -1778,7 +1772,7 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
         <div>
           <div className="eyebrow">{t("STEP 01 / SOURCE CONTROL")}</div>
           <h1>{t("Source references")}</h1>
-          <p>{t("Extracted from your team's reviewed article. These are optional reference controls, not a second mandatory fact review. Check the generated copy against the source before approving it.")}</p>
+          <p>{t("Changes apply when you regenerate.")}</p>
         </div>
         <div className="fact-progress">
           <div className="progress-number">{usableConfirmed}</div>
@@ -1800,7 +1794,6 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
             <button className="small-button" disabled={!displayed.length} onClick={() => displayed.forEach((fact) => updateFact(fact.id, { verified: true }))}><Check size={14} /> {t("Confirm displayed facts")}</button>
           </div>
 
-          <p className="config-source-note">{t("Matching source excerpts are enabled from your reviewed article. You may adjust the references here and regenerate; existing drafts do not change automatically.")}</p>
           <label className="field-label">{t("Review scope")}<select value={scope} onChange={event => { setScope(event.target.value); setLimit(10); }}>
             <option value="all">{t("All candidates")}</option><option value="pending">{t("Unconfirmed only")}</option><option value="high">{t("High attention")}</option>
           </select></label>
@@ -1833,18 +1826,14 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
         </div>
 
         <aside className="facts-aside">
-          <div className="aside-card risk-card">
+          {analysis.riskFlags.length > 0 && <div className="aside-card risk-card">
             <div className="aside-card-title"><span className="risk-dot" /> {t("Review before publishing")}</div>
-            {analysis.riskFlags.length ? <ul>{Array.from(new Set(analysis.riskFlags)).map((flag) => <li key={flag}>{flag}</li>)}</ul> : <p>{t("No risk signals detected in the source.")}</p>}
-            <div className="aside-rule" />
-            <div className="rule-line"><ShieldCheck size={15} /><span>{t("Unsupported claims will be flagged")}</span></div>
-            <div className="rule-line"><ShieldCheck size={15} /><span>{t("Source citations stay attached")}</span></div>
-            <div className="rule-line"><ShieldCheck size={15} /><span>{t("Human approval gates export")}</span></div>
-          </div>
+            <ul>{Array.from(new Set(analysis.riskFlags)).map((flag) => <li key={flag}>{flag}</li>)}</ul>
+          </div>}
           <div className="aside-card next-card">
             <span className="eyebrow">{t("NEXT STEP")}</span>
             <h3>{t("Build the distribution pack")}</h3>
-            <p>{usableConfirmed} {t("Confirmed for generation")}. {t("Only confirmed facts enabled for social will be used.")}</p>
+            <p>{usableConfirmed} {t("Confirmed for generation")}</p>
             <button className="primary-button full" onClick={onGenerate} disabled={loading === "generate" || !usableConfirmed}>
               {loading === "generate" ? <><Loader2 className="spin" size={16} /> {t("Generating pack…")}</> : <><Sparkles size={16} /> {t("Generate confirmed facts")} <ArrowRight size={15} /></>}
             </button>
@@ -1864,9 +1853,9 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPubli
   const generating = pendingPlatforms.length > 0;
   return (
     <>
-      <div className="page-heading compact-heading assets-heading"><div><div className="eyebrow">{t("STEP 02 / DISTRIBUTION PACK")}</div><h1>{t("Your content")} <em>{t("orbit.")}</em></h1><p>{t("One source, multiple native formats. Review each asset before your team takes it live.")}</p></div><div className="heading-actions"><button className="secondary-button" onClick={onGenerate} disabled={loading === "generate"}>{loading === "generate" ? <><Loader2 className="spin" size={15} /> {t("Generating…")}</> : <><RefreshCw size={15} /> {t("Regenerate")}</>}</button><button className="primary-button" onClick={onExport}><Download size={15} /> {t("Export pack")}</button></div></div>
+      <div className="page-heading compact-heading assets-heading"><div><div className="eyebrow">{t("STEP 02 / DISTRIBUTION PACK")}</div><h1>{t("Your content")} <em>{t("orbit.")}</em></h1><p>{t("Edit, preview and submit your social drafts.")}</p></div><div className="heading-actions"><button className="secondary-button" onClick={onGenerate} disabled={loading === "generate"}>{loading === "generate" ? <><Loader2 className="spin" size={15} /> {t("Generating…")}</> : <><RefreshCw size={15} /> {t("Regenerate")}</>}</button><button className="primary-button" onClick={onExport}><Download size={15} /> {t("Export pack")}</button></div></div>
       {generating && <div className="info-banner generating-banner"><Loader2 className="spin" size={16} /><span><strong>{t("Generating…")}</strong> {pendingPlatforms.length} / {targetCount} {t("channels remaining")}</span></div>}
-      {usedFallback && !generating && <div className="info-banner"><Sparkles size={16} /><span><strong>{t("Pack completed with safe local templates.")}</strong> {t("The model was unavailable or returned fewer formats than requested, so missing assets were filled locally. All assets remain editable and require review.")}</span></div>}
+      {usedFallback && !generating && <div className="info-banner" role="status"><TriangleAlert size={16} /><span>{t("Some drafts use local templates instead of AI. Review before use.")}</span></div>}
       <div className="asset-toolbar"><div className="asset-tabs"><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>{t("All assets")} <span>{assets.length}</span></button>{Object.entries(counts).map(([platform, count]) => <button key={platform} className={filter === platform ? "active" : ""} onClick={() => setFilter(platform as Platform)}>{t(PLATFORM_META[platform as Platform].short)} <span>{count}</span></button>)}</div></div>
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
@@ -1880,7 +1869,37 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPubli
 function ExportView({ assets, submittedCount, onExport, onBatchSubmitDrafts, loading, socialAccountsCount }: { assets: ContentAsset[]; submittedCount: number; onExport: () => void; onBatchSubmitDrafts: () => void; loading: string | null; socialAccountsCount: number }) {
   const t = useTranslation();
   const channels = new Set(assets.map((asset) => asset.platform)).size;
-  return <><div className="page-heading compact-heading"><div><div className="eyebrow">{t("STEP 03 / HANDOFF")}</div><h1>{t("Ready for")} <em>{t("distribution.")}</em></h1><p>{t("Download a package or batch-submit to the connected Postiz accounts.")}</p></div><div style={{ display: "flex", gap: 10 }}><button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button><button className="primary-button" onClick={onBatchSubmitDrafts} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Submit all as Postiz drafts")}</button></div></div><div className="export-summary"><div className="export-summary-main"><div className="export-icon"><Download size={25} /></div><div><span className="eyebrow">{t("CONTENT PACKAGE")}</span><h2>{assets.length} {t("assets across")} {channels} {t("channels")}</h2><p>{t("Includes the source fact pack, editable Markdown files and project metadata.")}</p></div></div><div className="export-stats"><div><strong>{submittedCount}</strong><span>{t("Postiz draft")}</span></div><div><strong>{assets.length - submittedCount}</strong><span>{t("Unpublished")}</span></div><div><strong>{channels}</strong><span>{t("channels")}</span></div><div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div></div></div><div className="export-checklist"><div className="checklist-heading"><ClipboardCheck size={18} /><h2>{t("Handoff checklist")}</h2></div>{["Source facts have been reviewed", "Platform copy has a clear CTA", "High-attention claims have a human owner", "Article link is ready to attach"].map((item, index) => <div className="checklist-row" key={item}><span className={`checklist-box ${index < 2 ? "done" : ""}`}>{index < 2 && <Check size={13} />}</span><span>{t(item)}</span><span className={index < 2 ? "check-done" : "check-pending"}>{index < 2 ? t("Complete") : t("Pending")}</span></div>)}</div></>;
+  return (
+    <>
+      <div className="page-heading compact-heading">
+        <div>
+          <div className="eyebrow">{t("STEP 03 / HANDOFF")}</div>
+          <h1>{t("Ready for")} <em>{t("distribution.")}</em></h1>
+          <p>{t("Download a package or submit your drafts.")}</p>
+        </div>
+        <div className="export-actions">
+          <button className="secondary-button" onClick={onExport} disabled={!assets.length || loading === "export"}><Download size={15} /> {t("Download ZIP")}</button>
+          <button className="primary-button" onClick={onBatchSubmitDrafts} disabled={!assets.length || loading === "export"}><Send size={15} /> {t("Submit all as Postiz drafts")}</button>
+        </div>
+      </div>
+      <div className="export-summary">
+        <div className="export-summary-main">
+          <div className="export-icon"><Download size={25} /></div>
+          <div>
+            <span className="eyebrow">{t("CONTENT PACKAGE")}</span>
+            <h2>{assets.length} {t(assets.length === 1 ? "asset" : "assets")} · {channels} {t(channels === 1 ? "channel" : "channels")}</h2>
+            <p>{t("Source references and editable drafts.")}</p>
+          </div>
+        </div>
+        <div className="export-stats">
+          <div><strong>{submittedCount}</strong><span>{t("Submitted drafts")}</span></div>
+          <div><strong>{assets.length - submittedCount}</strong><span>{t("Unpublished")}</span></div>
+          <div><strong>{channels}</strong><span>{t("channels")}</span></div>
+          <div><strong>{socialAccountsCount}</strong><span>{t("Managed accounts")}</span></div>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function SettingsView({ canManageMembers, postizConfigured, socialAccounts, onManageAccounts }: { canManageMembers: boolean; postizConfigured: boolean; socialAccounts: SocialAccount[]; onManageAccounts: () => void }) {

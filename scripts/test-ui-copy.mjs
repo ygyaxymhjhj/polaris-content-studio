@@ -1,26 +1,29 @@
 // Exercise the actual translation boundary and rendered account/connection UI without live APIs.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { load } from 'cheerio';
+import { chromium } from 'playwright';
 import ts from 'typescript';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const modules = new Map();
-function loadModule(modulePath) {
+function loadModule(modulePath, sourceOverride) {
   if (modules.has(modulePath)) return modules.get(modulePath).exports;
-  const source = readFileSync(modulePath, 'utf8');
+  const source = sourceOverride ?? readFileSync(modulePath, 'utf8');
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true }
   }).outputText;
   const moduleRecord = { exports: {} };
   modules.set(modulePath, moduleRecord);
   const require = dependency => {
-    if (!dependency.startsWith('@/')) return createRequire(modulePath)(dependency);
-    const basePath = resolve(repository, 'src', dependency.slice(2));
+    if (!dependency.startsWith('@/') && !dependency.startsWith('.')) return createRequire(modulePath)(dependency);
+    const basePath = dependency.startsWith('@/') ? resolve(repository, 'src', dependency.slice(2)) : resolve(dirname(modulePath), dependency);
     return loadModule(existsSync(`${basePath}.ts`) ? `${basePath}.ts` : `${basePath}.tsx`);
   };
   new Function('require', 'module', 'exports', compiled)(require, moduleRecord, moduleRecord.exports);
@@ -56,7 +59,7 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
   const render = component => renderToStaticMarkup(React.createElement(LocaleContext.Provider, { value: language }, component));
   const accountMarkup = render(React.createElement(SocialAccountsView, {
     accounts: [{ id: 'account', name: 'Postiz Fan', identifier: 'x', disabled: true }],
-    configured: true, oauthConfigured: true, uiUrl: consoleUrl, loading: false,
+    configured: true, uiUrl: consoleUrl, loading: false,
     error: dynamicMessages[0], notice: dynamicMessages[2], syncedAt: '', isAdmin: true,
     onAddAccount() {}, onRefresh() {}
   }));
@@ -75,3 +78,122 @@ assert.equal(translate('en', 'Postiz drafts'), 'Draft inbox');
 assert.equal(translate('zh', 'Postiz drafts'), '草稿箱');
 assert.equal(translate('en', 'Open Postiz'), 'Open publishing console');
 console.log(`PASS: four locales, ${brandedMessages.size} branded dictionary strings, dynamic errors/configuration, semantic labels, account/connection rendering, unchanged account names and admin console URL.`);
+
+// Render production views rather than checking whether old strings disappeared from source files.
+const studioTree = ts.createSourceFile('ContentStudio.tsx', readFileSync(resolve(repository, 'src/components/ContentStudio.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const productionFunction = name => studioTree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name).getText(studioTree);
+const iconImport = studioTree.statements.find(node => ts.isImportDeclaration(node) && node.moduleSpecifier.text === 'lucide-react').getText(studioTree);
+const viewNames = ['platformIcon', 'PublishBadge', 'WorkspaceView', 'FactsView', 'AssetsView', 'ExportView'];
+const views = loadModule(resolve(repository, 'scripts/quiet-views-virtual.tsx'), `
+  import { useState } from 'react';
+  import { useTranslation } from '@/lib/i18n';
+  import { PLATFORM_META, DEFAULT_PLATFORMS } from '@/lib/types';
+  import { getPublishBadge } from '@/lib/submission-status';
+  ${iconImport}
+  const platformGroups = [{ label: 'Social channels', platforms: DEFAULT_PLATFORMS }];
+  ${viewNames.map(productionFunction).join('\n')}
+  export { WorkspaceView, FactsView, AssetsView, ExportView };
+`);
+const { default: OverviewView } = loadModule(resolve(repository, 'src/components/OverviewView.tsx'));
+const { default: ProjectStorage } = loadModule(resolve(repository, 'src/components/ProjectStorage.tsx'));
+const noop = () => {};
+const config = { name: 'News', title: 'Source article', category: '', language: 'en', audience: '', cta: '', websiteUrl: '', sourceUrl: '', tone: '', publishDate: '' };
+const asset = { id: 'asset', platform: 'x', assetType: 'short_post', title: 'News draft', content: 'Original content stays unchanged.', factIds: ['fact'], riskFlags: [], meta: {}, updatedAt: '2026-10-20T00:00:00Z' };
+const analysis = { summaryShort: 'Article summary', summaryLong: 'Source context.', keyTerms: [], riskFlags: [], facts: [{ id: 'fact', type: 'claim', text: 'Source claim', sourceExcerpt: 'Source claim', sourceLocation: 'Article', verified: true, usableOnSocial: true, riskLevel: 'low' }] };
+const accountProperties = { accounts: [{ id: 'account', name: 'News desk', identifier: 'x' }], configured: true, uiUrl: consoleUrl, loading: false, error: '', notice: '', syncedAt: '', isAdmin: true, onAddAccount: noop, onRefresh: noop };
+const assetProperties = { assets: [asset], filteredAssets: [asset], filter: 'all', setFilter: noop, onOpen: noop, onPublish: noop, onGenerate: noop, onExport: noop, loading: null, usedFallback: false, pendingPlatforms: [], targetCount: 1, config };
+const exportProperties = { assets: [asset], submittedCount: 0, onExport: noop, onBatchSubmitDrafts: noop, loading: null, socialAccountsCount: 1 };
+const connectProperties = { open: true, onClose: noop, configured: true, oauthConfigured: true, loading: false, uiUrl: consoleUrl, accounts: [], error: '', onRefresh: noop, canUsePostizUi: true };
+const conciseLabels = {
+  en: { batch: 'Submit all drafts', single: 'Submit draft', connected: 'Connected' },
+  zh: { batch: '批量提交草稿', single: '提交草稿', connected: '已连接' },
+  vi: { batch: 'Gửi tất cả bản nháp', single: 'Gửi bản nháp', connected: 'Đã kết nối' },
+  th: { batch: 'ส่งฉบับร่างทั้งหมด', single: 'ส่งฉบับร่าง', connected: 'เชื่อมต่อแล้ว' }
+};
+const renderView = (language, component, properties) => renderToStaticMarkup(React.createElement(LocaleContext.Provider, { value: language }, React.createElement(component, properties)));
+const browserViews = {};
+for (const language of ['en', 'zh', 'vi', 'th']) {
+  const accounts = load(renderView(language, SocialAccountsView, accountProperties));
+  assert.equal(accounts('.accounts-guide, .accounts-trust-note').length, 0);
+  assert.equal(accounts('.accounts-directory-row').length, 1);
+  assert.equal(accounts('.accounts-list-footer a').attr('href'), consoleUrl);
+  assert.equal(accounts('.accounts-list-footer > span').eq(1).text(), conciseLabels[language].connected);
+  assert.equal(translate(language, 'Submit to Postiz draft'), conciseLabels[language].single);
+  const emptyAccounts = load(renderView(language, SocialAccountsView, { ...accountProperties, accounts: [], isAdmin: false }));
+  assert.ok(emptyAccounts('.accounts-empty p').text().includes(translate(language, 'Missing an account? Ask an administrator to assign it to you.')));
+  const dialog = load(renderView(language, ConnectAccountsDialog, connectProperties));
+  assert.equal(dialog('.connection-next-step, .connection-security').length, 0);
+  assert.equal(dialog('#connect-account-description').text(), translate(language, 'Choose a platform to connect.'));
+  assert.equal(dialog('.connect-dialog').attr('aria-describedby'), 'connect-account-description');
+  const unavailable = load(renderView(language, ConnectAccountsDialog, { ...connectProperties, oauthConfigured: false, error: 'Synthetic authorisation failure' }));
+  assert.equal(unavailable('.dialog-footer .primary-button').is('[disabled]'), true);
+  assert.equal(unavailable('[role="alert"]').text(), 'Synthetic authorisation failure');
+  assert.ok(unavailable('[role="status"]').text().length > 0, 'Unavailable authorisation still explains the configuration blocker');
+  const facts = load(renderView(language, views.FactsView, { analysis, sourceText: 'Source claim', updateFact: noop, onGenerate: noop, loading: null }));
+  assert.equal(facts('.risk-card, .rule-line').length, 0);
+  assert.equal(facts('.page-heading p').text(), translate(language, 'Changes apply when you regenerate.'));
+  assert.equal(facts('.fact-details').length, 1, 'Reference editing stays available');
+  const riskyFacts = load(renderView(language, views.FactsView, { analysis: { ...analysis, riskFlags: ['Actual source risk'] }, sourceText: 'Source', updateFact: noop, onGenerate: noop, loading: null }));
+  assert.equal(riskyFacts('.risk-card li').text(), 'Actual source risk');
+  const blockedFacts = load(renderView(language, views.FactsView, { analysis: { ...analysis, facts: [] }, sourceText: '', updateFact: noop, onGenerate: noop, loading: null }));
+  assert.equal(blockedFacts('.next-card button').is('[disabled]'), true);
+  const exported = load(renderView(language, views.ExportView, exportProperties));
+  assert.equal(exported('.export-checklist').length, 0);
+  assert.equal(exported('.export-stats > div').length, 4);
+  assert.ok(exported('.export-summary p').text().length > 0);
+  assert.equal(exported('button').length, 2);
+  assert.equal(exported('.export-actions .primary-button').text().trim(), conciseLabels[language].batch);
+  if (language === 'en') {
+    assert.equal(exported('.export-summary h2').text(), '1 asset · 1 channel');
+    const multipleAssets = load(renderView(language, views.ExportView, { ...exportProperties, assets: [asset, { ...asset, id: 'second', platform: 'threads' }] }));
+    assert.equal(multipleAssets('.export-summary h2').text(), '2 assets · 2 channels');
+  }
+  const fallback = load(renderView(language, views.AssetsView, { ...assetProperties, usedFallback: true }));
+  assert.equal(fallback('[role="status"]').text(), translate(language, 'Some drafts use local templates instead of AI. Review before use.'));
+  const overview = load(renderView(language, OverviewView, { accounts: [], accountsLoading: false, accountsError: '', onRefreshAccounts: noop, onOpenAccounts: noop, onOpenPosts: noop, onNewPost: noop, onOpenWorkspace: noop, refreshToken: 0 }));
+  assert.equal(overview('.overview-footnote, .overview-heading p').length, 0);
+  const storage = load(renderView(language, ProjectStorage, { snapshot: { config }, busy: false, onRestore: noop }));
+  assert.equal(storage('.storage-help-icon').length, 0);
+  assert.doesNotMatch(storage('.storage-status-text').text(), /MySQL/);
+  assert.doesNotMatch(translate(language, 'Saved to MySQL'), /MySQL/);
+  assert.doesNotMatch(translate(language, 'Saving to MySQL…'), /MySQL/);
+  const workspace = load(renderView(language, views.WorkspaceView, { config, updateConfig: noop, sourceText: 'Source claim', setSourceText: noop, sourceName: '', loading: null, selectedPlatforms: ['x'], togglePlatform: noop, handleFile: noop, analyzeArticle: noop, hasAnalysis: true, goTo: noop, fetchArticle: noop, downloadSource: noop, sourcePending: false }));
+  assert.equal(workspace('.action-note').length, 0);
+  assert.equal(workspace('.distribution-panel .primary-button').length, 1);
+  if (language === 'en') Object.assign(browserViews, { accounts: accounts.html(), facts: facts.html(), export: exported.html(), connect: dialog.html(), workspace: workspace.html() });
+}
+
+const screenshots = mkdtempSync(resolve(tmpdir(), 'polaris-quiet-ui-'));
+const styles = readFileSync(resolve(repository, 'src/app/globals.css'), 'utf8').replace(/@import\s+url\([^)]*\)\s*;/g, '');
+const browser = await chromium.launch({ channel: process.env.TEST_BROWSER_CHANNEL || 'chrome' });
+try {
+  const page = await browser.newPage();
+  await page.route('**/*', route => route.abort());
+  for (const theme of ['light', 'dark']) {
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const [name, markup] of Object.entries(browserViews)) {
+        await page.setContent(`<!doctype html><html data-theme="${theme}"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${styles}</style></head><body><div class="app-shell"><aside class="sidebar"></aside><main class="main-area"><div class="content-wrap">${markup}</div></main></div></body></html>`);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${name}: ${theme} ${width}px must not overflow`);
+        if (name === 'accounts') {
+          const layout = await page.locator('.accounts-layout').boundingBox();
+          const panel = await page.locator('.accounts-panel').boundingBox();
+          assert.ok(Math.abs(layout.width - panel.width) < 2, 'The account panel fills the former guide column');
+          const identity = await page.locator('.accounts-directory-identity').boundingBox();
+          const assignment = await page.locator('.account-owner-control').boundingBox();
+          const accountState = await page.locator('.accounts-directory-row .account-state').boundingBox();
+          const overlaps = (first, second) => first.x < second.x + second.width && first.x + first.width > second.x
+            && first.y < second.y + second.height && first.y + first.height > second.y;
+          assert.equal(overlaps(identity, assignment), false, 'Account identity must not overlap the assignment control');
+          assert.equal(overlaps(identity, accountState), false, 'Account identity must not overlap its status');
+          assert.equal(overlaps(assignment, accountState), false, 'Assignment and status must remain separate');
+          if (width === 390) assert.ok(assignment.y >= identity.y + identity.height, 'Mobile account assignment has its own row');
+        }
+        await page.screenshot({ path: resolve(screenshots, `${name}-${theme}-${width}.png`), fullPage: true });
+      }
+    }
+  }
+} finally {
+  await browser.close();
+}
+console.log(`PASS: production JSX SSR in four locales, real risk/configuration/empty states, disabled guards, account full-width layout and 390px light/dark checks. Screenshots: ${screenshots}`);

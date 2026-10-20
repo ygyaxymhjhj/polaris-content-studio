@@ -215,7 +215,7 @@ export default function PostsView({
         <div>
           <div className="eyebrow">{t("MANUAL POSTS")}</div>
           <h1 id="posts-title">{t("Posts")}</h1>
-          <p>{t("Write a post by hand, attach one image, then hand it to Postiz as a draft. Nothing is published or scheduled here.")}</p>
+          <p>{t("Write and manage your social drafts.")}</p>
         </div>
         <div className="posts-heading-actions">
           <button type="button" className="secondary-button" onClick={() => void loadPosts()} disabled={loading}>

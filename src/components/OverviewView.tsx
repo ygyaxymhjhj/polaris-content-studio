@@ -111,9 +111,8 @@ export default function OverviewView({
     <section className="overview-view" aria-labelledby="overview-title">
       <header className="overview-heading">
         <div>
-          <div className="eyebrow">{t("MANUAL POSTS OVERVIEW")}</div>
+          <div className="eyebrow">{t("MANUAL POSTS")}</div>
           <h1 id="overview-title">{t("Overview")}</h1>
-          <p>{t("Hand-written posts, their Postiz draft hand-off and the accounts they use. AI-generated assets stay in the workspace.")}</p>
         </div>
         <div className="overview-heading-actions">
           <button type="button" className="secondary-button" onClick={onOpenWorkspace}>
@@ -244,9 +243,6 @@ export default function OverviewView({
         </section>
       </div>
 
-      <div className="overview-footnote">
-        {t("These numbers cover manual posts only. AI-generated assets are tracked in the workspace and export centre.")}
-      </div>
     </section>
   );
 }

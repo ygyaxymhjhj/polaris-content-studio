@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, ExternalLink, Link2, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ExternalLink, Link2, Plus, RefreshCw } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
 
@@ -10,7 +10,6 @@ type AssignableMember = { id: string; displayName: string };
 type Props = {
   accounts: SocialAccount[];
   configured: boolean;
-  oauthConfigured: boolean;
   uiUrl: string;
   loading: boolean;
   error: string;
@@ -21,7 +20,7 @@ type Props = {
   onRefresh: () => Promise<void>;
 };
 
-export default function SocialAccountsView({ accounts, configured, oauthConfigured, uiUrl, loading, error, notice, syncedAt, isAdmin, onAddAccount, onRefresh }: Props) {
+export default function SocialAccountsView({ accounts, configured, uiUrl, loading, error, notice, syncedAt, isAdmin, onAddAccount, onRefresh }: Props) {
   const translate = useTranslation();
   const readyCount = accounts.filter(account => !account.disabled).length;
   const [members, setMembers] = useState<AssignableMember[]>([]);
@@ -73,14 +72,14 @@ export default function SocialAccountsView({ accounts, configured, oauthConfigur
           <div className="eyebrow">{translate("ACCOUNT CONNECTIONS")}</div>
           <h1 id="social-accounts-title">{translate("Social accounts")}</h1>
           <p>{translate(isAdmin
-            ? "Every workspace account is listed here. Assign channels to members so they can view them and submit drafts to them."
-            : "Only accounts you authorised or an administrator assigned to you are shown. Submitting a draft uses your own accounts only.")}</p>
+            ? "Manage accounts and member assignments."
+            : "Manage your connected accounts.")}</p>
         </div>
         <button type="button" className="primary-button" onClick={onAddAccount}><Plus size={16} /> {translate("Add social account")}</button>
       </div>
 
       {notice && <p className="connection-notice" role="status">{translate(notice)}</p>}
-      {!loading && !configured && <div className="info-banner" role="status"><AlertTriangle size={18} /><div>{translate("Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}</div></div>}
+      {!loading && !configured && !accounts.length && <div className="info-banner" role="status"><AlertTriangle size={18} /><div>{translate("Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}</div></div>}
 
       <div className="accounts-layout">
         <section className="panel accounts-panel" aria-labelledby="authorised-accounts-title" aria-busy={loading}>
@@ -132,20 +131,13 @@ export default function SocialAccountsView({ accounts, configured, oauthConfigur
               {!error && <button type="button" className="secondary-button" onClick={onAddAccount}><Plus size={14} /> {translate("Add social account")}</button>}
             </div>
           )}
-          <div className="accounts-list-footer"><span className={`accounts-service-dot ${error || !configured ? "unavailable" : ""}`} /> {translate(error ? "Postiz connection unavailable" : configured ? "Connected to Postiz" : "Postiz configuration required")}{syncedAt && <span>{translate("Last refreshed")}: {new Date(syncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}</div>
+          <div className="accounts-list-footer">
+            <span className={`accounts-service-dot ${error || !configured ? "unavailable" : ""}`} />
+            <span>{translate(error ? "Postiz connection unavailable" : configured ? "Connected to Postiz" : "Postiz configuration required")}</span>
+            {syncedAt && <span>{translate("Last refreshed")}: {new Date(syncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+            {isAdmin && uiUrl && <a className="text-button" href={uiUrl} target="_blank" rel="noopener noreferrer">{translate("Open Postiz")} <ExternalLink size={13} /></a>}
+          </div>
         </section>
-
-        <aside className="accounts-guide" aria-label={translate("How connection works")}>
-          <div className="eyebrow">{translate("HOW IT WORKS")}</div>
-          <ol>
-            <li><span>01</span><div><strong>{translate("Choose a platform")}</strong><p>{translate("Facebook, Instagram, X, Threads or LinkedIn.")}</p></div></li>
-            <li><span>02</span><div><strong>{translate("Approve access")}</strong><p>{translate("Sign in on the platform's official page. Postiz handles authorisation and token refresh.")}</p></div></li>
-            <li><span>03</span><div><strong>{translate("Return and submit a draft")}</strong><p>{translate("The account list refreshes when you return. Select the account in the draft dialog.")}</p></div></li>
-          </ol>
-          <div className="accounts-trust-note"><ShieldCheck size={18} /><p>{translate("Only the owner and workspace administrators can see and use an account.")}</p></div>
-          {!loading && !oauthConfigured && <p className="accounts-config-note">{translate("Direct authorisation needs the Postiz JWT secret. You can still connect from Postiz and refresh this list.")}</p>}
-          {isAdmin && uiUrl && <a className="text-button" href={uiUrl} target="_blank" rel="noopener noreferrer">{translate("Open Postiz")} <ExternalLink size={13} /></a>}
-        </aside>
       </div>
     </section>
   );

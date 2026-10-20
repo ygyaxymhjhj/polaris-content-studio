@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowUpRight, Check, ExternalLink, Loader2, ShieldCheck, X as CloseIcon } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Check, ExternalLink, Loader2, X as CloseIcon } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { AUTHORIZATION_POPUP_STORAGE_KEY, CONNECTION_MESSAGES, parseConnectionOutcome } from "@/lib/social-connect-result";
 import { DEFAULT_PLATFORMS, PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
@@ -126,7 +126,6 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
   }
 
   if (!open) return null;
-  const selectedPlatform = PLATFORM_META[provider];
 
   return (
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -140,7 +139,7 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
         </div>
 
         <div className="dialog-body connect-add-body">
-          <p id="connect-account-description" className="connection-description">{translate("Choose a platform, then authorise your account on its official page. Postiz securely manages the connection.")}</p>
+          <p id="connect-account-description" className="connection-description">{translate("Choose a platform to connect.")}</p>
           <fieldset className="connection-platforms" disabled={creatingLink || authorizing}>
             <legend>{translate("Select a platform")}</legend>
             <div className="provider-grid connection-provider-grid">
@@ -159,11 +158,6 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
               })}
             </div>
           </fieldset>
-          <div className="connection-next-step">
-            <span className="connection-step-number">02</span>
-            <div><strong>{translate("Authorise on")} {selectedPlatform.label}</strong><p>{translate("Use your own platform account. Polaris never asks for your social password.")}</p></div>
-          </div>
-          <p className="connection-security"><ShieldCheck size={15} /> {translate("Only the owner and workspace administrators can see and use an account.")}</p>
           {!loading && !oauthConfigured && <div className="info-banner" role="status"><AlertTriangle size={18} /><div>{translate(configured
             ? "Direct authorisation requires POSTIZ_JWT_SECRET to match the Postiz server's JWT_SECRET."
             : "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}</div></div>}

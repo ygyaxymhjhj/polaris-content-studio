@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, HelpCircle, RefreshCw, RotateCcw, Save } from "lucide-react";
+import { Copy, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { parseSnapshot, type ProjectSnapshot, type SavedProject } from "@/lib/project-schema";
 
@@ -228,12 +228,6 @@ onRestore: (snapshot: ProjectSnapshot, source: "auto" | "manual") => void; onPro
           >
             <RefreshCw size={11} className={working ? "spin" : undefined} />
           </button>
-          <span
-            className="storage-help-icon"
-            title={t("Projects are isolated by account, not by browser. Save editor changes before closing. Wait for Saved to MySQL before refreshing; running AI jobs do not resume automatically.")}
-          >
-            <HelpCircle size={13} />
-          </span>
         </div>
       </div>
 

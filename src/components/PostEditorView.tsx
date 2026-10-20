@@ -432,7 +432,6 @@ export default function PostEditorView({
           });
           const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string; code?: string };
           if (response.ok && data.post) {
-            if (response.status === 202) setFrozenNotice(t("Submission accepted. Processing in the background; you can close this dialog or leave this page."));
             const current = postRef.current;
             const returnedTarget = data.post.targets.find(target => target.integrationId === integrationId);
             if (!current || current.id !== saved.id || !returnedTarget || !editorMounted.current) continue;
@@ -736,17 +735,12 @@ export default function PostEditorView({
             ) : (
               <p className="post-editor-targets-empty">{t("No accounts selected yet.")}</p>
             )}
-            <div className="post-draft-destination"><ShieldCheck size={15} aria-hidden="true" /><span>{t("Destination")}<strong>{t("Postiz drafts")}</strong></span></div>
             <button type="button" className="primary-button post-push-drafts"
             disabled={copying || deletionBlocked || !pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
               onClick={() => void pushTargets(pendingPushIds)}>
               {preparingPush || submitting.length ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
               {preparingPush || submitting.length ? t("Submitting…") : t("Push drafts to Postiz")}
             </button>
-            <div className="post-editor-aside-foot">
-              <ShieldCheck size={14} aria-hidden="true" />
-              <span>{t("Pushing only creates a Postiz draft. Nothing is published or scheduled.")}</span>
-            </div>
           </section>
         </aside>
       </div>

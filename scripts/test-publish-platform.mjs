@@ -101,6 +101,7 @@ const virtualSource = `
     const [, setLoading] = useState(null);
     window.testSubmit = accountId => submitDraft(publishModalAsset, accountId);
     window.testBatch = batchSubmitDrafts;
+    window.testSetStatus = patch => setPublishModalAsset(current => ({ ...current, ...patch }));
     return <LocaleContext.Provider value={language}>
       <div data-testid="cards">{assets.map(asset => <button key={asset.id} onClick={() => (${text(cardHandler)})(asset)}>{asset.platform}</button>)}</div>
       <div data-testid="drawer">${drawerButton}</div>
@@ -198,6 +199,17 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.account-option-card').length > 0);
   assert.deepEqual(await ids(), ['Threads first', 'Threads second'], 'Threads modal excludes every other platform and disabled account');
   assert.equal(await selected(), 'Threads first');
+  assert.equal(await dialog.locator('.info-banner, .eyebrow').count(), 0, 'A ready draft dialog contains no permanent process banner');
+  assert.equal(await confirm().textContent(), ' Submit draft');
+  await page.evaluate(() => window.testSetStatus({ publishStatus: 'publishing' }));
+  await dialog.locator('.submission-status').waitFor();
+  assert.equal(await dialog.locator('.submission-status').textContent(), 'Processing draft…');
+  assert.equal(await confirm().isDisabled(), true);
+  await page.evaluate(() => window.testSetStatus({ publishStatus: 'pending_unknown', publishError: 'Acceptance could not be confirmed. Refresh local status before submitting again.' }));
+  await dialog.getByRole('alert').waitFor();
+  assert.equal(await confirm().isDisabled(), true, 'Unknown acceptance must not become a retry action');
+  assert.match(await dialog.getByRole('alert').textContent(), /Refresh local status/);
+  await page.evaluate(() => window.testSetStatus({ publishStatus: 'unpublished', publishError: undefined }));
   await dialog.locator('.account-option-card', { hasText: 'Threads second' }).click();
   assert.equal(await selected(), 'Threads second');
   assert.equal(await page.locator('.connect-dialog').count(), 0, 'Selecting a card does not open account management');
