@@ -58,6 +58,8 @@
 
 - Tối đa 350 ký tự theo JavaScript string.length (UTF-16), bao gồm khoảng trắng, xuống dòng, emoji, CTA, hashtag và URL; áp dụng cho mọi ngôn ngữ đầu ra. Đây là giới hạn tối đa, không phải mục tiêu độ dài. Trước khi trả kết quả, kiểm tra toàn bộ caption và rút gọn nếu cần; giữ thông tin quy nguồn và các điều kiện cần thiết, không cắt ngang dữ kiện hoặc URL.
 
+- Kết thúc toàn bộ caption bằng đúng 1 hashtag liên quan trực tiếp đến nội dung, sau CTA và URL nếu có; không bỏ hashtag hoặc thêm hashtag ở nơi khác. Hashtag được tính trong giới hạn tổng 350 ký tự. Quy tắc này áp dụng cho mọi ngôn ngữ đầu ra (zh/en/vi/th).
+
 - Chỉ giữ một thông tin chính và chi tiết bổ sung thật sự cần thiết; bỏ bối cảnh lặp lại, giải thích dài và câu kết chung chung. Ưu tiên caption ngắn hơn nhưng đủ ý, không thêm nội dung để dùng hết giới hạn.
 
 - Dựa vào nội dung gốc để chọn thông tin đáng chú ý nhất, không cố đưa toàn bộ nội dung bài viết vào caption\.

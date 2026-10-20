@@ -175,28 +175,32 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Đầu ra gồm 1 câu mở đầu + 1 đoạn nội dung chính.",
       "- Câu mở đầu cần thu hút và cho người đọc biết ngay bài đang nói về gì.",
       "- Đoạn nội dung chính chỉ giữ lại những thông tin cần thiết nhất, viết ngắn, rõ và liền mạch.",
-      "- Mỗi caption phải có icon/emoji, lựa chọn dựa trên nội dung bài."
+      "- Mỗi caption phải có icon/emoji, lựa chọn dựa trên nội dung bài.",
+      "- Kết thúc toàn bộ caption bằng đúng 1 hashtag liên quan trực tiếp đến nội dung, sau CTA và URL nếu có; không bỏ hashtag hoặc thêm hashtag ở nơi khác. Hashtag được tính trong giới hạn tổng 350 ký tự."
     ].join("\n"),
     zh: [
       "- 基于原文挑选最值得关注的信息，不要试图把整篇文章都塞进文案。",
       "- 输出为 1 句开头 + 1 段正文。",
       "- 开头句要吸引人，并让读者立刻明白这篇在讲什么。",
       "- 正文只保留最必要的信息，写得简短、清晰、连贯。",
-      "- 每条文案都要有图标/emoji，依据文章内容选择。"
+      "- 每条文案都要有图标/emoji，依据文章内容选择。",
+      "- 全文结尾固定添加且仅添加 1 个与内容直接相关的 #标签，放在 CTA 和 URL（如有）之后；不得省略，也不得在其他位置添加额外标签。标签计入全文 350 字符总长度。"
     ].join("\n"),
     en: [
       "- Pick the most notable detail from the source; do not try to fit the whole article into the caption.",
       "- Output is 1 opening sentence + 1 main body paragraph.",
       "- The opening sentence must be engaging and tell readers immediately what the post is about.",
       "- The body keeps only the essential information — short, clear and continuous.",
-      "- Every caption needs an icon/emoji chosen from the article content."
+      "- Every caption needs an icon/emoji chosen from the article content.",
+      "- End the complete caption with exactly one hashtag directly relevant to the content, after any CTA and URL; never omit it or add hashtags elsewhere. Count it within the 350-character total."
     ].join("\n"),
     th: [
       "- เลือกข้อมูลที่น่าสนใจที่สุดจากต้นฉบับ อย่าพยายามยัดบทความทั้งเรื่องลงในแคปชัน",
       "- ผลลัพธ์คือ 1 ประโยคเปิด + 1 ย่อหน้าหลัก",
       "- ประโยคเปิดต้องดึงดูดและบอกผู้อ่านทันทีว่าโพสต์กำลังพูดถึงเรื่องอะไร",
       "- ย่อหน้าหลักเก็บเฉพาะข้อมูลที่จำเป็นที่สุด เขียนสั้น ชัด และต่อเนื่อง",
-      "- ทุกแคปชันต้องมีไอคอน/อีโมจิ โดยเลือกจากเนื้อหาของบทความ"
+      "- ทุกแคปชันต้องมีไอคอน/อีโมจิ โดยเลือกจากเนื้อหาของบทความ",
+      "- จบแคปชันทั้งหมดด้วยแฮชแท็กที่เกี่ยวข้องโดยตรงกับเนื้อหาเพียง 1 แฮชแท็ก หลัง CTA และ URL หากมี ห้ามละเว้นหรือเพิ่มแฮชแท็กในตำแหน่งอื่น และนับรวมในความยาวทั้งหมดไม่เกิน 350 อักขระ"
     ].join("\n")
   },
   x: {

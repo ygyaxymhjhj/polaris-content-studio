@@ -113,6 +113,33 @@ try {
   assert(threadsPrompt.includes('Maximum 350 characters using JavaScript string.length (UTF-16), including spaces, newlines, emoji, CTA, hashtags and URLs'), 'Threads counts the complete publishable post toward its 350-character limit');
   assert(threadsPrompt.includes('ceiling, not a length target'), 'Threads should stay concise rather than fill the character limit');
   assert(!threadsPrompt.includes('480 characters') && !threadsPrompt.includes('within 500 characters'), 'The old Threads generation limits are removed');
+  const localizedHashtagRules = {
+    en: 'End the complete caption with exactly one hashtag',
+    zh: '全文结尾固定添加且仅添加 1 个与内容直接相关的 #标签',
+    vi: 'Kết thúc toàn bộ caption bằng đúng 1 hashtag',
+    th: 'จบแคปชันทั้งหมดด้วยแฮชแท็กที่เกี่ยวข้องโดยตรงกับเนื้อหาเพียง 1 แฮชแท็ก'
+  };
+  const generationFetch = globalThis.fetch;
+  for (const [language, localizedHashtagRule] of Object.entries(localizedHashtagRules)) {
+    requests.length = 0;
+    const localizedConfig = { ...config, language };
+    const threadsAsset = starterAssets(localizedConfig, analysis, ['threads']).assets[0];
+    globalThis.fetch = async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      const reply = { assets: [threadsAsset], candidates: [{ ...threadsAsset, changeSummary: 'Adjusted the hashtag' }] };
+      return Response.json({ choices: [{ message: { content: JSON.stringify(reply) } }] });
+    };
+    await generateWithAI(localizedConfig, analysis, ['threads']);
+    await rewriteAsset(localizedConfig, analysis, threadsAsset, [], 'Use one relevant hashtag', 1);
+    assert.equal(requests.length, 2, `${language}: generation and revision both reach the model`);
+    for (const request of requests) {
+      const prompt = request.messages[1].content;
+      assert(prompt.includes('End the complete post with exactly one hashtag'), `${language}: the shared Threads format requires exactly one hashtag`);
+      assert(prompt.includes(localizedHashtagRule), `${language}: localized Threads rules also require exactly one hashtag`);
+      assert(prompt.includes('the hashtag counts toward the 350-character limit'), `${language}: the hashtag is included in the complete-post limit`);
+    }
+  }
+  globalThis.fetch = generationFetch;
   // Models otherwise mislabel the channel ("twitter" for x) and every reply is dropped, so
   // the prompt pins the exact internal key, and the canonical asset type overrides any model guess.
   assert(linkedinPrompt.messages[1].content.includes('platform="linkedin" exactly'), 'The prompt pins the exact platform key');
