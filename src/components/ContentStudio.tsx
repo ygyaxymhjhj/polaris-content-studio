@@ -57,6 +57,7 @@ import type { ProjectSnapshot } from "@/lib/project-schema";
 import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
 import { fetchAssetDraftTasks, mergeDraftTask } from "@/lib/draft-submission-client";
 import { isDraftSubmissionTask, type DraftSubmissionTask } from "@/lib/draft-submission-types";
+import { getMatchingSocialAccounts } from "@/lib/social-account-platform";
 import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
@@ -277,6 +278,13 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setCurrentProjectId(projectId);
   }, []);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const matchingAccounts = getMatchingSocialAccounts(socialAccounts, publishModalAsset?.platform);
+  // Render and submit the valid fallback immediately, before the selection effect catches up.
+  const effectiveSelectedAccountId = matchingAccounts.some(account => account.id === selectedAccountId)
+    ? selectedAccountId : matchingAccounts[0]?.id || "";
+  useEffect(() => {
+    setSelectedAccountId(effectiveSelectedAccountId);
+  }, [effectiveSelectedAccountId]);
   const publishing = Boolean(publishModalAsset && (acceptingAssetIds.includes(publishModalAsset.id)
     || publishModalAsset.publishStatus === "publishing" || publishModalAsset.publishStatus === "pending_unknown"));
   // Conversations are kept per asset so reopening the drawer continues where the editor left off.
@@ -310,8 +318,6 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (accounts) {
         setSocialAccounts(accounts);
         setChannelsSyncedAt(new Date().toISOString());
-        // Keep the member's current pick across refreshes; only fall back to the first account when it vanished.
-        setSelectedAccountId(current => (current && accounts.some(account => account.id === current) ? current : accounts[0]?.id || ""));
       }
     } catch (error) {
       if (requestSequence === channelRequestSequence.current) setChannelsError(error instanceof Error ? error.message : "Could not reach the server.");
@@ -1013,8 +1019,13 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     if (acceptanceFlights.current.has(asset.id) || asset.publishStatus === "publishing" || asset.publishStatus === "pending_unknown") {
       return { success: false, warning: false };
     }
-    if (!accountId) {
-      if (announceResult) notify(t("Select a social account first."));
+    if (channelsLoading || channelsError) {
+      if (announceResult) notify(t(channelsLoading ? "Loading accounts..." : channelsError));
+      return { success: false, warning: false };
+    }
+    const targetAccount = getMatchingSocialAccounts(socialAccounts, asset.platform).find(account => account.id === accountId);
+    if (!targetAccount) {
+      if (announceResult) notify(t("Select an available account for this platform."));
       return { success: false, warning: false };
     }
     const projectId = currentProjectRef.current;
@@ -1047,7 +1058,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           imageUrl: asset.imageUrl ?? config.imageUrl,
           projectId: projectId || undefined,
           platform: asset.platform,
-          accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId,
+          accountName: targetAccount.name,
           requestId: crypto.randomUUID(),
           expectedAuditId: asset.reviewStatus === "rejected" ? asset.submission?.auditId || undefined : undefined
         })
@@ -1088,6 +1099,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       notify(t("There are no publishable assets."));
       return;
     }
+    if (channelsLoading || channelsError) {
+      notify(t(channelsLoading ? "Loading accounts..." : channelsError));
+      return;
+    }
     if (!socialAccounts.length) {
       notify(t("No social accounts are available. Connect one or ask an administrator to assign one."));
       return;
@@ -1096,7 +1111,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     // a Facebook channel, so assets whose platform has no connected account are skipped and reported.
     const matches = assets.map(asset => ({
       asset,
-      account: socialAccounts.find(acc => acc.identifier.toLowerCase() === asset.platform.toLowerCase())
+      account: getMatchingSocialAccounts(socialAccounts, asset.platform)[0]
     }));
     const missingPlatforms = [...new Set(matches.filter(m => !m.account).map(m => m.asset.platform))];
     if (missingPlatforms.length) {
@@ -1518,20 +1533,22 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                     </button>
                   </span>
                 </span>
-                {!socialAccounts.length ? (
+                {channelsLoading ? (
+                  <div className="info-banner" role="status" style={{ marginTop: 6 }}><span>{t("Loading accounts...")}</span></div>
+                ) : channelsError ? (
+                  <div className="info-banner" role="alert" style={{ marginTop: 6 }}><span>{t("Account list unavailable")}: {t(channelsError)}</span></div>
+                ) : !matchingAccounts.length ? (
                   <div className="info-banner" style={{ marginTop: 6 }}>
                     <span>
                       {postizConfigured
-                        ? t(user.role === "admin"
-                          ? "No authorised accounts yet. Open Postiz, connect a platform, then press Refresh."
-                          : "No accounts available yet. Connect an account, or ask an administrator to assign one to you.")
+                        ? t("No available accounts for this platform. Connect an account or ask an administrator to assign one, then refresh.")
                         : t("Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY.")}
                     </span>
                   </div>
                 ) : (
                   <div className="account-select-grid" style={{ marginTop: 6 }}>
-                    {socialAccounts.map((account) => {
-                      const isSelected = selectedAccountId === account.id;
+                    {matchingAccounts.map((account) => {
+                      const isSelected = effectiveSelectedAccountId === account.id;
                       return (
                         <div
                           key={account.id}
@@ -1588,7 +1605,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             </div>
             <div className="dialog-footer">
               <button className="secondary-button" onClick={() => setPublishModalAsset(null)}>{t("Close")}</button>
-              <button className="primary-button" disabled={publishing || !selectedAccountId} onClick={() => submitDraft(publishModalAsset, selectedAccountId)}>
+              <button className="primary-button" disabled={publishing || channelsLoading || Boolean(channelsError) || !effectiveSelectedAccountId} onClick={() => submitDraft(publishModalAsset, effectiveSelectedAccountId)}>
                 {publishing ? <><Loader2 className="spin" size={15} /> {t("Submitting…")}</> : <><Send size={15} /> {t("Confirm submit draft")}</>}
               </button>
             </div>

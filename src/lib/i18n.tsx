@@ -347,6 +347,8 @@ const messages: Record<string, [string, string]> = {
   "Add social account": ["添加社媒账号", "Thêm tài khoản mạng xã hội"],
   "Refresh accounts": ["刷新账号", "Làm mới tài khoản"],
   "Loading accounts...": ["正在加载账号…", "Đang tải tài khoản..."],
+  "No available accounts for this platform. Connect an account or ask an administrator to assign one, then refresh.": ["当前平台暂无可用账号，请连接账号或联系管理员分配后刷新。", "Chưa có tài khoản khả dụng cho nền tảng này. Hãy kết nối hoặc nhờ quản trị viên gán tài khoản, rồi làm mới."],
+  "Select an available account for this platform.": ["请选择当前平台的可用账号。", "Hãy chọn tài khoản khả dụng cho nền tảng này."],
   "Reconnect account": ["重新连接", "Kết nối lại"],
   "Account list unavailable": ["暂时无法加载账号", "Không tải được danh sách tài khoản"],
   "Your first account starts here": ["从连接第一个账号开始", "Bắt đầu với tài khoản đầu tiên"],
@@ -797,6 +799,8 @@ const themeThaiMessages: Record<string, string> = {
 };
 
 const thMessages: Record<string, string> = {
+  "No available accounts for this platform. Connect an account or ask an administrator to assign one, then refresh.": "ยังไม่มีบัญชีที่พร้อมใช้งานสำหรับแพลตฟอร์มนี้ เชื่อมต่อบัญชีหรือขอให้ผู้ดูแลระบบมอบหมายบัญชี แล้วรีเฟรช",
+  "Select an available account for this platform.": "เลือกบัญชีที่พร้อมใช้งานสำหรับแพลตฟอร์มนี้",
   "Refresh status": "รีเฟรชสถานะ",
   "Resubmit for review": "ส่งตรวจอนุมัติอีกครั้ง",
   "Review was rejected. The original post stays read-only. Resubmit the same content for review, or copy it as a new draft to make changes.": "โพสต์ไม่ผ่านการอนุมัติและต้นฉบับยังเป็นแบบอ่านอย่างเดียว ส่งเนื้อหาเดิมเพื่อตรวจอีกครั้ง หรือคัดลอกเป็นฉบับร่างใหม่เพื่อแก้ไข",
