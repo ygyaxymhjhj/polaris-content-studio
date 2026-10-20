@@ -110,9 +110,9 @@ try {
     assert(promptFor(platform)?.messages[1].content.includes('PLATFORM VOICE RULES'), `${platform} carries its own voice rules`);
   }
   const threadsPrompt = promptFor('threads').messages[1].content;
-  assert(threadsPrompt.includes('Maximum 480 characters using JavaScript string.length (UTF-16), including spaces, newlines, emoji, CTA, hashtags and URLs'), 'Threads counts the complete publishable post toward its 480-character limit');
+  assert(threadsPrompt.includes('Maximum 350 characters using JavaScript string.length (UTF-16), including spaces, newlines, emoji, CTA, hashtags and URLs'), 'Threads counts the complete publishable post toward its 350-character limit');
   assert(threadsPrompt.includes('ceiling, not a length target'), 'Threads should stay concise rather than fill the character limit');
-  assert(!threadsPrompt.includes('within 500 characters'), 'The old Threads generation limit is removed');
+  assert(!threadsPrompt.includes('480 characters') && !threadsPrompt.includes('within 500 characters'), 'The old Threads generation limits are removed');
   // Models otherwise mislabel the channel ("twitter" for x) and every reply is dropped, so
   // the prompt pins the exact internal key, and the canonical asset type overrides any model guess.
   assert(linkedinPrompt.messages[1].content.includes('platform="linkedin" exactly'), 'The prompt pins the exact platform key');

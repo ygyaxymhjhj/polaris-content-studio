@@ -56,7 +56,7 @@
 
 # Threads
 
-- Tối đa 480 ký tự theo JavaScript string.length (UTF-16), bao gồm khoảng trắng, xuống dòng, emoji, CTA, hashtag và URL; áp dụng cho mọi ngôn ngữ đầu ra. Đây là giới hạn tối đa, không phải mục tiêu độ dài. Trước khi trả kết quả, kiểm tra toàn bộ caption và rút gọn nếu cần; giữ thông tin quy nguồn và các điều kiện cần thiết, không cắt ngang dữ kiện hoặc URL.
+- Tối đa 350 ký tự theo JavaScript string.length (UTF-16), bao gồm khoảng trắng, xuống dòng, emoji, CTA, hashtag và URL; áp dụng cho mọi ngôn ngữ đầu ra. Đây là giới hạn tối đa, không phải mục tiêu độ dài. Trước khi trả kết quả, kiểm tra toàn bộ caption và rút gọn nếu cần; giữ thông tin quy nguồn và các điều kiện cần thiết, không cắt ngang dữ kiện hoặc URL.
 
 - Chỉ giữ một thông tin chính và chi tiết bổ sung thật sự cần thiết; bỏ bối cảnh lặp lại, giải thích dài và câu kết chung chung. Ưu tiên caption ngắn hơn nhưng đủ ý, không thêm nội dung để dùng hết giới hạn.
 
