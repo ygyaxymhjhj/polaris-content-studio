@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
-import { submitPostTarget } from "@/lib/post-submission";
+import { enqueueManualSubmission } from "@/lib/draft-submissions";
+import { wakeDraftSubmissionWorker } from "@/lib/draft-submission-scheduler";
 import { readBoundedJson } from "@/lib/request-body";
 
 export const runtime = "nodejs";
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ po
   if (!parsed.success) return failure("Invalid submission request body.", 400, "INVALID");
 
   try {
-    const outcome = await submitPostTarget({
+    const outcome = await enqueueManualSubmission({
       userId: auth.user.id,
       userName: auth.user.displayName,
       isAdmin: auth.user.role === "admin",
@@ -48,6 +49,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ po
       expectedAuditId: parsed.data.expectedAuditId
     });
     switch (outcome.kind) {
+      case "queued":
+        after(wakeDraftSubmissionWorker);
+        return NextResponse.json({ accepted: true, task: outcome.task, post: outcome.post }, { status: 202, headers: { "Cache-Control": "no-store" } });
       case "ok":
         return NextResponse.json({ post: outcome.post }, { headers: { "Cache-Control": "no-store" } });
       case "not_found":

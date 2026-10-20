@@ -71,12 +71,17 @@ Manual posts are written by hand in Overview → Posts and never join an AI proj
 
 - Target statuses: `not_started`, `submitting`, `accepted`, `failed`, `pending_unknown`. A post's list status is derived from these (`draft`, `pushing`, `pushed`, `attention`); there is no single `published` flag that could claim more than Postiz confirmed.
 - The post stays editable and deletable only while no target is accepted, submitting or unconfirmed. A failed target can be retried with the same frozen content; changing the text after any account accepted the draft requires "Copy as new draft".
-- A submission is claimed inside a short transaction (`status='submitting'` plus an attempt id), the Postiz call happens without holding the lock, and the result is written back conditionally on that attempt id. Repeating a request for an accepted target returns the stored result instead of creating a second draft.
-- An in-flight claim older than two minutes is swept to `pending_unknown` when the owner next reads the lists; nothing resubmits it automatically. Transport failures after the claim follow the same path, because Postiz may already hold the draft.
+- A submission is claimed and inserted into `draft_submissions` in the same short transaction. HTTP 202 only acknowledges that commit. Background Postiz calls hold no database lock, and results are bound to the exact target attempt. Repeating a request for an accepted target returns the stored result rather than creating a second draft.
+- Queue-owned queued/running claims are excluded from the legacy two-minute stale sweep. Queued work resumes after restart; an expired running lease or create transport uncertainty becomes `pending_unknown` and is never automatically recreated.
 - Images are re-validated server-side with sharp (single-frame JPEG/PNG/WebP, ≤1.5 MiB, ≤2048 px on the longest edge, pixel-count guarded, remote URLs refused) and served only through `GET /api/posts/{id}/image` after an ownership check. A failed image upload aborts the hand-off instead of sending a text-only draft.
 - Schema: `deploy/mysql/init.sql` plus `deploy/mysql/migrations/2026-10-15-manual-posts.sql` (idempotent, includes the grants). Workflow and page behaviour: `docs/manual-posts.md`.
 
 ## Tests
+
+AI cards and manual posts share the durable queue described in `docs/async-draft-submissions.md`.
+Apply `deploy/mysql/migrations/2026-10-19-draft-submissions.sql` for existing volumes; it includes
+the same queue grants as fresh-volume initialization. `node scripts/test-async-submissions.mjs`
+exercises real SQL through an isolated adapter, with no real upstream or database credentials.
 
 ```sh
 TEST_BASE_URL=http://localhost:3002 node scripts/test-auth.mjs

@@ -1,6 +1,6 @@
 import type { ContentAsset, SubmissionStatusSnapshot } from "./types";
 
-type StatusFields = Pick<ContentAsset, "publishStatus" | "reviewStatus" | "rejectedDetectedAt" | "submission" | "publishedAt" | "publishedUrl" | "publishError" | "targetAccountId">;
+type StatusFields = Pick<ContentAsset, "publishStatus" | "reviewStatus" | "rejectedDetectedAt" | "submission" | "submissionTask" | "publishedAt" | "publishedUrl" | "publishError" | "targetAccountId">;
 
 export function getPersistedAssets(assets: ContentAsset[]): ContentAsset[] {
   return assets.map(asset => {
@@ -58,7 +58,7 @@ export function getSubmissionBindingKey(asset: ContentAsset): string {
 }
 
 export function shouldPollSubmission(asset: ContentAsset): boolean {
-  if (asset.publishStatus === "publishing" || asset.publishStatus === "failed") return false;
+  if (asset.publishStatus === "publishing" || asset.publishStatus === "pending_unknown" || asset.publishStatus === "failed") return false;
   // A present, untracked submission is deliberately not a legacy asset.
   if (asset.submission && !asset.submission.auditId) return false;
   return asset.publishStatus === "drafted" || asset.publishStatus === "queued"
@@ -70,6 +70,7 @@ export function getAssetStatusFields(asset: StatusFields): StatusFields {
   return {
     publishStatus: asset.publishStatus, reviewStatus: asset.reviewStatus,
     rejectedDetectedAt: asset.rejectedDetectedAt, submission: asset.submission,
+    submissionTask: asset.submissionTask,
     publishedAt: asset.publishedAt, publishedUrl: asset.publishedUrl,
     publishError: asset.publishError, targetAccountId: asset.targetAccountId
   };
@@ -81,7 +82,7 @@ export function mergeSubmissionStatus(
   requested: ContentAsset,
   snapshots: unknown[]
 ): ContentAsset {
-  if (current.id !== requested.id || current.publishStatus === "publishing" || current.publishStatus === "failed"
+  if (current.id !== requested.id || current.publishStatus === "publishing" || current.publishStatus === "pending_unknown" || current.publishStatus === "failed"
     || getSubmissionBindingKey(current) !== getSubmissionBindingKey(requested)
     || current.targetAccountId !== requested.targetAccountId) return current;
   const binding = current.submission;
@@ -94,6 +95,7 @@ export function mergeSubmissionStatus(
     publishStatus: snapshot.publishStatus, reviewStatus: snapshot.reviewStatus,
     rejectedDetectedAt: snapshot.rejectedDetectedAt ?? undefined,
     submission: { auditId: snapshot.auditId, postId: snapshot.postId, submittedAt: snapshot.submittedAt },
+    submissionTask: current.submissionTask,
     targetAccountId: snapshot.integrationId,
     // submittedAt is not the time the post went live.
     publishedAt: snapshot.publishedAt ?? undefined, publishedUrl: snapshot.publishedUrl ?? undefined,
@@ -117,6 +119,7 @@ export function markSubmissionSucceeded(
 
 export function getPublishBadge(asset: Pick<ContentAsset, "publishStatus" | "reviewStatus">): { className: string; label: string } {
   if (asset.publishStatus === "publishing") return { className: "publishing", label: "Submitting…" };
+  if (asset.publishStatus === "pending_unknown") return { className: "failed", label: "Needs review" };
   if (asset.publishStatus === "published") return { className: "published", label: "Published" };
   if (asset.publishStatus === "failed") return { className: "failed", label: "Publish failed" };
   if (asset.reviewStatus === "rejected") return { className: "rejected", label: "Review rejected" };

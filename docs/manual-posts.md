@@ -60,8 +60,9 @@ The database target remains `accepted` to preserve the fact that its content was
 - Status refresh preserves typed text, image edits, selected accounts and optimistic content version.
   Responses started before saving/deleting/submitting cannot overwrite a newer operation.
 - A rejected retry uses the existing submit endpoint with `expectedVersion` and the displayed
-  `expectedAuditId`. The server checks ownership/enabled accounts, verifies a fresh upstream rejection
-  without holding a database transaction, then locks and rechecks the same binding before claiming.
+  `expectedAuditId`. The server freezes the owned, version-checked target and enqueues its immutable
+  snapshot in one transaction, then returns 202. The background worker checks current permissions,
+  verifies a fresh upstream rejection without holding a transaction, and rechecks the frozen attempt.
 - A successful retry creates a **new draft**, appends audit history, and replaces the current target's
   audit/upstream IDs atomically for that attempt. Old tracking observations cannot re-reject it.
 - A definite retry failure restores the original rejected binding and leaves it frozen. A transport
@@ -87,8 +88,10 @@ engine, so a simultaneous administrator change can still race with creation of t
 - **Latest snapshot first.** Clicking push locks editing and waits for an in-flight save, then
   flushes newer changes before submitting. Account chips and the right summary reflect the local
   selection immediately, rather than waiting for the autosave response.
-- **Nothing is resubmitted automatically.** A transport failure or a claim older than two minutes
-  becomes *Needs review*. Open Postiz, check whether the draft exists, and only then decide.
+- **Background acceptance is not success.** After 202 the editor shows processing and can be closed.
+  Reopening reads the same frozen target; queued work survives restarts. Expired running leases and
+  create transport uncertainty become *Needs review*, never an automatic create retry. Open the
+  publishing console, check whether the draft exists, and only then decide.
 - **Deleting is local.** A post with no accepted, in-flight or unconfirmed target can be deleted;
   anything that reached Postiz must be removed there.
 - **Accounts follow the existing ownership model.** Members only see and submit to their own
@@ -130,3 +133,5 @@ Verified against the official documentation:
 - `node scripts/test-post-composer.mjs` runs the real editor and image preparation in Chrome with
   mocked Polaris API responses: account selection, autosave/push races, read-only snapshots and
   responsive layouts. It does not create drafts in a live Postiz instance.
+- Shared queue migration, worker switches, state machine and asynchronous acceptance tests:
+  `docs/async-draft-submissions.md` and `deploy/mysql/migrations/2026-10-19-draft-submissions.sql`.

@@ -42,7 +42,7 @@ interface ClaimPostRow extends RowDataPacket {
   version: number;
 }
 
-interface ClaimTargetRow extends RowDataPacket {
+export interface ClaimTargetRow extends RowDataPacket {
   status: PostTargetStatus;
   attempt_started_at: string | null;
   audit_id: string | null;
@@ -51,7 +51,7 @@ interface ClaimTargetRow extends RowDataPacket {
   postiz_publish_date: string | null;
 }
 
-async function readSubmissionTarget(
+export async function readSubmissionTarget(
   connection: Pick<PoolConnection, "execute">,
   userId: string,
   postId: string,
@@ -69,7 +69,7 @@ async function readSubmissionTarget(
   return targets[0] ?? null;
 }
 
-async function claimPostTarget(options: {
+export async function claimPostTarget(options: {
   userId: string;
   postId: string;
   integrationId: string;
@@ -78,6 +78,7 @@ async function claimPostTarget(options: {
   accountName: string;
   expectedAuditId?: string;
   rejectedBinding: ClaimTargetRow | null;
+  enqueue?: (connection: PoolConnection, snapshot: { content: string; imageDataUrl: string | null; attemptId: string }) => Promise<void>;
 }): Promise<ClaimResult> {
   const { userId, postId, integrationId, expectedVersion, platform, accountName, expectedAuditId, rejectedBinding } = options;
   const connection = await database().getConnection();
@@ -127,6 +128,10 @@ async function claimPostTarget(options: {
       return { kind: "unconfirmed" };
     }
     if (target.status === "submitting") {
+      if (options.enqueue) {
+        await connection.rollback();
+        return { kind: "in_flight" };
+      }
       const startedAt = databaseEpoch(target.attempt_started_at);
       if (startedAt && Date.now() - startedAt < SUBMISSION_STALE_MS) {
         await connection.rollback();
@@ -150,6 +155,7 @@ async function claimPostTarget(options: {
         WHERE post_id=? AND integration_id=?`,
       [attemptId, now, Number(post.version), platform, accountName, now, postId, integrationId]
     );
+    await options.enqueue?.(connection, { content, imageDataUrl: post.image_data ?? null, attemptId });
     await connection.commit();
     return { kind: "claimed", content, imageDataUrl: post.image_data ?? null, platform, accountName, attemptId, rejectedBinding };
   } catch (error) {
@@ -173,7 +179,7 @@ interface FinalizeOutcome {
  * Both normal completion and recovery after the stale sweep are bound to the same attempt.
  * Audit and upstream ids change together; a late response must never bind an old audit to a new draft.
  */
-async function finalizeTarget(postId: string, integrationId: string, attemptId: string, outcome: FinalizeOutcome): Promise<void> {
+export async function finalizeTarget(postId: string, integrationId: string, attemptId: string, outcome: FinalizeOutcome): Promise<void> {
   const now = utc(new Date());
   const [result] = await database().execute(
     `UPDATE post_targets

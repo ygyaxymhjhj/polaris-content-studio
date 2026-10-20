@@ -234,7 +234,7 @@ export default function PostEditorView({
   useEffect(() => {
     if (!shouldPollStatus) return;
     const refresh = () => { void refreshStatus(); };
-    const timer = window.setInterval(refresh, 15_000);
+    const timer = window.setInterval(refresh, post?.targets.some(target => target.status === "submitting") ? 3_000 : 15_000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
@@ -244,7 +244,7 @@ export default function PostEditorView({
       statusRequest.current?.abort();
       statusRequest.current = null;
     };
-  }, [shouldPollStatus, refreshStatus]);
+  }, [shouldPollStatus, refreshStatus, post?.targets]);
 
   const reloadPost = useCallback(async (resetFields = true) => {
     const current = postRef.current;
@@ -395,6 +395,7 @@ export default function PostEditorView({
     const shownTargets = new Map(postRef.current?.targets.map(target => [target.integrationId, target]));
     operationEpoch.current += 1;
     pushFlight.current = true;
+    onDeletionPendingChange?.(true);
     setPreparingPush(true);
     setSubmitError("");
     setFrozenNotice("");
@@ -408,6 +409,7 @@ export default function PostEditorView({
       setSubmitError(t("Save the post before submitting it."));
       pushFlight.current = false;
       setPreparingPush(false);
+      onDeletionPendingChange?.(false);
       return;
     }
     setSubmitting((current) => [...new Set([...current, ...integrationIds])]);
@@ -430,6 +432,7 @@ export default function PostEditorView({
           });
           const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string; code?: string };
           if (response.ok && data.post) {
+            if (response.status === 202) setFrozenNotice(t("Submission accepted. Processing in the background; you can close this dialog or leave this page."));
             const current = postRef.current;
             const returnedTarget = data.post.targets.find(target => target.integrationId === integrationId);
             if (!current || current.id !== saved.id || !returnedTarget || !editorMounted.current) continue;
@@ -458,8 +461,9 @@ export default function PostEditorView({
     await Promise.all([worker(), worker()]);
     pushFlight.current = false;
     setPreparingPush(false);
+    onDeletionPendingChange?.(false);
     onSaved();
-  }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict]);
+  }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict, onDeletionPendingChange]);
 
   async function copyAsNewDraft() {
     if (deletionBlocked || copyFlight.current) return;

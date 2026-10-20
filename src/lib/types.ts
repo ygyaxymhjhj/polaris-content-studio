@@ -11,7 +11,7 @@ export type RiskLevel = "low" | "medium" | "high";
  * "published" and "queued" are legacy: projects saved and audit rows written before the hand-off
  * became draft-only still carry them, and the UI keeps rendering them as they were.
  */
-export type PublishStatus = "unpublished" | "publishing" | "drafted" | "queued" | "published" | "failed";
+export type PublishStatus = "unpublished" | "publishing" | "pending_unknown" | "drafted" | "queued" | "published" | "failed";
 export type ReviewStatus = "unknown" | "pending" | "rejected";
 
 export interface SubmissionStatusSnapshot {
@@ -91,6 +91,7 @@ export interface ContentAsset {
   reviewStatus?: ReviewStatus;
   rejectedDetectedAt?: string;
   submission?: { auditId: string | null; postId: string | null; submittedAt: string };
+  submissionTask?: { id: string; state: import("./draft-submission-types").DraftSubmissionState; createdAt: string; warning: string | null };
   publishedUrl?: string;
   publishedAt?: string;
   publishError?: string;

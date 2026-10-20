@@ -77,6 +77,17 @@ node scripts/check-user-roles.mjs
 
 ## 运维
 
+### 异步草稿提交迁移
+
+升级前需执行 `deploy/mysql/migrations/2026-10-19-draft-submissions.sql`（已有手动贴文、通知表为前提）。
+新卷初始化包含同样的任务表与权限；部署脚本会顺序重放所有幂等迁移，`--no-db` 场景必须先人工迁移。
+任务缺表或权限不足时受理返回 503，不会留下冻结但未入队的手动稿件。
+
+草稿 worker 由应用进程独立调度，每 5 秒检查任务，和通知开关无关。
+不要在正常自托管运行时设置 `DRAFT_SUBMISSIONS_SCHEDULER_ENABLED=false`，否则重启恢复仅剩请求唤醒。
+排队任务可重启后继续；已开始且 lease 过期的任务会转为需核查，不会自动重复创建。
+HTTP 202 仅代表本地受理，不代表草稿成功或已发布。运行协议及验证边界见 `docs/async-draft-submissions.md`。
+
 ```sh
 systemctl status polaris-studio
 journalctl -u polaris-studio -n 100 --no-pager

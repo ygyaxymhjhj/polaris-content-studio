@@ -37,6 +37,7 @@ function createHarness() {
       published_by TEXT, postiz_post_id TEXT);
     CREATE TABLE social_post_tracking (publish_audit_id TEXT PRIMARY KEY, postiz_post_id TEXT, review_status TEXT,
       state TEXT, save_action TEXT, postiz_publish_date TEXT, rejected_detected_at TEXT);
+    CREATE TABLE draft_submissions (attempt_id TEXT, kind TEXT, state TEXT);
     INSERT INTO posts VALUES ('${postId}', 'owner', 'Frozen title', 'Frozen content', NULL, NULL, NULL, NULL,
       NULL, 4, '${submittedAt}', '${submittedAt}');
     INSERT INTO post_targets VALUES ('target', '${postId}', 'account', 'x', 'Account', 'accepted', 4,
@@ -329,7 +330,8 @@ test("submit route accepts only optional UUID expectedAuditId and forwards it", 
     "@/lib/project-db": { databaseConfigured: () => true },
     "@/lib/same-origin": { isSameOrigin: () => true },
     "@/lib/request-body": loadModule("../src/lib/request-body.ts"),
-    "@/lib/post-submission": { submitPostTarget: async options => { received.push(options); return { kind: "ok", post: {} }; } }
+    "@/lib/draft-submissions": { enqueueManualSubmission: async options => { received.push(options); return { kind: "ok", post: {} }; } },
+    "@/lib/draft-submission-scheduler": { wakeDraftSubmissionWorker: async () => {} }
   });
   for (const [expectedAuditId, expectedStatus] of [[null, 400], ["invalid", 400], [auditId, 200], [undefined, 200]]) {
     const request = new Request("https://studio.test/api/posts", { method: "POST", headers: { "content-type": "application/json" },

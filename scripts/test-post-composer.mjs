@@ -120,6 +120,7 @@ try {
   let holdRead;
   let releaseRead;
   let submitPendingUnknown = false;
+  let submitAsynchronously = false;
   let submissionFailure = false;
   let listReadFailure = false;
   let heldSubmissionId = '';
@@ -198,6 +199,12 @@ try {
       if (shownTarget.status === 'rejected') assert.equal(body.expectedAuditId, shownTarget.auditId, 'rejected retry binds the shown review attempt');
       else assert.equal(body.expectedAuditId, undefined, 'first and failed submissions remain compatible');
       submissions.push({ integrationId, content: storedPost.content, body });
+      if (submitAsynchronously) {
+        storedPost = { ...storedPost, editable: false, frozenReason: 'submitting', targets: storedPost.targets.map(target =>
+          target.integrationId === integrationId ? { ...target, status: 'submitting' } : target) };
+        await route.fulfill({ status: 202, json: { accepted: true, task: { state: 'queued' }, post: storedPost } });
+        return;
+      }
       if (submissionFailure) {
         await route.fulfill({ status: 503, json: { error: 'Synthetic resubmission failure' } });
         return;
@@ -629,6 +636,26 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.post-editor-target.accepted').length === 2);
   assert.equal(await page.getByRole('button', { name: 'Resubmit for review', exact: true }).count(), 0);
   heldSubmissionId = '';
+  storedPost = undefined;
+  submitAsynchronously = true;
+  await page.goto(origin);
+  await text.fill('An asynchronously submitted draft');
+  await addPlatform.click();
+  await page.getByRole('checkbox', { name: /News desk/ }).click();
+  await page.getByRole('checkbox', { name: /News desk/ }).press('Escape');
+  await push.click();
+  await page.getByText('Submission accepted. Processing in the background; you can close this dialog or leave this page.', { exact: true }).waitFor();
+  assert.equal(await page.locator('.post-editor-target.submitting').count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Back to posts', exact: true }).isEnabled(), true, '202 releases navigation while the worker remains pending');
+  const pendingPostId = storedPost.id;
+  await page.getByRole('button', { name: 'Back to posts', exact: true }).click();
+  await page.locator('.posts-view').waitFor();
+  await page.goto(`${origin}/?postId=${pendingPostId}`);
+  await page.locator('.post-editor-target.submitting').waitFor();
+  storedPost = { ...storedPost, frozenReason: 'accepted', targets: storedPost.targets.map(target => ({ ...target,
+    status: 'accepted', postizPostId: 'background-draft', auditId: 'background-audit' })) };
+  await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
+  await page.locator('.post-editor-target.accepted').waitFor();
   assert.deepEqual(errors, []);
   console.log('PASS: compact picker, image upload, autosave flush, push/retry, mobile layout; safe deletion and copy; rejected sync, audit-bound individual/bulk resubmit, stale-poll protection, hidden/in-flight guards, preserved unsaved fields/selection, neutral copy and list attention counts.');
 } finally {

@@ -13,7 +13,7 @@ const compilerOptions = { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarge
 const compile = source => ts.transpileModule(source, { compilerOptions }).outputText;
 try {
   await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(temporaryDirectory, "node_modules"), "dir");
-  for (const filename of ["types.ts", "submission-status.ts", "image-upload.ts", "project-schema.ts", "i18n.tsx"]) {
+  for (const filename of ["types.ts", "submission-status.ts", "draft-submission-types.ts", "draft-submission-client.ts", "image-upload.ts", "project-schema.ts", "i18n.tsx"]) {
     const source = await fs.readFile(`src/lib/${filename}`, "utf8");
     await fs.writeFile(path.join(temporaryDirectory, filename.replace(/\.tsx?$/, ".js")), compile(source));
   }
@@ -21,6 +21,8 @@ try {
   const { mergeSubmissionStatus, markSubmissionSucceeded, getSubmissionBindingKey, getPublishBadge, getAssetStatusFields, shouldPollSubmission } = helpers;
   const { parseSnapshot } = require(path.join(temporaryDirectory, "project-schema.js"));
   const { translate, LocaleContext } = require(path.join(temporaryDirectory, "i18n.js"));
+  const { mergeDraftTask } = require(path.join(temporaryDirectory, "draft-submission-client.js"));
+  const { isDraftSubmissionTask } = require(path.join(temporaryDirectory, "draft-submission-types.js"));
   const submittedAt = "2026-10-14T12:00:00.000Z";
   const detectedAt = "2026-10-15T12:00:00.000Z";
   const asset = {
@@ -186,15 +188,20 @@ try {
   let submissionAssets = [rejected];
   let submissionDrawer = { ...rejected, content: "Unsaved drawer copy" };
   let submissionBusy = false;
+  let acceptingAssetIds = [];
   let resolveSubmission;
   const submissionRequests = [];
   const submissionContext = {
     currentProjectRef: { current: "project-1" }, packSequence: { current: 1 }, submissionAttempts: { current: new Map() },
+    acceptanceFlights: { current: new Set() }, mergeDraftTask, isDraftSubmissionTask,
     config, socialAccounts: [{ id: "account-1", identifier: "facebook", name: "Account" }], markSubmissionSucceeded,
     readJson: response => response.json(), t: text => text, notify: noOperation, setSubmissionNotice: noOperation,
     setAssets: update => { submissionAssets = update(submissionAssets); },
     setSelectedAsset: update => { submissionDrawer = typeof update === "function" ? update(submissionDrawer) : update; },
-    setPublishModalAsset: noOperation, setPublishing: value => { submissionBusy = value; },
+    setPublishModalAsset: noOperation, setAcceptingAssetIds: update => {
+      acceptingAssetIds = typeof update === "function" ? update(acceptingAssetIds) : update;
+      submissionBusy = acceptingAssetIds.length > 0;
+    },
     fetch: (url, options) => { submissionRequests.push({ url, options }); return new Promise(resolve => { resolveSubmission = resolve; }); }
   };
   const submitDraft = bindProductionFunction("submitDraft", submissionContext);
@@ -208,11 +215,19 @@ try {
   assert.equal(submittedPayload.projectId, "project-1");
   assert.equal(submittedPayload.content, rejected.content);
   assert.equal(submittedPayload.postId, undefined, "Never update the old post");
-  resolveSubmission(Response.json({ success: true, auditId: "audit-retry", postId: "post-retry", publishedAt: detectedAt }));
+  const acceptedTask = { id: "11111111-1111-4111-8111-111111111111", kind: "asset", sourceId: asset.id, projectId: "project-1",
+    integrationId: "account-1", state: "queued", auditId: null, postId: null, warning: null, error: null,
+    createdAt: detectedAt, updatedAt: detectedAt, finishedAt: null };
+  resolveSubmission(Response.json({ accepted: true, task: acceptedTask }, { status: 202 }));
   await firstSubmission;
   assert.equal(submissionBusy, false);
   assert.equal(submissionDrawer.content, "Unsaved drawer copy");
   assert.deepEqual(getAssetStatusFields(submissionDrawer), getAssetStatusFields(submissionAssets[0]));
+  assert.equal(submissionAssets[0].publishStatus, "publishing", "202 never fabricates engine acceptance");
+  assert.equal(submissionAssets[0].submission.auditId, "audit-new", "the old review binding is retained until completion");
+  const completedTask = { ...acceptedTask, state: "succeeded", auditId: "audit-retry", postId: "post-retry", finishedAt: detectedAt };
+  submissionAssets = submissionAssets.map(current => mergeDraftTask(current, completedTask));
+  submissionDrawer = mergeDraftTask(submissionDrawer, completedTask);
   assert.equal(submissionAssets[0].submission.auditId, "audit-retry");
   const supersededSubmission = submitDraft(submissionAssets[0], "account-1");
   const generatePack = bindProductionFunction("generatePack", {
@@ -226,26 +241,26 @@ try {
   });
   await generatePack(config, {}, ["facebook"], "Generated");
   assert.equal(submissionBusy, false, "Regeneration clears a superseded submission's busy state");
-  resolveSubmission(Response.json({ success: true, auditId: "audit-obsolete", postId: "post-obsolete", publishedAt: detectedAt }));
+  resolveSubmission(Response.json({ accepted: true, task: { ...acceptedTask, id: "22222222-2222-4222-8222-222222222222" } }, { status: 202 }));
   await supersededSubmission;
   assert.deepEqual(submissionAssets, [], "Old submission completion cannot populate a new generation");
   for (const invalidation of ["project", "generation"]) {
-    let finishFirst;
+    const finishes = [];
     let submittedCount = 0;
     const loadingStates = [];
     const batchContext = {
-      assets: [asset, { ...asset, id: "asset-2" }], socialAccounts: submissionContext.socialAccounts,
+      assets: [asset, { ...asset, id: "asset-2" }, { ...asset, id: "asset-3" }], socialAccounts: submissionContext.socialAccounts,
       currentProjectRef: { current: "project-1" }, packSequence: { current: 1 }, t: text => text,
       notify: () => assert.fail("An obsolete batch must not announce results"), setSubmissionNotice: noOperation,
       setLoading: value => loadingStates.push(value),
-      submitDraft: () => { submittedCount += 1; return new Promise(resolve => { finishFirst = resolve; }); }
+      submitDraft: () => { submittedCount += 1; return new Promise(resolve => { finishes.push(resolve); }); }
     };
     const batch = bindProductionFunction("batchSubmitDrafts", batchContext)();
     if (invalidation === "project") batchContext.currentProjectRef.current = "project-2";
     else batchContext.packSequence.current += 1;
-    finishFirst({ success: true, warning: false });
+    finishes.forEach(finish => finish({ success: true, warning: false }));
     await batch;
-    assert.equal(submittedCount, 1, "Obsolete batches never submit the next old asset");
+    assert.equal(submittedCount, 2, "Only the two already-accepted requests may finish after batch invalidation");
     assert.deepEqual(loadingStates, ["export"], "Obsolete batches do not clear a new generation's loading state");
   }
   console.log("PASS: actual POST submission/retry, drawer bindings, superseded busy cleanup and batch epoch cancellation");

@@ -214,7 +214,10 @@ export async function sweepStaleSubmissions(ownerUserId: string): Promise<number
             t.warning = COALESCE(t.warning, ?),
             t.updated_at = ?
       WHERE p.owner_user_id = ? AND t.status = 'submitting'
-        AND (t.attempt_started_at IS NULL OR t.attempt_started_at < ?)`,
+        AND (t.attempt_started_at IS NULL OR t.attempt_started_at < ?)
+        AND NOT EXISTS (SELECT 1 FROM draft_submissions submission
+          WHERE submission.attempt_id=t.attempt_id AND submission.kind='manual'
+            AND submission.state IN ('queued','running'))`,
     [STALE_WARNING, utc(new Date()), ownerUserId, cutoff]
   );
   return (result as { affectedRows?: number }).affectedRows || 0;

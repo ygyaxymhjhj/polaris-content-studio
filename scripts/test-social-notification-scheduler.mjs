@@ -44,6 +44,7 @@ function setup(environment = {}, configured = true) {
     "./project-db": () => ({ databaseConfigured: () => configured })
   });
   const loadInstrumentation = () => load("../src/instrumentation.ts", {
+    "./lib/draft-submission-scheduler": () => ({ startDraftSubmissionScheduler() {} }),
     "./lib/social-notification-scheduler": () => { imports++; return loadScheduler(); }
   });
   async function advance(milliseconds) {

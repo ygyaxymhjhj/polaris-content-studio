@@ -2,6 +2,7 @@
 // Covers channel filtering, publish enforcement, connect-return claiming, and admin assignment.
 // node scripts/test-social-ownership.mjs
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import typescript from "typescript";
@@ -32,6 +33,7 @@ function createFakeDatabase() {
     users: new Map(),
     accounts: new Map(),
     attempts: new Map(),
+    draftTasks: new Map(),
     publishes: [],
     statements: []
   };
@@ -40,6 +42,23 @@ function createFakeDatabase() {
     execute: async (sql, params = []) => {
       state.statements.push({ sql, params });
       const text = sql.replace(/\s+/g, " ").trim();
+      if (text.startsWith("SELECT id FROM users WHERE id=? FOR UPDATE")) {
+        return [state.users.has(params[0]) ? [{ id: params[0] }] : []];
+      }
+      if (text.includes("FROM draft_submissions") && text.includes("request_key=? OR active_key=?")) return [[]];
+      if (text.startsWith("INSERT INTO draft_submissions")) {
+        const [id, ownerUserId, kind, sourceId, projectId, integrationId, , , , , snapshot, createdAt, updatedAt] = params;
+        state.draftTasks.set(id, {
+          id, owner_user_id: ownerUserId, kind, source_id: sourceId, project_id: projectId, integration_id: integrationId,
+          snapshot: JSON.parse(snapshot), state: "queued", audit_id: null, postiz_post_id: null, warning: null,
+          error: null, created_at: createdAt, updated_at: updatedAt, finished_at: null
+        });
+        return [{ affectedRows: 1 }];
+      }
+      if (text.startsWith("SELECT * FROM draft_submissions WHERE id=?")) {
+        const task = state.draftTasks.get(params[0]);
+        return [task && task.owner_user_id === params[1] ? [task] : []];
+      }
       if (text.startsWith("INSERT INTO social_accounts") && text.includes("'connect'")) {
         const [integrationId, provider, accountName, ownerUserId, assignedBy] = params;
         const existing = state.accounts.get(integrationId);
@@ -223,44 +242,24 @@ try {
   assert.equal(brokenChannels.error, undefined, "Ownership failures must not surface raw errors to clients");
   fake.execute = originalExecute;
 
-  // ---------- 2. Publish: ownership is enforced server-side, before Postiz is ever called ----------
-  const publishCalls = [];
-  const publishPostiz = {
-    publishToPostiz: async (request) => {
-      publishCalls.push(request);
-      return { success: true, postId: "post-1", url: "https://x.example/p1" };
-    }
-  };
-  const submissionCalls = [];
-  const deliveryCalls = [];
-  const notificationsMock = {
-    recordSocialSubmission: async (entry) => {
-      submissionCalls.push(entry);
-      const auditId = `synthetic-audit-${submissionCalls.length}`;
-      // Preserve the existing fake SQL audit contract; notification internals are tested separately.
-      await fake.execute(
-        `INSERT INTO social_publishes
-          (id, project_id, asset_id, platform, integration_id, account_name, published_by,
-           published_by_name, content_preview, postiz_post_id, published_url, scheduled_at, status, error)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [auditId, entry.projectId || null, entry.assetId, entry.platform, entry.integrationId,
-          entry.accountName, entry.publishedBy, entry.publishedByName, entry.contentPreview,
-          entry.postizPostId || null, null, null, entry.status, entry.error || null]
-      );
-      return { auditId };
-    },
-    deliverSocialNotifications: async (options) => {
-      deliveryCalls.push(options);
-      return { sent: 0, failed: 0, skipped: 0 };
-    }
-  };
-  const publishRoute = loadModule("src/app/api/social/publish/route.ts", {
-    "@/lib/postiz": publishPostiz, "@/lib/auth": authMock, "@/lib/social-accounts": socialAccountsModule,
-    "@/lib/project-db": projectDbModule, "@/lib/social-notifications": notificationsMock
+  // Ownership is enforced by the real enqueue function before a durable task is inserted.
+  const wakeups = [];
+  const draftQueue = loadModule("src/lib/draft-submissions.ts", {
+    "@/lib/project-db": projectDbModule, "@/lib/auth": authMock,
+    "@/lib/social-accounts": socialAccountsModule, "@/lib/post-submission": {},
+    "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
+    "@/lib/postiz": {}, "@/lib/social-notifications": {}
   });
-  const publishRequest = (integrationId) => new Request("https://studio.example.test/api/social/publish", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assetId: "asset_1", integrationId, content: "hello world", platform: "x", accountName: "X" })
+  const publishRoute = loadModule("src/app/api/social/publish/route.ts", {
+    "next/server": { NextResponse, after: callback => wakeups.push(callback) },
+    "@/lib/auth": authMock, "@/lib/project-db": projectDbModule, "@/lib/same-origin": sameOriginModule,
+    "@/lib/request-body": loadModule("src/lib/request-body.ts"),
+    "@/lib/image-upload": loadModule("src/lib/image-upload.ts"),
+    "@/lib/draft-submissions": draftQueue, "@/lib/draft-submission-scheduler": { wakeDraftSubmissionWorker: async () => {} }
+  });
+  const publishRequest = (integrationId) => new NextRequest("https://studio.example.test/api/social/publish", {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: "https://studio.example.test" },
+    body: JSON.stringify({ assetId: "asset_1", integrationId, content: "hello world", platform: "x", accountName: "X", requestId: randomUUID() })
   });
 
   currentAuth = { user: anaUser };
@@ -268,26 +267,24 @@ try {
     const response = await publishRoute.POST(publishRequest(blockedId));
     assert.equal(response.status, 403, `Member publishing to ${blockedId} must be refused`);
   }
-  assert.equal(publishCalls.length, 0, "Refused publishes must never reach Postiz");
+  assert.equal(fake.state.draftTasks.size, 0, "Refused submissions never create durable work");
   assert.equal(fake.state.publishes.length, 0, "Refused publishes must never write an audit row");
-  assert.equal(submissionCalls.length, 0, "Refused publishes must never register notifications");
-  assert.equal(deliveryCalls.length, 0, "Refused publishes must never invoke notification delivery");
+  assert.equal(wakeups.length, 0, "Refused submissions must not wake external work");
 
   const ownPublish = await publishRoute.POST(publishRequest("acct-ana"));
-  assert.equal(ownPublish.status, 200);
-  assert.equal((await ownPublish.json()).success, true);
-  assert.equal(publishCalls.length, 1);
-  assert.equal(fake.state.publishes.length, 1);
-  assert.equal(fake.state.publishes[0].publishedBy, anaUser.id);
-  assert.equal(fake.state.publishes[0].status, "drafted");
-  assert.equal(submissionCalls[0].publishedByName, anaUser.displayName);
-  assert.deepEqual(deliveryCalls, [{ auditId: "synthetic-audit-1", limit: 1 }]);
+  assert.equal(ownPublish.status, 202);
+  assert.equal((await ownPublish.json()).accepted, true);
+  const [ownedTask] = fake.state.draftTasks.values();
+  assert.equal(ownedTask.owner_user_id, anaUser.id);
+  assert.equal(ownedTask.state, "queued");
+  assert.equal(ownedTask.snapshot.accountName, "Ana X", "Registry identity overrides the client account label");
+  assert.equal(fake.state.publishes.length, 0, "Acceptance alone never invents a successful audit");
+  assert.equal(wakeups.length, 1);
 
   currentAuth = { user: adminUser };
-  assert.equal((await publishRoute.POST(publishRequest("acct-old"))).status, 200, "Admins may publish to unassigned channels");
-  assert.equal(publishCalls.length, 2);
-  assert.equal(fake.state.publishes.length, 2);
-  assert.equal(deliveryCalls.length, 2, "An empty notification queue leaves successful submissions unchanged");
+  assert.equal((await publishRoute.POST(publishRequest("acct-old"))).status, 202, "Admins may submit to unassigned channels");
+  assert.equal(fake.state.draftTasks.size, 2);
+  assert.equal(wakeups.length, 2);
 
   // ---------- 3. Connect return: claim only channels that appeared after the snapshot ----------
   let capturedRedirect = "";

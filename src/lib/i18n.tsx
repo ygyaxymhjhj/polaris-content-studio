@@ -6,6 +6,19 @@ export type UiLanguage = "en" | "zh" | "vi" | "th";
 export const LocaleContext = createContext<UiLanguage>("en");
 // Feishu administration currently supports Chinese and English; other locales use English.
 const feishuChineseMessages: Record<string, string> = {
+  "Submission accepted. Processing in the background; you can close this dialog or leave this page.": "提交已受理，正在后台处理；可以关闭弹窗或离开此页面。",
+  "Submissions accepted": "已受理提交",
+  "Save the project before submitting a draft.": "请等待项目保存后再提交草稿。",
+  "Result unconfirmed. Check the publishing engine before submitting again.": "结果尚未确认，请先到发布控制台核查，勿重复提交。",
+  "Acceptance could not be confirmed. Refresh local status before submitting again.": "无法确认是否已受理，请先刷新本地状态，勿重复提交。",
+  "The draft was accepted, but local tracking could not be saved. Do not submit again.": "草稿已被接收，但本地跟踪保存失败，请勿重复提交。",
+  "The publishing engine refused the draft. No draft was created.": "发布服务拒绝了草稿，未创建草稿。",
+  "Submission permission changed. No draft was created.": "提交权限已变更，未创建草稿。",
+  "The target account could not be verified. No draft was created.": "无法核验目标账号，未创建草稿。",
+  "The frozen submission binding changed. No draft was created.": "冻结的提交绑定已变更，未创建草稿。",
+  "The source project is no longer available. No draft was created.": "来源项目已不可用，未创建草稿。",
+  "The publishing engine no longer confirms this draft as rejected. No retry was submitted.": "发布服务不再确认原草稿为拒审状态，未重新提交。",
+  "The submission result could not be confirmed. Check the publishing engine before submitting again.": "无法确认提交结果，请先到发布控制台核查，勿重复提交。",
   "Feishu group notifications": "飞书群通知",
   "Draft reviews and publication updates, delivered to your group.": "草稿审核与发布动态，同步到飞书群。",
   "Notifications on": "通知已开启",

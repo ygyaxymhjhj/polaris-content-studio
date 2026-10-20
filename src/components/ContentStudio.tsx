@@ -54,7 +54,9 @@ import PostEditorView from "@/components/PostEditorView";
 import ThemeToggle from "@/components/ThemeToggle";
 import LanguageMenu from "@/components/LanguageMenu";
 import type { ProjectSnapshot } from "@/lib/project-schema";
-import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, markSubmissionSucceeded, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
+import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissionBindingKey, getSubmissionStatusQueries, mergeSubmissionStatus, shouldPollSubmission } from "@/lib/submission-status";
+import { fetchAssetDraftTasks, mergeDraftTask } from "@/lib/draft-submission-client";
+import { isDraftSubmissionTask, type DraftSubmissionTask } from "@/lib/draft-submission-types";
 import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
@@ -268,13 +270,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const assetsRef = useRef(assets);
   assetsRef.current = assets;
   const submissionAttempts = useRef(new Map<string, number>());
+  const acceptanceFlights = useRef(new Set<string>());
+  const [acceptingAssetIds, setAcceptingAssetIds] = useState<string[]>([]);
   const changeCurrentProject = useCallback((projectId: string) => {
-    if (currentProjectRef.current !== projectId) setPublishing(false);
     currentProjectRef.current = projectId;
     setCurrentProjectId(projectId);
   }, []);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
-  const [publishing, setPublishing] = useState<boolean>(false);
+  const publishing = Boolean(publishModalAsset && (acceptingAssetIds.includes(publishModalAsset.id)
+    || publishModalAsset.publishStatus === "publishing" || publishModalAsset.publishStatus === "pending_unknown"));
   // Conversations are kept per asset so reopening the drawer continues where the editor left off.
   const [threads, setThreads] = useState<Record<string, RewriteMessage[]>>({});
   const threadOnOpen = useRef<RewriteMessage[]>([]);
@@ -427,6 +431,40 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   // Poll local, owner-filtered facts for exact submissions, never Postiz or a global history page.
   const submissionPollKey = JSON.stringify(assets.filter(shouldPollSubmission).map(asset => [asset.id, getSubmissionBindingKey(asset), asset.targetAccountId]));
   const contentEpoch = packSequence.current;
+  const draftTaskPollKey = assets.map(asset => asset.id).join(",");
+  useEffect(() => {
+    if (!draftTaskPollKey) return;
+    const controller = new AbortController();
+    const projectEpoch = packSequence.current;
+    let inFlight = false;
+    const isCurrent = () => !controller.signal.aborted && currentProjectRef.current === currentProjectId && packSequence.current === projectEpoch;
+    const refreshTasks = async () => {
+      if (inFlight || document.hidden || !isCurrent()) return;
+      inFlight = true;
+      const attempts = new Map(submissionAttempts.current);
+      try {
+        const tasks = await fetchAssetDraftTasks(draftTaskPollKey.split(","), currentProjectId, controller.signal);
+        if (!isCurrent()) return;
+        const merge = (asset: ContentAsset) => {
+          if (attempts.get(asset.id) !== submissionAttempts.current.get(asset.id) || acceptanceFlights.current.has(asset.id)) return asset;
+          const task = tasks.find(candidate => candidate.sourceId === asset.id
+            && (!asset.targetAccountId || candidate.integrationId === asset.targetAccountId));
+          return task ? mergeDraftTask(asset, task) : asset;
+        };
+        setAssets(current => {
+          const merged = current.map(merge);
+          return merged.some((asset, index) => asset !== current[index]) ? merged : current;
+        });
+        setSelectedAsset(current => current ? merge(current) : current);
+        setPublishModalAsset(current => current ? merge(current) : current);
+      } catch { /* Durable work remains pending until local status can be read again. */ }
+      finally { inFlight = false; }
+    };
+    void refreshTasks();
+    const timer = window.setInterval(refreshTasks, 5_000);
+    window.addEventListener("focus", refreshTasks);
+    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener("focus", refreshTasks); };
+  }, [draftTaskPollKey, currentProjectId, contentEpoch]);
   useEffect(() => {
     if (!assetsRef.current.some(shouldPollSubmission)) return;
     const controller = new AbortController();
@@ -567,7 +605,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setPublishModalAsset(null);
     historyRequestSequence.current += 1;
     setPublishHistory([]);
-    setPublishing(false);
+    setAcceptingAssetIds([]);
     setAssetFilter("all");
     setUsedFallback(false);
     setLoading(null);
@@ -700,12 +738,13 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     rewriteSequence.current += 1;
     setSelectedAsset(null);
     setPublishModalAsset(null);
-    setPublishing(false);
+    setAcceptingAssetIds([]);
     setRewriting(false);
     setThreads({});
     clearCandidates();
     setLoading("generate");
-    setGenerationRun(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+    const generationId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    setGenerationRun(generationId);
     setAssets([]);
     setUsedFallback(false);
     setPendingPlatforms(platforms);
@@ -729,7 +768,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           const data = await readJson<{ error?: string; assets?: ContentAsset[]; usedFallback?: boolean }>(response);
           if (!response.ok) throw new Error(data.error || "Generation failed");
           if (run !== packSequence.current) return;
-          setAssets((current) => [...current, ...(data.assets || [])]);
+          // Provider IDs repeat across runs; a durable result must never attach to a newer pack.
+          setAssets((current) => [...current, ...(data.assets || []).map(asset => ({ ...asset, id: `${asset.id.slice(0, 36)}-${generationId}` }))]);
           setUsedFallback((current) => current || Boolean(data.usedFallback));
         } catch {
           failed += 1;
@@ -970,11 +1010,18 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
    * draft inside Postiz.
    */
   async function submitDraft(asset: ContentAsset, accountId: string, announceResult = true) {
+    if (acceptanceFlights.current.has(asset.id) || asset.publishStatus === "publishing" || asset.publishStatus === "pending_unknown") {
+      return { success: false, warning: false };
+    }
     if (!accountId) {
       if (announceResult) notify(t("Select a social account first."));
       return { success: false, warning: false };
     }
     const projectId = currentProjectRef.current;
+    if (!projectId) {
+      if (announceResult) notify(t("Save the project before submitting a draft."));
+      return { success: false, warning: false };
+    }
     const projectEpoch = packSequence.current;
     const attempt = (submissionAttempts.current.get(asset.id) ?? 0) + 1;
     submissionAttempts.current.set(asset.id, attempt);
@@ -985,8 +1032,10 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       setSelectedAsset(current => current ? apply(current) : current);
       setPublishModalAsset(current => current ? apply(current) : current);
     };
-    setPublishing(true);
-    updateAttempt(current => ({ ...current, publishStatus: "publishing" }));
+    acceptanceFlights.current.add(asset.id);
+    setAcceptingAssetIds(current => [...current, asset.id]);
+    updateAttempt(current => ({ ...current, publishStatus: "publishing", targetAccountId: accountId }));
+    let definitelyRefused = false;
     try {
       const res = await fetch("/api/social/publish", {
         method: "POST",
@@ -998,35 +1047,39 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           imageUrl: asset.imageUrl ?? config.imageUrl,
           projectId: projectId || undefined,
           platform: asset.platform,
-          accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId
+          accountName: socialAccounts.find(acc => acc.id === accountId)?.name || accountId,
+          requestId: crypto.randomUUID(),
+          expectedAuditId: asset.reviewStatus === "rejected" ? asset.submission?.auditId || undefined : undefined
         })
       });
-      const data = await readJson<{ success?: boolean; error?: string; postId?: string; auditId: string | null; publishedAt: string; warning?: string }>(res);
-      if (!res.ok || !data.success) {
+      const data = await readJson<{ accepted?: boolean; error?: string; task?: DraftSubmissionTask }>(res);
+      if (res.status !== 202 || !data.accepted || !isDraftSubmissionTask(data.task)) {
+        definitelyRefused = res.status >= 400 && res.status < 500 && res.status !== 409;
         throw new Error(data.error || t("Publish failed"));
       }
-      const hasWarning = typeof data.warning === "string" && Boolean(data.warning.trim());
+      const task = data.task;
+      const hasWarning = Boolean(task.warning);
       if (!isCurrentAttempt()) return { success: true, warning: hasWarning };
-      updateAttempt(current => markSubmissionSucceeded(current, data, accountId));
+      updateAttempt(current => mergeDraftTask(current, task));
       if (announceResult) {
-        const message = t(hasWarning ? "Draft submitted, but notifications or status tracking need attention. Do not submit it again."
-          : "Draft submitted to Postiz. An administrator reviews and publishes it there.");
-        setSubmissionNotice(hasWarning ? message : "");
+        const message = t("Submission accepted. Processing in the background; you can close this dialog or leave this page.");
+        setSubmissionNotice(hasWarning ? t(task.warning || "") : "");
         notify(message);
       }
-      setPublishModalAsset(null);
+      setPublishModalAsset(current => current?.id === asset.id ? null : current);
       return { success: true, warning: hasWarning };
     } catch (err) {
       if (!isCurrentAttempt()) return { success: false, warning: false };
       updateAttempt(current => ({
         ...current,
-        publishStatus: "failed",
-        publishError: err instanceof Error ? err.message : t("Publish failed")
+        publishStatus: definitelyRefused ? "failed" : "pending_unknown",
+        publishError: definitelyRefused && err instanceof Error ? err.message : "Acceptance could not be confirmed. Refresh local status before submitting again."
       }));
       if (announceResult) notify(err instanceof Error ? err.message : t("Publish failed"));
       return { success: false, warning: false };
     } finally {
-      if (isCurrentAttempt()) setPublishing(false);
+      acceptanceFlights.current.delete(asset.id);
+      setAcceptingAssetIds(current => current.filter(identifier => identifier !== asset.id));
     }
   }
 
@@ -1058,16 +1111,21 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     let submittedCount = 0;
     let warningCount = 0;
     let failedCount = 0;
-    for (const { asset, account } of toSubmit) {
-      if (!isCurrentBatch()) return;
-      const result = await submitDraft(asset, account.id, false);
-      if (!isCurrentBatch()) return;
-      if (result.success) submittedCount += 1;
-      else failedCount += 1;
-      if (result.warning) warningCount += 1;
-    }
+    const queue = [...toSubmit];
+    const acceptNext = async () => {
+      while (queue.length && isCurrentBatch()) {
+        const entry = queue.shift();
+        if (!entry) break;
+        const result = await submitDraft(entry.asset, entry.account.id, false);
+        if (result.success) submittedCount += 1;
+        else failedCount += 1;
+        if (result.warning) warningCount += 1;
+      }
+    };
+    await Promise.all([acceptNext(), acceptNext()]);
+    if (!isCurrentBatch()) return;
     setLoading(null);
-    const summary = `${t("Drafts submitted")}: ${submittedCount}. ${t("Failed")}: ${failedCount}. ${t("Skipped assets with no matching account")}: ${matches.length - toSubmit.length}. ${t("Notifications or status tracking need attention")}: ${warningCount}.`;
+    const summary = `${t("Submissions accepted")}: ${submittedCount}. ${t("Failed")}: ${failedCount}. ${t("Skipped assets with no matching account")}: ${matches.length - toSubmit.length}. ${t("Notifications or status tracking need attention")}: ${warningCount}.`;
     setSubmissionNotice(warningCount ? `${summary} ${t("Do not resubmit successful drafts.")}` : "");
     notify(summary);
   }
@@ -1502,6 +1560,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               <div className="info-banner" style={{ marginTop: 8 }}>
                 <span>{t("This creates a Postiz draft only. An administrator reviews and publishes it inside Postiz.")}</span>
               </div>
+              {publishModalAsset.publishStatus === "publishing" && <div className="info-banner" role="status">{t("Submission accepted. Processing in the background; you can close this dialog or leave this page.")}</div>}
+              {publishModalAsset.publishError && <div className="info-banner" role="alert">{t(publishModalAsset.publishError)}</div>}
+              {publishModalAsset.submissionTask?.warning && <div className="info-banner" role="status">{t(publishModalAsset.submissionTask.warning)}</div>}
 
               {publishHistory.length > 0 && (
                 <label className="field-label" style={{ marginTop: 10 }}>
@@ -1526,7 +1587,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
               )}
             </div>
             <div className="dialog-footer">
-              <button className="secondary-button" onClick={() => setPublishModalAsset(null)} disabled={publishing}>{t("Cancel")}</button>
+              <button className="secondary-button" onClick={() => setPublishModalAsset(null)}>{t("Close")}</button>
               <button className="primary-button" disabled={publishing || !selectedAccountId} onClick={() => submitDraft(publishModalAsset, selectedAccountId)}>
                 {publishing ? <><Loader2 className="spin" size={15} /> {t("Submitting…")}</> : <><Send size={15} /> {t("Confirm submit draft")}</>}
               </button>
