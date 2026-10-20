@@ -141,6 +141,7 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
       "- Rewrite the source into a short Facebook caption: clear, focused and easy to read.",
       "- One caption carries one core message; never cram the whole article into it. Pick the most notable, most informative part of the source as the focus.",
       "- State the point in the first line: what happened and what matters most about it. Never open with filler that carries no real information.",
+      "- Lead with the actual event, actor or finding, not a description of the source. Avoid generic source-framing openers such as \"The article...\", \"The report...\", \"This article discusses...\" or \"According to the article...\". Keep any necessary attribution within the factual sentence, and preserve uncertainty or reported status.",
       "- After the first line, add only the necessary information, usually within one or two paragraphs and adjusted to how much the source holds; every sentence must do a job, such as a key figure, a development or essential context.",
       "- Do not retell the whole article in its original order of background, cause, events, outcome and impact; a Facebook caption is not an article summary or a press release.",
       "- Never one long block of text: when there is more to say, split it into one or two short paragraphs and keep a readable rhythm instead of piling everything together.",
@@ -262,7 +263,8 @@ export const PLATFORM_GUIDELINES: Partial<Record<Platform, Record<Language, stri
     en: [
       "- Write one complete, standalone publishable post, not a carousel, slides or six pages. Maximum 2200 characters using JavaScript string.length (UTF-16), including spaces, newlines, emoji, CTA, hashtags and URLs.",
       "- Choose the caption approach from the article and its visuals; never a fixed formula.",
-      "- The caption is short, readable and pointed — it supports the image/video rather than repeating it.",
+      "- Aim for roughly 60-100 words of caption text in 1-2 short paragraphs, excluding hashtags and URLs; this is a flexible target, not a minimum. The 2200-character limit is a ceiling, not a length target. If the source is brief, write less.",
+      "- Keep one main update and only the essential supporting details; support the image/video rather than retelling the article. Cut repeated context, long explanations and generic wrap-ups while preserving necessary attribution and qualifiers.",
       "- Match Instagram user behaviour: readable, visual, appealing, encouraging interaction.",
       "- Choose icons/emoji to match the content and context; use them in moderation.",
       "- CTA and hashtags must fit the content, the post's goal and Instagram's conventions.",

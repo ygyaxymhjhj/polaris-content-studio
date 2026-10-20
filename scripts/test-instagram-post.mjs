@@ -75,6 +75,11 @@ try {
     assert(generationPrompt.includes(`must use language ${language}`));
     assert(generationPrompt.includes("2200"));
     assert(generationPrompt.includes("one standalone finished post"));
+    assert.equal(generationPrompt.includes("60-100 words"), language === "en", "The shorter caption target applies only to English");
+    if (language === "en") {
+      assert(generationPrompt.includes("1-2 short paragraphs"), "English Instagram captions prefer fewer paragraphs");
+      assert(generationPrompt.includes("ceiling, not a length target"), "The publishing limit must not encourage padding");
+    }
     const legacy = { ...generated.assets[0], assetType: "carousel", meta: { slides: [{ title: "Old slide" }], slideCount: 6, visualDirections: ["Old directions"] } };
     replies = [{ candidates: Array.from({ length: 3 }, () => modelAsset(sourceTexts[language])) }];
     requests.length = 0;
@@ -85,6 +90,7 @@ try {
     assert(rewritePrompt.includes('assetType="short_post"'));
     assert(requests[0].messages[0].content.includes("legacy Instagram"));
     assert(rewritePrompt.includes("2200"));
+    assert.equal(rewritePrompt.includes("60-100 words"), language === "en", "Revisions receive the same English-only length guidance");
   }
 
   const complete = modelAsset("a".repeat(2200));

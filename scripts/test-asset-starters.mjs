@@ -157,6 +157,9 @@ try {
   await generateWithAI({ ...config, language: 'en' }, analysis, ['facebook']);
   assert(requests[0].messages[1].content.includes('State the point in the first line'), 'The English Facebook rules state the point in the first line');
   assert(requests[0].messages[1].content.includes('figures the source does not contain'), 'The English Facebook rules forbid adding figures the source does not contain');
+  const englishFacebookPrompt = requests[0].messages[1].content;
+  assert(englishFacebookPrompt.includes('Avoid generic source-framing openers such as "The article...", "The report..."'), 'English Facebook copy starts with the news, not a description of the source');
+  assert(englishFacebookPrompt.includes('Keep any necessary attribution within the factual sentence'), 'Direct Facebook openings must preserve necessary attribution');
   requests.length = 0;
   await generateWithAI({ ...config, language: 'vi' }, analysis, ['x']);
   assert(requests[0].messages[1].content.includes('không mở đầu bằng nhãn mục'), 'The Vietnamese X rules forbid printing the style label');

@@ -52,6 +52,8 @@
 
 - Hiệu quả cuối cùng phải giống một người chia sẻ ngắn gọn một thông tin đáng chú ý trên Facebook: thông tin chính → vài câu bổ sung cần thiết → kết thúc; không phải bản nén của cả bài báo thành một đoạn dài. Độ dài, cách chia đoạn và cách diễn đạt linh hoạt theo nội dung bài, nhưng luôn ưu tiên: ngắn, rõ, có trọng tâm và tự nhiên.
 
+- English only: Lead with the actual event, actor or finding, not a description of the source. Avoid generic source-framing openers such as "The article...", "The report...", "This article discusses..." or "According to the article...". Keep any necessary attribution within the factual sentence, and preserve uncertainty or reported status.
+
 # Threads
 
 - Dựa vào nội dung gốc để chọn thông tin đáng chú ý nhất, không cố đưa toàn bộ nội dung bài viết vào caption\.
@@ -115,6 +117,10 @@ Không được hiểu “thuần tiếng Anh” là dịch nguyên caption ti�
 - Dựa vào nội dung bài viết và visual đi kèm để lựa chọn cách triển khai caption phù hợp; không áp dụng một công thức cố định\.
 
 - Caption cần ngắn gọn, dễ đọc, có điểm nhấn, bổ trợ cho hình ảnh/video thay vì lặp lại toàn bộ nội dung\.
+
+- English only: Aim for roughly 60-100 words of caption text in 1-2 short paragraphs, excluding hashtags and URLs; this shorter guidance takes precedence over the general 2-4 paragraph suggestion. This is a flexible target, not a minimum. The 2200-character limit is a ceiling, not a length target. If the source is brief, write less.
+
+- English only: Keep one main update and only the essential supporting details; support the image/video rather than retelling the article. Cut repeated context, long explanations and generic wrap-ups while preserving necessary attribution and qualifiers.
 
 - Ưu tiên cách viết phù hợp với hành vi người dùng Instagram: dễ đọc, trực quan, có tính thu hút và khuyến khích tương tác\.
 
