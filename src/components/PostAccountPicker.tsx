@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Loader2, Plus, X } from "lucide-react";
+import { ChevronDown, Loader2, Plus, X } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { MAX_POST_TARGETS } from "@/lib/post-types";
 import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
@@ -100,11 +100,18 @@ export default function PostAccountPicker({ accounts, selectedIds, disabled, loa
         <div className="post-account-picker" id={panelId} ref={panel} style={anchor}
           role="group" aria-label={translate("Choose accounts")}
           onBlur={event => {
-            if (!event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== trigger.current) setOpen(false);
+            // Clicking a label briefly clears focus before activating its checkbox. A null
+            // relatedTarget is not evidence of leaving; outside pointers are handled separately.
+            if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== trigger.current) setOpen(false);
           }} onKeyDown={event => {
             if (event.key === "Escape") {
               event.preventDefault();
               closePicker();
+            } else if (event.key === "Tab") {
+              const currentPanel = event.currentTarget;
+              window.requestAnimationFrame(() => {
+                if (!currentPanel.contains(document.activeElement) && document.activeElement !== trigger.current) setOpen(false);
+              });
             }
           }}>
           <div className="post-account-picker-list">
@@ -120,7 +127,6 @@ export default function PostAccountPicker({ accounts, selectedIds, disabled, loa
                       <small>{account.name}</small>
                       {account.disabled && <small>{translate("Needs reconnect in Postiz")}</small>}
                     </span>
-                    {selected && <Check className="post-picker-check" size={16} aria-hidden="true" />}
                   </label>
                 );
               }) : <p>{translate("No matching accounts")}</p>}

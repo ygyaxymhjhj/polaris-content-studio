@@ -1158,12 +1158,11 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .post-picker-account:hover, .post-picker-account.selected { background: var(--surface-hover); }
 .post-picker-account:has(input:focus-visible) { outline: 2px solid var(--accent-text); outline-offset: -2px; }
 .post-picker-account:has(input:disabled) { opacity: .55; cursor: not-allowed; }
-.post-picker-account input { position: absolute; width: 18px; height: 18px; margin: 0; opacity: 0; }
+.post-picker-account input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; accent-color: var(--accent-text); cursor: inherit; }
 .post-picker-platform { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; background: var(--surface-muted); color: var(--text-strong); font: 500 16px/1 "DM Sans", sans-serif; }
 .post-picker-account .post-editor-account-copy { flex: 1; gap: 4px; }
 .post-picker-account .post-editor-account-copy strong { font-size: 13px; font-weight: 500; }
 .post-picker-account .post-editor-account-copy small { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.post-picker-check { flex: 0 0 auto; color: var(--accent-text); }
 .post-account-picker > .text-button { width: 100%; min-height: 36px; justify-content: space-between; margin-top: 4px; border-top: 1px solid var(--border); padding: 8px 10px; font-size: 11px; }
 .post-account-picker > .post-editor-panel-note { padding: 8px 10px; margin: 0; }
 .post-draft-destination { display: flex; align-items: center; gap: 9px; margin: 20px 0 16px; color: var(--text-muted); font-size: 11px; }
