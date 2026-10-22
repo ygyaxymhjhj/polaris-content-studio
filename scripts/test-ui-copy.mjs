@@ -35,6 +35,7 @@ const { translate, LocaleContext } = loadModule(translationPath);
 const { default: SocialAccountsView } = loadModule(resolve(repository, 'src/components/SocialAccountsView.tsx'));
 const { default: ConnectAccountsDialog } = loadModule(resolve(repository, 'src/components/ConnectAccountsDialog.tsx'));
 const { default: AssetImageEditor } = loadModule(resolve(repository, 'src/components/AssetImageEditor.tsx'));
+const { default: SocialPreview } = loadModule(resolve(repository, 'src/components/SocialPreview.tsx'));
 const syntaxTree = ts.createSourceFile(translationPath, readFileSync(translationPath, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const brandedMessages = new Set();
 function collectMessages(node) {
@@ -64,6 +65,16 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
     }));
     assert.doesNotMatch(imageMarkup, /30 MB|asset-image-help|aria-describedby/, 'upload limits are only shown on validation failure, without a dangling hint reference');
     assert.match(translate(language, 'This image exceeds 30 MB. Choose an image up to 30 MB.'), /30 MB/);
+    const mediaMarkup = render(React.createElement(AssetImageEditor, {
+      value: '', title: '', variant, onChange() {}, onVideoChange() {}, onBusyChange() {}
+    }));
+    assert.doesNotMatch(mediaMarkup, /100 MB|30 MB|video\/\*|aria-describedby/, 'MP4 selection adds no persistent limits or unsupported formats');
+    assert.match(mediaMarkup, /accept="[^"]*video\/mp4/);
+    for (const message of ['Post media', 'Upload post media', 'Post video', 'Replace video', 'Remove video', 'Cancel upload',
+      'Uploading video…', 'Video transferred. Validating and saving…', 'This platform requires an image or MP4 video.',
+      'This video exceeds 100 MB. Choose an MP4 up to 100 MB.', 'Could not upload this video. Please try again.']) {
+      if (language !== 'en') assert.notEqual(translate(language, message), message, `${language}: missing media copy: ${message}`);
+    }
   }
   const accountMarkup = render(React.createElement(SocialAccountsView, {
     accounts: [{ id: 'account', name: 'Postiz Fan', identifier: 'x', disabled: true }],
@@ -107,6 +118,75 @@ const { default: ProjectStorage } = loadModule(resolve(repository, 'src/componen
 const noop = () => {};
 const config = { name: 'News', title: 'Source article', category: '', language: 'en', audience: '', cta: '', websiteUrl: '', sourceUrl: '', tone: '', publishDate: '' };
 const asset = { id: 'asset', platform: 'x', assetType: 'short_post', title: 'News draft', content: 'Original content stays unchanged.', factIds: ['fact'], riskFlags: [], meta: {}, updatedAt: '2026-10-20T00:00:00Z' };
+const videoId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+for (const language of ['en', 'zh', 'vi', 'th']) {
+  for (const platform of ['x', 'linkedin', 'facebook', 'instagram', 'threads']) {
+    const videoAsset = { ...asset, platform, videoMediaId: videoId, imageUrl: 'https://example.invalid/untrusted-image.png',
+      assetType: 'carousel', meta: { slides: [{ title: 'An old carousel' }] } };
+    const preview = load(renderViewMedia(SocialPreview, { asset: videoAsset, imageUrl: 'https://example.invalid/article.png' }));
+    assert.equal(preview('video').attr('src'), `/api/media/uploads/${videoId}`);
+    assert.equal(preview('video').attr('preload'), 'metadata');
+    assert.equal(preview('video[controls][playsinline]').length, 1);
+    assert.equal(preview('.mock-image, .ig-slide-card').length, 0, 'video takes precedence over article images and carousel metadata on all five platforms');
+    const card = load(renderViewMedia(views.AssetsView, { assets: [videoAsset], filteredAssets: [videoAsset], filter: 'all',
+      setFilter() {}, onOpen() {}, onPublish() {}, onGenerate() {}, onExport() {}, loading: null, usedFallback: false,
+      pendingPlatforms: [], targetCount: 1, config: { imageUrl: 'https://example.invalid/article.png' } }));
+    assert.equal(card('.asset-card-video').length, 1);
+    assert.equal(card('.asset-card-media img, .asset-card-media video').length, 0, 'asset grids show an icon without fetching a full video or falling back to an image');
+  }
+  function renderViewMedia(component, properties) {
+    return renderToStaticMarkup(React.createElement(LocaleContext.Provider, { value: language }, React.createElement(component, properties)));
+  }
+}
+
+const studioNodes = [];
+function collectStudioNodes(node) { studioNodes.push(node); ts.forEachChild(node, collectStudioNodes); }
+collectStudioNodes(studioTree);
+const viewAssetExpression = studioNodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(studioTree) === 'viewAsset').initializer.getText(studioTree);
+const projectCandidate = new Function('previewCandidate', 'selectedAsset', `return ${viewAssetExpression};`);
+assert.equal(projectCandidate({ asset: { ...asset, imageUrl: 'rogue', videoMediaId: 'rogue' } }, { ...asset, imageUrl: '', videoMediaId: videoId }).videoMediaId, videoId);
+assert.equal(projectCandidate({ asset: { ...asset, imageUrl: 'rogue', videoMediaId: 'rogue' } }, { ...asset, imageUrl: 'chosen-image' }).imageUrl, 'chosen-image');
+assert.equal(projectCandidate({ asset: { ...asset, videoMediaId: videoId } }, asset).videoMediaId, undefined, 'model candidates cannot introduce a media reference');
+const mediaEditor = studioNodes.find(node => ts.isJsxSelfClosingElement(node) && node.tagName.getText(studioTree) === 'AssetImageEditor');
+let selectedMediaAsset = { ...asset, imageUrl: 'article-image' };
+const mediaCallback = name => new Function('setSelectedAsset', 'selectedAsset', `return ${mediaEditor.attributes.properties.find(attribute => attribute.name?.getText(studioTree) === name).initializer.expression.getText(studioTree)};`)(
+  update => { selectedMediaAsset = update(selectedMediaAsset); }, selectedMediaAsset
+);
+mediaCallback('onVideoChange')(videoId);
+assert.equal(selectedMediaAsset.imageUrl, '', 'AI video selection suppresses the article-image fallback atomically');
+assert.equal(selectedMediaAsset.videoMediaId, videoId);
+mediaCallback('onChange')('replacement-image');
+assert.equal(selectedMediaAsset.videoMediaId, undefined, 'AI image selection clears the video in the same state update');
+mediaCallback('onVideoChange')(videoId);
+const { getAssetStatusFields } = loadModule(resolve(repository, 'src/lib/submission-status.ts'));
+let savedMediaAsset;
+const saveAssetFunction = studioNodes.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'saveAsset').getText(studioTree);
+const saveContext = {
+  selectedAsset: selectedMediaAsset, imageUploadingRef: { current: false }, deliveryDraft: '{}',
+  rewriteSequence: { current: 0 }, setRewriting() {}, getAssetStatusFields,
+  setAssets: update => { savedMediaAsset = update([asset])[0]; }, setSelectedAsset() {}, clearCandidates() {}, notify() {}, t: text => text
+};
+const compiledSave = ts.transpileModule(saveAssetFunction, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+new Function(...Object.keys(saveContext), `${compiledSave}; return saveAsset();`)(...Object.values(saveContext));
+assert.equal(savedMediaAsset.videoMediaId, videoId, 'actual AI saveAsset copies the durable video id');
+assert.equal(savedMediaAsset.imageUrl, '');
+const { getMatchingSocialAccounts } = loadModule(resolve(repository, 'src/lib/social-account-platform.ts'));
+const { createClientId } = loadModule(resolve(repository, 'src/lib/client-id.ts'));
+let submittedMediaPayload;
+const submitAssetFunction = studioNodes.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'submitDraft').getText(studioTree);
+const submitContext = {
+  imageUploadingRef: { current: false }, acceptanceFlights: { current: new Set() }, channelsLoading: false, channelsError: '',
+  socialAccounts: [{ id: 'account', identifier: 'x', name: 'News desk' }], getMatchingSocialAccounts, createClientId,
+  currentProjectRef: { current: 'project' }, packSequence: { current: 0 }, submissionAttempts: { current: new Map() },
+  config: { imageUrl: 'article-fallback' }, setAssets() {}, setSelectedAsset() {}, setPublishModalAsset() {}, setAcceptingAssetIds() {},
+  t: text => text, notify() {}, readJson: response => response.json(),
+  fetch: async (url, options) => { submittedMediaPayload = JSON.parse(options.body); return Response.json({ error: 'Synthetic refusal' }, { status: 400 }); }
+};
+const compiledSubmit = ts.transpileModule(submitAssetFunction, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const submitAsset = new Function(...Object.keys(submitContext), `${compiledSubmit}; return submitDraft;`)(...Object.values(submitContext));
+await submitAsset(selectedMediaAsset, 'account');
+assert.equal(submittedMediaPayload.videoMediaId, videoId);
+assert.equal(Object.hasOwn(submittedMediaPayload, 'imageUrl'), false, 'actual AI submission never adds an article-image fallback to video');
 const analysis = { summaryShort: 'Article summary', summaryLong: 'Source context.', keyTerms: [], riskFlags: [], facts: [{ id: 'fact', type: 'claim', text: 'Source claim', sourceExcerpt: 'Source claim', sourceLocation: 'Article', verified: true, usableOnSocial: true, riskLevel: 'low' }] };
 const accountProperties = { accounts: [{ id: 'account', name: 'News desk', identifier: 'x' }], configured: true, uiUrl: consoleUrl, loading: false, error: '', notice: '', syncedAt: '', isAdmin: true, onAddAccount: noop, onRefresh: noop };
 const assetProperties = { assets: [asset], filteredAssets: [asset], filter: 'all', setFilter: noop, onOpen: noop, onPublish: noop, onGenerate: noop, onExport: noop, loading: null, usedFallback: false, pendingPlatforms: [], targetCount: 1, config };

@@ -248,7 +248,8 @@ try {
     "@/lib/project-db": projectDbModule, "@/lib/auth": authMock,
     "@/lib/social-accounts": socialAccountsModule, "@/lib/post-submission": {},
     "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
-    "@/lib/postiz": {}, "@/lib/social-notifications": {}
+    "@/lib/postiz": {}, "@/lib/social-notifications": {},
+    "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } }
   });
   const publishRoute = loadModule("src/app/api/social/publish/route.ts", {
     "next/server": { NextResponse, after: callback => wakeups.push(callback) },

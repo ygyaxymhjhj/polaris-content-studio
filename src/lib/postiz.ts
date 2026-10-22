@@ -1,4 +1,6 @@
 import { createHmac } from "node:crypto";
+import { openAsBlob } from "node:fs";
+import sharp from "sharp";
 import type { SocialAccount } from "./types";
 import { DEFAULT_PLATFORMS, type Platform } from "./types";
 
@@ -153,16 +155,98 @@ export interface PostizPublishRequest {
   integrationId: string;
   content: string;
   imageUrl?: string;
+  uploadedMedia?: { id: string; path: string };
   platform?: string;
 }
 
 const DEFAULT_POSTIZ_SETTINGS: Record<string, object> = {
   x: { __type: "x", who_can_reply_post: "everyone" },
   instagram: { __type: "instagram", post_type: "post" },
+  "instagram-standalone": { __type: "instagram-standalone", post_type: "post" },
   facebook: { __type: "facebook", post_type: "post" },
   threads: { __type: "threads" },
   linkedin: { __type: "linkedin" }
 };
+
+/** Only server-registered media can become a preview redirect; never accept a browser-supplied URL. */
+export function getTrustedPostizMediaUrl(path: string): string {
+  const config = getPostizConfig();
+  if (!config) throw new PostizConnectionError("Postiz is not configured on the server.", 503);
+  try {
+    const mediaUrl = new URL(path);
+    if (!/^https?:$/.test(mediaUrl.protocol) || mediaUrl.username || mediaUrl.password
+      || path.includes(config.apiKey) || decodeURIComponent(path).includes(config.apiKey)) throw new Error();
+    const explicitOrigins = process.env.POSTIZ_MEDIA_ORIGINS?.trim();
+    // The documented cloud upload response uses uploads.postiz.com; self-hosted origins remain explicit.
+    const allowedOrigins = explicitOrigins
+      ? explicitOrigins.split(/[\s,]+/).map(origin => {
+        const parsedOrigin = new URL(origin);
+        if (!/^https?:$/.test(parsedOrigin.protocol) || parsedOrigin.username || parsedOrigin.password
+          || parsedOrigin.pathname !== "/" || parsedOrigin.search || parsedOrigin.hash) throw new Error();
+        return parsedOrigin.origin;
+      })
+      : [new URL(config.apiUrl).origin, new URL(getPostizUiUrl() || config.apiUrl).origin, "https://uploads.postiz.com"];
+    if (!allowedOrigins.includes(mediaUrl.origin)) throw new Error();
+    return mediaUrl.href;
+  } catch {
+    throw new PostizConnectionError("Postiz returned an untrusted media URL. Ask an administrator to check POSTIZ_MEDIA_ORIGINS.", 502);
+  }
+}
+
+/** File-backed Blob keeps the 100 MiB video off the JavaScript heap; no image helper behavior changes. */
+export async function uploadVideoFileToPostiz(filePath: string, signal?: AbortSignal): Promise<{ id: string; path: string }> {
+  const config = getPostizConfig();
+  if (!config) throw new PostizConnectionError("Postiz is not configured on the server.", 503);
+  const uploadSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(180_000)]);
+  try {
+    uploadSignal.throwIfAborted();
+    const file = await openAsBlob(filePath, { type: "video/mp4" });
+    const form = new FormData();
+    form.append("file", file, "video.mp4");
+    form.append("adjust", "false");
+    // Await the aborting fetch itself: racing it against cancellation would delete a still-read file.
+    const response = await fetch(`${getPostizApiBaseUrl(config.apiUrl)}/public/v1/upload`, {
+      method: "POST", headers: { Authorization: config.apiKey }, body: form,
+      redirect: "error", cache: "no-store", signal: uploadSignal
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new PostizConnectionError(`Postiz could not store the video (HTTP ${response.status}). Try uploading again.`);
+    }
+    if (!response.body) throw new PostizConnectionError("Postiz returned an invalid video upload response.");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 64 * 1024) {
+          await reader.cancel().catch(() => undefined);
+          throw new PostizConnectionError("Postiz returned an invalid video upload response.");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const data: unknown = JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
+    if (!isPostizRecord(data) || typeof data.id !== "string" || !data.id.trim() || data.id.length > 191
+      || typeof data.path !== "string" || data.path.length > 4096 || (data.status !== undefined && data.status !== "ready")) {
+      throw new PostizConnectionError("Postiz returned an invalid or unfinished video upload response.");
+    }
+    uploadSignal.throwIfAborted();
+    return { id: data.id, path: getTrustedPostizMediaUrl(data.path) };
+  } catch (error) {
+    if (error instanceof PostizConnectionError) throw error;
+    throw new PostizConnectionError("The video could not be stored in Postiz. Try uploading again.");
+  }
+}
+
+const MAX_POSTIZ_IMAGE_BYTES = 30 * 1024 * 1024;
+// Article images need not meet the editor's 2048px cap; bound decoder resources to 40 megapixels.
+const MAX_POSTIZ_IMAGE_PIXELS = 40_000_000;
 
 async function uploadMediaToPostiz(
   config: PostizConfig,
@@ -170,31 +254,49 @@ async function uploadMediaToPostiz(
 ): Promise<{ id: string; path: string } | null> {
   try {
     let buffer: Buffer;
-    let mimeType = "image/jpeg";
-    let filename = "image.jpg";
-
     if (imageUrl.startsWith("data:")) {
-      const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/);
+      // Reject encoded size before the regex captures or Buffer.from allocates decoded bytes.
+      if (imageUrl.length > 4 * Math.ceil(MAX_POSTIZ_IMAGE_BYTES / 3) + 64) return null;
+      const match = imageUrl.match(/^data:image\/(?:jpeg|jpg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/);
       if (!match) return null;
-      mimeType = match[1];
-      buffer = Buffer.from(match[2], "base64");
-      const ext = mimeType.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "jpg";
-      filename = `upload.${ext}`;
+      buffer = Buffer.from(match[1], "base64");
     } else {
       const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) return null;
-      buffer = Buffer.from(await res.arrayBuffer());
-      const headerType = res.headers.get("content-type");
-      if (headerType) mimeType = headerType.split(";")[0].trim();
-      const pathname = new URL(imageUrl).pathname;
-      const name = pathname.split("/").pop();
-      if (name && name.includes(".")) {
-        filename = name;
-      } else {
-        const ext = mimeType.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "jpg";
-        filename = `upload.${ext}`;
+      if (Number(res.headers.get("content-length")) > MAX_POSTIZ_IMAGE_BYTES) {
+        await res.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      if (!res.body) return null;
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > MAX_POSTIZ_IMAGE_BYTES) {
+            await reader.cancel().catch(() => undefined);
+            return null;
+          }
+          chunks.push(value);
+        }
+        buffer = Buffer.concat(chunks, bytes);
+      } finally {
+        reader.releaseLock();
       }
     }
+
+    if (!buffer.length || buffer.length > MAX_POSTIZ_IMAGE_BYTES) return null;
+    const image = sharp(buffer, { failOn: "warning", limitInputPixels: MAX_POSTIZ_IMAGE_PIXELS, animated: false });
+    const metadata = await image.metadata();
+    if (!metadata.format || !["jpeg", "png", "webp"].includes(metadata.format)
+      || (metadata.pages ?? 1) !== 1 || !metadata.width || !metadata.height) return null;
+    // Metadata alone accepts some corrupt files. Force pixel decoding without changing uploaded bytes.
+    await image.resize(1, 1, { fit: "inside" }).raw().toBuffer();
+    const mimeType = `image/${metadata.format}`;
+    const filename = `upload.${metadata.format === "jpeg" ? "jpg" : metadata.format}`;
 
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
@@ -206,6 +308,7 @@ async function uploadMediaToPostiz(
         Authorization: config.apiKey
       },
       body: form,
+      redirect: "error",
       signal: AbortSignal.timeout(30000)
     });
 
@@ -219,8 +322,8 @@ async function uploadMediaToPostiz(
       return { id: String(data.id), path: String(data.path) };
     }
     return null;
-  } catch (err) {
-    console.error("[postiz] upload media error", err);
+  } catch {
+    console.error("[postiz] image validation or upload failed");
     return null;
   }
 }
@@ -396,13 +499,14 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
     return { success: false, error: "Postiz is not configured. Please set POSTIZ_API_URL and POSTIZ_API_KEY in environment." };
   }
 
+  if (req.uploadedMedia) return createStrictDraft(req);
   let images: Array<{ id: string; path: string }> = [];
   if (req.imageUrl) {
     const uploaded = await uploadMediaToPostiz(config, req.imageUrl);
     if (uploaded) {
       images = [uploaded];
     } else {
-      console.warn("[postiz] image upload failed or was skipped; proceeding with text-only post");
+      return { success: false, error: "The post image could not be validated or uploaded. No draft was created." };
     }
   }
 
@@ -463,12 +567,13 @@ async function createDraftPost(config: PostizConfig, payload: object): Promise<D
         "x-api-key": config.apiKey
       },
       body: JSON.stringify(payload),
+      redirect: "error",
       signal: AbortSignal.timeout(20000)
     });
 
     if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      return { ok: false, uncertain: false, error: `Postiz API error (${response.status}): ${errText.slice(0, 300)}` };
+      await response.body?.cancel().catch(() => undefined);
+      return { ok: false, uncertain: false, error: `Postiz API error (${response.status}). The draft could not be created.` };
     }
 
     const responseData: unknown = await response.json().catch(() => null);
@@ -481,8 +586,8 @@ async function createDraftPost(config: PostizConfig, payload: object): Promise<D
       }
     }
     return { ok: true, postId: null };
-  } catch (error) {
-    return { ok: false, uncertain: true, error: error instanceof Error ? error.message : "Failed to create the Postiz draft" };
+  } catch {
+    return { ok: false, uncertain: true, error: "The connection to Postiz was interrupted. Check Postiz before retrying this draft." };
   }
 }
 
@@ -499,8 +604,8 @@ export interface StrictDraftResult {
 }
 
 /**
- * Creates a Postiz draft for content that must not degrade silently. Unlike publishToPostiz, a
- * failed image upload aborts the submission instead of sending a text-only draft, and transport
+ * Creates a Postiz draft for content that must not degrade silently. A failed image upload aborts
+ * the submission instead of sending a text-only draft, and transport
  * failures are flagged as uncertain so the caller can record "needs review" instead of a failure.
  * Polaris still only ever creates drafts.
  */
@@ -510,7 +615,18 @@ export async function createStrictDraft(req: PostizPublishRequest): Promise<Stri
     return { success: false, error: "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY." };
   }
 
+  if (req.uploadedMedia && req.imageUrl) {
+    return { success: false, error: "Choose either an image or an uploaded video, not both. No draft was created." };
+  }
   let images: Array<{ id: string; path: string }> = [];
+  if (req.uploadedMedia) {
+    try {
+      if (!req.uploadedMedia.id.trim() || req.uploadedMedia.id.length > 191) throw new Error();
+      images = [{ id: req.uploadedMedia.id, path: getTrustedPostizMediaUrl(req.uploadedMedia.path) }];
+    } catch {
+      return { success: false, error: "The uploaded video reference is invalid. Upload it again. No draft was created." };
+    }
+  }
   if (req.imageUrl) {
     const uploaded = await uploadMediaToPostiz(config, req.imageUrl);
     if (!uploaded) {

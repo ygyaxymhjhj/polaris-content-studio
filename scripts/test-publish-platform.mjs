@@ -65,6 +65,7 @@ const virtualSource = `
   import { createRoot } from 'react-dom/client';
   import { LocaleContext, translate } from '@/lib/i18n';
   import { PLATFORM_META } from '@/lib/types';
+  import { createClientId } from '@/lib/client-id';
   import { mergeDraftTask } from '@/lib/draft-submission-client';
   import { isDraftSubmissionTask } from '@/lib/draft-submission-types';
   import ConnectAccountsDialog from '@/components/ConnectAccountsDialog';
@@ -91,6 +92,7 @@ const virtualSource = `
     const packSequence = useRef(1);
     const submissionAttempts = useRef(new Map());
     const acceptanceFlights = useRef(new Set());
+    const imageUploadingRef = useRef(false);
     const config = {};
     const user = {role: 'admin'};
     const assets = storedAssets;
@@ -164,6 +166,9 @@ let browser;
 try {
   browser = await chromium.launch({ channel: process.env.TEST_BROWSER_CHANNEL || 'chrome' });
   const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+  await page.addInitScript(() => {
+    Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
+  });
   const errors = [];
   const submissions = [];
   let currentAccounts = accounts;
@@ -179,7 +184,9 @@ try {
       await route.fulfill(channelFailure ? { status: 503, json: { error: 'Synthetic channel failure' } }
         : { json: { configured: true, oauthConfigured: true, accounts: currentAccounts } });
     } else if (url.pathname === '/api/social/publish') {
-      submissions.push(route.request().postDataJSON());
+      const payload = route.request().postDataJSON();
+      assert.match(payload.requestId, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i, 'AI drafts use UUIDv4 without crypto.randomUUID');
+      submissions.push(payload);
       await route.fulfill({ status: 400, json: { error: 'Synthetic refusal' } });
     } else {
       assert(!url.pathname.startsWith('/api/'), `Unexpected API: ${url.pathname}`);
@@ -187,6 +194,7 @@ try {
     }
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  assert.equal(await page.evaluate(() => typeof crypto.randomUUID), 'undefined', 'exercise LAN HTTP crypto availability');
   const dialog = page.locator('.publish-dialog').first();
   const confirm = () => dialog.locator('.dialog-footer .primary-button');
   const ids = () => dialog.locator('.account-option-card strong').allTextContents();

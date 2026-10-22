@@ -78,9 +78,11 @@ export default function PostEditorView({
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [image, setImage] = useState("");
+  const [videoMediaId, setVideoMediaId] = useState<string | null>(null);
   const [imageDirty, setImageDirty] = useState(false);
   const [imageName, setImageName] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
+  const mediaBusyRef = useRef(false);
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -94,6 +96,8 @@ export default function PostEditorView({
   const [copiedNotice, setCopiedNotice] = useState("");
   const [copying, setCopying] = useState(false);
   const copyFlight = useRef(false);
+  const [editorTransition, setEditorTransition] = useState<"leaving" | "reloading" | null>(null);
+  const editorTransitionRef = useRef<typeof editorTransition>(null);
   const operationEpoch = useRef(0);
   const statusRequest = useRef<AbortController | null>(null);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
@@ -110,17 +114,23 @@ export default function PostEditorView({
   const updateDeletion = useCallback((operation: DeletionOperation) => {
     deletionOperation.current = operation;
     setDeletion(operation);
-    onDeletionPendingChange?.(operation.phase === "pending");
+    onDeletionPendingChange?.(operation.phase === "pending" || mediaBusyRef.current || pushFlight.current || Boolean(editorTransitionRef.current));
   }, [onDeletionPendingChange]);
 
   useEffect(() => () => onDeletionPendingChange?.(false), [onDeletionPendingChange]);
+
+  const handleMediaBusy = useCallback((busy: boolean) => {
+    mediaBusyRef.current = busy;
+    setImageBusy(busy);
+    onDeletionPendingChange?.(busy || deletionOperation.current.phase === "pending" || pushFlight.current || Boolean(editorTransitionRef.current));
+  }, [onDeletionPendingChange]);
 
   const postRef = useRef<ManualPostDetail | null>(null);
   const versionRef = useRef(0);
   const savedPayload = useRef("");
   const saveFlight = useRef<Promise<ManualPostDetail | null> | null>(null);
-  const payloadRef = useRef({ title, content, image, imageDirty, imageName, targetIds });
-  payloadRef.current = { title, content, image, imageDirty, imageName, targetIds };
+  const payloadRef = useRef({ title, content, image, videoMediaId, imageDirty, imageName, targetIds });
+  payloadRef.current = { title, content, image, videoMediaId, imageDirty, imageName, targetIds };
 
   const applyDetail = useCallback((detail: ManualPostDetail, options: { resetFields: boolean }) => {
     setPost(detail);
@@ -130,11 +140,12 @@ export default function PostEditorView({
       setTitle(detail.title);
       setContent(detail.content);
       setImage(detail.imageUrl ?? "");
+      setVideoMediaId(detail.videoMediaId ?? null);
       setImageDirty(false);
       setImageName(detail.imageName ?? "");
       setTargetIds(detail.targets.map((target) => target.integrationId));
     }
-    savedPayload.current = JSON.stringify([detail.title, detail.content, false, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    savedPayload.current = JSON.stringify([detail.title, detail.content, false, detail.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
     setSavedRevision((revision) => revision + 1);
   }, []);
 
@@ -143,9 +154,9 @@ export default function PostEditorView({
     if (postId === "new") {
       updateDeletion({ phase: "idle" });
       setPost(null); postRef.current = null; versionRef.current = 0;
-      setTitle(""); setContent(""); setImage(""); setImageDirty(false); setImageName("");
+      setTitle(""); setContent(""); setImage(""); setVideoMediaId(null); setImageDirty(false); setImageName("");
       setTargetIds([]);
-      savedPayload.current = JSON.stringify(["", "", false, ""]);
+      savedPayload.current = JSON.stringify(["", "", false, null, ""]);
       setSavedRevision((revision) => revision + 1);
       setLoading(false); setLoadError(""); setConflict(false); setSaveError(""); setSubmitError(""); setFrozenNotice("");
       return;
@@ -177,20 +188,20 @@ export default function PostEditorView({
   }, [postId, applyDetail, updateDeletion]);
 
   const payloadKey = useMemo(
-    () => JSON.stringify([title, content, imageDirty, [...targetIds].sort().join(",")]),
-    [title, content, imageDirty, targetIds]
+    () => JSON.stringify([title, content, imageDirty, videoMediaId ?? null, [...targetIds].sort().join(",")]),
+    [title, content, imageDirty, videoMediaId, targetIds]
   );
   // Save results live in a ref, so the re-render that setSavedRevision triggers is what makes this
   // comparison visible to the next render; savedRevision itself is not read here on purpose.
   const dirty = payloadKey !== savedPayload.current;
   void savedRevision;
   const editable = post ? post.editable : true;
-  const controlsLocked = !editable || preparingPush || Boolean(submitting.length) || deletionBlocked || copying;
+  const controlsLocked = !editable || preparingPush || Boolean(submitting.length) || deletionBlocked || copying || Boolean(editorTransition);
   const canDelete = editable && !post?.frozenReason && (!post || post.targets.every(target => target.status === "not_started" || target.status === "failed"));
 
   const refreshStatus = useCallback(async (quiet = true) => {
     const current = postRef.current;
-    const operationPending = () => Boolean(saveFlight.current || pushFlight.current || copyFlight.current
+    const operationPending = () => Boolean(editorTransitionRef.current || mediaBusyRef.current || saveFlight.current || pushFlight.current || copyFlight.current
       || deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted");
     if (!current || document.hidden || statusRequest.current || operationPending()) return;
     const controller = new AbortController();
@@ -247,29 +258,40 @@ export default function PostEditorView({
   }, [shouldPollStatus, refreshStatus, post?.targets]);
 
   const reloadPost = useCallback(async (resetFields = true) => {
+    if (mediaBusyRef.current || editorTransitionRef.current) return;
     const current = postRef.current;
     if (!current) return;
+    editorTransitionRef.current = "reloading";
+    setEditorTransition("reloading");
+    onDeletionPendingChange?.(true);
     operationEpoch.current += 1;
     try {
       const response = await fetch(`/api/posts/${current.id}`, { cache: "no-store" });
       const data = (await response.json().catch(() => ({}))) as { post?: ManualPostDetail; error?: string };
+      if (!editorMounted.current || postRef.current?.id !== current.id) return;
       if (!response.ok || !data.post) throw new Error(data.error || "The post could not be reloaded.");
       applyDetail(data.post, { resetFields });
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "The post could not be reloaded.");
     } finally {
-      setConflict(false);
+      editorTransitionRef.current = null;
+      if (editorMounted.current) {
+        setEditorTransition(null);
+        setConflict(false);
+        onDeletionPendingChange?.(mediaBusyRef.current || deletionOperation.current.phase === "pending" || pushFlight.current);
+      }
     }
-  }, [applyDetail]);
+  }, [applyDetail, onDeletionPendingChange]);
 
   const createPost = useCallback(async (): Promise<ManualPostDetail | null> => {
     const payload = payloadRef.current;
     const body: Record<string, unknown> = {
       title: payload.title.trim(),
       content: payload.content,
+      videoMediaId: payload.videoMediaId ?? null,
       integrationIds: payload.targetIds
     };
-    if (payload.imageDirty && payload.image.startsWith("data:")) {
+    if (!payload.videoMediaId && payload.imageDirty && payload.image.startsWith("data:")) {
       body.imageDataUrl = payload.image;
       if (payload.imageName) body.imageName = payload.imageName;
     }
@@ -285,8 +307,8 @@ export default function PostEditorView({
     if (!response.ok || !data.post) throw new Error(data.error || "The post could not be saved.");
     const detail = data.post;
     setPost(detail); postRef.current = detail; versionRef.current = detail.version;
-    savedPayload.current = JSON.stringify([sentTitle, sentContent, false, detail.targets.map((target) => target.integrationId).sort().join(",")]);
-    if (sentImageIncluded && payloadRef.current.image === payload.image) {
+    savedPayload.current = JSON.stringify([sentTitle, sentContent, false, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    if (sentImageIncluded && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
       setImage(detail.imageUrl ?? "");
       setImageDirty(false);
     }
@@ -302,10 +324,11 @@ export default function PostEditorView({
       version: versionRef.current,
       title: payload.title.trim(),
       content: payload.content,
+      videoMediaId: payload.videoMediaId ?? null,
       integrationIds: payload.targetIds
     };
     if (payload.imageDirty) {
-      body.imageDataUrl = payload.image ? payload.image : null;
+      body.imageDataUrl = !payload.videoMediaId && payload.image ? payload.image : null;
       if (payload.image && !payload.image.startsWith("/api/") && payload.imageName) body.imageName = payload.imageName;
     }
     const response = await fetch(`/api/posts/${current.id}`, {
@@ -326,8 +349,8 @@ export default function PostEditorView({
     if (!response.ok || !data.post) throw new Error(data.error || "The post could not be saved.");
     const detail = data.post;
     setPost(detail); postRef.current = detail; versionRef.current = detail.version;
-    savedPayload.current = JSON.stringify([String(body.title), String(body.content), false, detail.targets.map((target) => target.integrationId).sort().join(",")]);
-    if (payload.imageDirty && payloadRef.current.image === payload.image) {
+    savedPayload.current = JSON.stringify([String(body.title), String(body.content), false, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    if (payload.imageDirty && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
       setImage(detail.imageUrl ?? "");
       setImageDirty(false);
     }
@@ -339,12 +362,13 @@ export default function PostEditorView({
   // Every value this reads comes from refs that are refreshed on each render, so the identity only
   // changes when the parent hands over new callbacks.
   const save = useCallback(async (): Promise<ManualPostDetail | null> => {
+    if (mediaBusyRef.current || editorTransitionRef.current === "reloading") return null;
     if (copyFlight.current) return null;
     if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted") return null;
     if (saveFlight.current) return saveFlight.current;
     const flight = (async (): Promise<ManualPostDetail | null> => {
       const payload = payloadRef.current;
-      const key = JSON.stringify([payload.title, payload.content, payload.imageDirty, [...payload.targetIds].sort().join(",")]);
+      const key = JSON.stringify([payload.title, payload.content, payload.imageDirty, payload.videoMediaId ?? null, [...payload.targetIds].sort().join(",")]);
       const current = postRef.current;
       if (current && !current.editable) return current;
       if (key === savedPayload.current) return current;
@@ -354,7 +378,7 @@ export default function PostEditorView({
       try {
         if (!current) {
           // An untouched page must never create a record.
-          if (!payload.title.trim() && !payload.content.trim() && !payload.image) return null;
+          if (!payload.title.trim() && !payload.content.trim() && !payload.image && !payload.videoMediaId) return null;
           return await createPost();
         }
         return await patchPost(current);
@@ -372,14 +396,14 @@ export default function PostEditorView({
   // Debounced autosave. It stays parked while accounts are submitting: those requests carry the
   // current version, and a save landing in between would invalidate them mid-flight.
   useEffect(() => {
-    if (copying || deletionBlocked || !editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
+    if (editorTransition || copying || deletionBlocked || !editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
     const timer = window.setTimeout(() => { void save(); }, 1200);
     return () => window.clearTimeout(timer);
-  }, [copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, imageDirty, targetIds, postId]);
+  }, [editorTransition, copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, videoMediaId, imageDirty, targetIds, postId]);
 
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
-      if (deletion.phase !== "deleted" && (dirty || saving || preparingPush || submitting.length || deletionBlocked)) {
+      if (deletion.phase !== "deleted" && (editorTransitionRef.current || mediaBusyRef.current || dirty || saving || preparingPush || submitting.length || deletionBlocked)) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -389,6 +413,7 @@ export default function PostEditorView({
   }, [deletion.phase, deletionBlocked, dirty, saving, preparingPush, submitting.length]);
 
   const pushTargets = useCallback(async (integrationIds: string[]) => {
+    if (mediaBusyRef.current || editorTransitionRef.current) return;
     if (copyFlight.current) return;
     if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted") return;
     if (!integrationIds.length || pushFlight.current || accountsLoading || accountsError || imageBusy || conflict) return;
@@ -403,7 +428,7 @@ export default function PostEditorView({
     // An older autosave may have been in flight when the push was clicked. Flush the latest
     // snapshot before submitting so selected accounts never receive an earlier edit.
     const latest = payloadRef.current;
-    const latestKey = JSON.stringify([latest.title, latest.content, latest.imageDirty, [...latest.targetIds].sort().join(",")]);
+    const latestKey = JSON.stringify([latest.title, latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
     if (saved && latestKey !== savedPayload.current) saved = await save();
     if (!saved) {
       setSubmitError(t("Save the post before submitting it."));
@@ -465,7 +490,7 @@ export default function PostEditorView({
   }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict, onDeletionPendingChange]);
 
   async function copyAsNewDraft() {
-    if (deletionBlocked || copyFlight.current) return;
+    if (editorTransitionRef.current || mediaBusyRef.current || deletionBlocked || copyFlight.current) return;
     const current = postRef.current;
     if (!current || pushFlight.current || imageBusy || saving) return;
     operationEpoch.current += 1;
@@ -486,13 +511,29 @@ export default function PostEditorView({
   }
 
   async function leaveToPosts() {
-    if (deletionBlocked || copyFlight.current) return;
-    if (dirty && !await save()) return;
-    onBack();
+    if (editorTransitionRef.current || mediaBusyRef.current || deletionBlocked || copyFlight.current || pushFlight.current) return;
+    editorTransitionRef.current = "leaving";
+    setEditorTransition("leaving");
+    onDeletionPendingChange?.(true);
+    try {
+      if (dirty) {
+        if (!await save()) return;
+        const latest = payloadRef.current;
+        const latestKey = JSON.stringify([latest.title, latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+        if (latestKey !== savedPayload.current && !await save()) return;
+      }
+      if (!mediaBusyRef.current && editorMounted.current) onBack();
+    } finally {
+      editorTransitionRef.current = null;
+      if (editorMounted.current) {
+        setEditorTransition(null);
+        onDeletionPendingChange?.(mediaBusyRef.current || deletionOperation.current.phase === "pending" || pushFlight.current);
+      }
+    }
   }
 
   async function deleteDraft() {
-    if (copyFlight.current) return;
+    if (editorTransitionRef.current || mediaBusyRef.current || copyFlight.current) return;
     if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted" || !canDelete || pushFlight.current || imageBusy) return;
     if (!postRef.current && !saveFlight.current) return;
     if (!window.confirm(t("Delete this local draft permanently? Nothing has been sent to Postiz for it."))) return;
@@ -536,13 +577,13 @@ export default function PostEditorView({
   }));
 
   const trimmedContent = (editable ? content : post?.content ?? content).trim();
-  const hasImage = Boolean(editable ? image : post?.imageUrl);
+  const hasMedia = Boolean(editable ? image || videoMediaId : post?.imageUrl || post?.videoMediaId);
 
   /** Per-account blockers; each one only ever gates its own account. */
   function targetBlocker(target: PostTarget): string {
     if (!trimmedContent) return t("Add post text before submitting.");
     const rule = platformRuleFor(target.platform);
-    if (rule?.requiresImage && !hasImage) return t("This platform requires an image.");
+    if (rule?.requiresImage && !hasMedia) return t("This platform requires an image or MP4 video.");
     return "";
   }
 
@@ -575,7 +616,7 @@ export default function PostEditorView({
   return (
     <section className="post-editor" aria-labelledby="post-editor-title">
       <header className="post-editor-head">
-        <button type="button" className="post-editor-back" aria-label={t("Back to posts")} disabled={copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void leaveToPosts()}>
+        <button type="button" className="post-editor-back" aria-label={t("Back to posts")} disabled={Boolean(editorTransition) || copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void leaveToPosts()}>
           <ArrowLeft size={17} aria-hidden="true" />
         </button>
         <div className="post-editor-title-block">
@@ -590,18 +631,18 @@ export default function PostEditorView({
         </div>
         <div className="post-editor-actions">
           {shouldPollStatus && (
-            <button type="button" className="secondary-button" disabled={refreshingStatus || copying || deletionBlocked || preparingPush || saving || imageBusy || Boolean(submitting.length)} onClick={() => void refreshStatus(false)}>
+            <button type="button" className="secondary-button" disabled={Boolean(editorTransition) || refreshingStatus || copying || deletionBlocked || preparingPush || saving || imageBusy || Boolean(submitting.length)} onClick={() => void refreshStatus(false)}>
               <RefreshCw size={14} className={refreshingStatus ? "spin" : undefined} aria-hidden="true" /> {t("Refresh status")}
             </button>
           )}
           {canDelete && (post || saving) && (
-            <button type="button" className="secondary-button danger" disabled={copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void deleteDraft()}>
+            <button type="button" className="secondary-button danger" disabled={Boolean(editorTransition) || copying || deletionBlocked || preparingPush || imageBusy || Boolean(submitting.length)} onClick={() => void deleteDraft()}>
               {deletion.phase === "pending" ? <Loader2 className="spin" size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
               {t(deletion.phase === "pending" ? "Deleting draft…" : "Delete draft")}
             </button>
           )}
           {post && (
-            <button type="button" className="secondary-button" disabled={copying || deletionBlocked || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}>
+            <button type="button" className="secondary-button" disabled={Boolean(editorTransition) || copying || deletionBlocked || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}>
               <Copy size={14} aria-hidden="true" /> {t("Copy as new draft")}
             </button>
           )}
@@ -624,7 +665,7 @@ export default function PostEditorView({
                 ? t("A submission is running. This view unlocks only while no draft exists in Postiz.")
                 : t("A draft already exists in Postiz for at least one account, so the local copy stays as it was submitted. Copy it as a new draft to change the text.")}
             <div className="frozen-actions">
-              <button type="button" className="secondary-button" disabled={copying || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
+              <button type="button" className="secondary-button" disabled={Boolean(editorTransition) || copying || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
               {isAdmin && postizUiUrl && <a className="text-button" href={postizUiUrl} target="_blank" rel="noopener noreferrer">{t("Open Postiz")} <ExternalLink size={13} aria-hidden="true" /></a>}
             </div>
           </div>
@@ -634,7 +675,7 @@ export default function PostEditorView({
       {conflict && (
         <div className="info-banner" role="alert">
           <AlertTriangle size={16} aria-hidden="true" />
-          <div>{t("This post changed in another tab. Reload it before saving; your local edits in this tab will be replaced.")} <button type="button" className="text-button" disabled={deletionBlocked} onClick={() => void reloadPost()}>{t("Reload post")}</button></div>
+          <div>{t("This post changed in another tab. Reload it before saving; your local edits in this tab will be replaced.")} <button type="button" className="text-button" disabled={Boolean(editorTransition) || deletionBlocked || imageBusy} onClick={() => void reloadPost()}>{t("Reload post")}</button></div>
         </div>
       )}
       {saveError && <div className="info-banner" role="alert"><AlertTriangle size={16} aria-hidden="true" /><div>{t(saveError)}</div></div>}
@@ -667,14 +708,21 @@ export default function PostEditorView({
             <AssetImageEditor
               variant="composer"
               value={image}
+              videoMediaId={videoMediaId}
               title={t("Post image")}
               disabled={controlsLocked}
               allowUrlInput={false}
               onChange={nextImage => {
                 setImage(nextImage);
+                setVideoMediaId(null);
                 setImageDirty(true);
               }}
-              onBusyChange={setImageBusy}
+              onVideoChange={identifier => {
+                setVideoMediaId(identifier);
+                setImage("");
+                setImageDirty(true);
+              }}
+              onBusyChange={handleMediaBusy}
             />
           </div>
           <PostAccountPicker
@@ -683,7 +731,7 @@ export default function PostEditorView({
             disabled={controlsLocked}
             loading={accountsLoading}
             onChange={setTargetIds}
-            onOpenAccounts={() => { if (!deletionBlocked) onOpenAccounts(); }}
+            onOpenAccounts={() => { if (!editorTransitionRef.current && !deletionBlocked && !mediaBusyRef.current) onOpenAccounts(); }}
           />
         </div>
 
@@ -722,7 +770,7 @@ export default function PostEditorView({
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={copying || deletionBlocked || preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker) || (target.status === "rejected" && !target.auditId)}
+                          disabled={Boolean(editorTransition) || copying || deletionBlocked || preparingPush || isSubmitting || Boolean(submitting.length) || imageBusy || accountsLoading || Boolean(accountsError) || conflict || Boolean(blocker) || (target.status === "rejected" && !target.auditId)}
                           onClick={() => void pushTargets([target.integrationId])}
                         >
                           {isSubmitting ? <><Loader2 className="spin" size={13} aria-hidden="true" /> {t("Submitting…")}</> : <><Send size={13} aria-hidden="true" /> {t(target.status === "rejected" ? "Resubmit for review" : "Retry this account")}</>}
@@ -736,7 +784,7 @@ export default function PostEditorView({
               <p className="post-editor-targets-empty">{t("No accounts selected yet.")}</p>
             )}
             <button type="button" className="primary-button post-push-drafts"
-            disabled={copying || deletionBlocked || !pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
+            disabled={Boolean(editorTransition) || copying || deletionBlocked || !pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
               onClick={() => void pushTargets(pendingPushIds)}>
               {preparingPush || submitting.length ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
               {preparingPush || submitting.length ? t("Submitting…") : t("Push drafts to Postiz")}

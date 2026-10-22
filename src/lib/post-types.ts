@@ -31,6 +31,7 @@ export interface ManualPostListItem {
   title: string;
   excerpt: string;
   hasImage: boolean;
+  hasVideo?: boolean;
   /** Updated-at epoch milliseconds; the thumbnail URL uses it to bust the browser cache. */
   imageVersion: number;
   status: ManualPostStatus;
@@ -51,6 +52,8 @@ export interface ManualPostDetail {
   content: string;
   /** Same-origin image URL, or null when no image is attached. */
   imageUrl: string | null;
+  /** Owner-bound upload reference; preview through /api/media/uploads/:id. */
+  videoMediaId?: string | null;
   imageName: string | null;
   imageWidth: number | null;
   imageHeight: number | null;

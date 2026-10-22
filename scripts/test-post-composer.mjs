@@ -1,6 +1,8 @@
 // Real composer and media preparation in a browser, with local API responses instead of a database.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -24,21 +26,26 @@ const accounts = [
 const virtualSources = new Map([
   [imageShimPath, transpile(`import React from 'react'; export default function Image({fill, unoptimized, sizes, ...properties}) { return <img {...properties} style={{width: '100%', height: '100%', objectFit: 'cover'}} />; }`)],
   [harnessPath, transpile(`
-    import React, { useEffect, useState } from 'react';
+    import React, { useCallback, useEffect, useState } from 'react';
     import { createRoot } from 'react-dom/client';
     import PostEditorView from '@/components/PostEditorView';
     import PostsView from '@/components/PostsView';
     import { LocaleContext } from '@/lib/i18n';
+    import { validateVideoUpload } from '@/lib/video-upload-client';
+    window.testValidateVideoUpload = validateVideoUpload;
     function Harness() {
       const [postId, setPostId] = useState(new URLSearchParams(location.search).get('postId') || 'new');
       const [showList, setShowList] = useState(new URLSearchParams(location.search).has('list'));
       const [editorSession, setEditorSession] = useState(0);
+      const [navigationLocked, setNavigationLocked] = useState(false);
+      const handleNavigationLock = useCallback(locked => setNavigationLocked(locked), []);
       useEffect(() => {
         const resetEditor = () => { setEditorSession(session => session + 1); setPostId('new'); setShowList(false); };
         window.addEventListener('test-editor-reset', resetEditor);
         return () => window.removeEventListener('test-editor-reset', resetEditor);
       }, []);
       return <LocaleContext.Provider value="en"><main className="content-wrap">
+        <button data-testid="outer-navigation" disabled={navigationLocked} onClick={() => setShowList(true)}>Outer navigation</button>
         {showList ? <PostsView accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
           onOpenPost={setPostId} onNewPost={() => {}} onOpenAccounts={() => {}} initialStatus="all" refreshToken={0} />
           : <PostEditorView key={editorSession} postId={postId} accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
@@ -46,7 +53,7 @@ const virtualSources = new Map([
             if (newSession) setEditorSession(session => session + 1);
             setPostId(identifier);
           }} onSaved={() => {}}
-          onOpenAccounts={() => {}} onRefreshAccounts={() => {}} />}
+          onOpenAccounts={() => {}} onRefreshAccounts={() => {}} onDeletionPendingChange={handleNavigationLock} />}
       </main></LocaleContext.Provider>;
     }
     createRoot(document.getElementById('root')).render(<Harness />);
@@ -61,8 +68,9 @@ function collectModule(modulePath) {
   modules.set(modulePath, { source, dependencies });
   for (const match of source.matchAll(/require\(['"]([^'"]+)['"]\)/g)) {
     const dependency = match[1];
-    const dependencyPath = dependency === 'next/image' ? imageShimPath : dependency.startsWith('@/')
-      ? resolve(repository, `src/${dependency.slice(2)}${['@/lib/types', '@/lib/post-types', '@/lib/image-upload'].includes(dependency) ? '.ts' : '.tsx'}`)
+    const basePath = dependency.startsWith('@/') ? resolve(repository, 'src', dependency.slice(2)) : resolve(dirname(modulePath), dependency);
+    const dependencyPath = dependency === 'next/image' ? imageShimPath : dependency.startsWith('@/') || dependency.startsWith('.')
+      ? existsSync(`${basePath}.ts`) ? `${basePath}.ts` : existsSync(`${basePath}.tsx`) ? `${basePath}.tsx` : createRequire(modulePath).resolve(dependency)
       : createRequire(modulePath).resolve(dependency);
     dependencies[dependency] = dependencyPath;
     collectModule(dependencyPath);
@@ -83,8 +91,11 @@ const bundle = `(() => {
   load(${JSON.stringify(harnessPath)});
 })();`;
 const styles = readFileSync(resolve(repository, 'src/app/globals.css'), 'utf8').replace(/@import\s+url\([^)]*\)\s*;/g, '');
+let handleVideoUpload;
 const server = createServer((request, response) => {
-  if (request.url === '/bundle.js') {
+  if (request.url === '/api/media/uploads' && request.method === 'POST') {
+    void handleVideoUpload(request, response);
+  } else if (request.url === '/bundle.js') {
     response.setHeader('Content-Type', 'application/javascript');
     response.end(bundle);
   } else if (request.url === '/styles.css') {
@@ -98,12 +109,24 @@ const server = createServer((request, response) => {
 await new Promise(resolveListening => server.listen(0, '127.0.0.1', resolveListening));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const imageBuffer = await sharp({ create: { width: 120, height: 120, channels: 3, background: '#26a579' } }).png().toBuffer();
+const fixtureDirectory = mkdtempSync(resolve(tmpdir(), 'polaris-composer-video-'));
 let browser;
 try {
+  const fixturePath = resolve(fixtureDirectory, 'sample.mp4');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=64x64:r=10', '-t', '0.5',
+    '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', fixturePath]);
+  const videoBuffer = readFileSync(fixturePath);
   browser = await chromium.launch({ channel: process.env.TEST_BROWSER_CHANNEL || 'chrome' });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.addInitScript(() => {
+    Object.defineProperty(crypto, 'randomUUID', { configurable: true, value: undefined });
+  });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/*', route => {
+    assert.equal(new URL(route.request().url()).origin, origin, 'No external network access');
+    return route.fallback();
+  });
   let storedPost;
   const requests = [];
   let delayNextSave = false;
@@ -127,6 +150,38 @@ try {
   let holdSubmission;
   let releaseSubmission;
   const submissions = [];
+  const uploads = [];
+  let holdUpload;
+  let releaseUpload;
+  let nextUploadFailure = false;
+  let nextUploadInvalid = false;
+  const videoIds = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'];
+  handleVideoUpload = async (request, response) => {
+    assert.equal(request.headers['content-type'], 'video/mp4');
+    assert.match(request.headers['x-upload-request-id'], /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i);
+    assert.ok(decodeURIComponent(request.headers['x-file-name']).endsWith('.mp4'));
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), videoBuffer, 'MP4 is sent as raw original bytes, never JSON or multipart');
+    const video = { id: videoIds[uploads.length % 2], name: 'sample.mp4', bytes: videoBuffer.length, width: 64, height: 64, durationSeconds: 0.5 };
+    uploads.push(video);
+    const failure = nextUploadFailure;
+    const invalid = nextUploadInvalid;
+    nextUploadFailure = false;
+    nextUploadInvalid = false;
+    if (holdUpload) {
+      holdUpload();
+      holdUpload = null;
+      await new Promise(resolveUpload => { releaseUpload = resolveUpload; });
+    }
+    response.writeHead(failure ? 503 : 201, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(failure ? { code: 'POSTIZ_UPLOAD_FAILED', error: 'Synthetic video failure' }
+      : { video: invalid ? { ...video, id: 'invalid-id' } : video }));
+  };
+  await page.route('**/api/media/uploads**', async route => {
+    if (route.request().method() === 'POST') await route.continue();
+    else await route.fulfill({ contentType: 'video/mp4', body: videoBuffer });
+  });
   await page.route('**/api/posts**', async route => {
     const request = route.request();
     const body = request.postDataJSON();
@@ -176,7 +231,7 @@ try {
       const rejectedCount = storedPost?.targets.filter(target => target.status === 'rejected').length || 0;
       const acceptedCount = storedPost?.targets.filter(target => target.status === 'accepted').length || 0;
       const status = rejectedCount ? 'attention' : acceptedCount ? 'pushed' : 'draft';
-      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: false, status, platforms: [], rejectedCount,
+      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: Boolean(storedPost.imageUrl), hasVideo: Boolean(storedPost.videoMediaId), status, platforms: [], rejectedCount,
         targetCount: storedPost.targets.length, acceptedCount, deletable: storedPost.editable }] : [];
       await route.fulfill({ json: { posts, total: posts.length, counts: { all: posts.length, draft: status === 'draft' ? posts.length : 0,
         pushing: 0, pushed: status === 'pushed' ? posts.length : 0, attention: rejectedCount ? posts.length : 0 } } });
@@ -229,7 +284,8 @@ try {
       const timestamp = new Date().toISOString();
       storedPost = {
         id: request.method() === 'PATCH' ? pathname.split('/').at(-1) : '11111111-1111-4111-8111-111111111111', title: body.title || '', content: body.content,
-        imageUrl: body.imageDataUrl === null ? null : body.imageDataUrl || storedPost?.imageUrl || null,
+        imageUrl: body.videoMediaId || body.imageDataUrl === null ? null : body.imageDataUrl || storedPost?.imageUrl || null,
+        videoMediaId: body.imageDataUrl ? null : body.videoMediaId === undefined ? storedPost?.videoMediaId ?? null : body.videoMediaId,
         version: (storedPost?.version || 0) + 1, editable: true, frozenReason: null,
         createdAt: timestamp, updatedAt: timestamp,
         targets: body.integrationIds.map(integrationId => ({ integrationId, platform: accounts.find(account => account.id === integrationId).identifier,
@@ -239,6 +295,7 @@ try {
     await route.fulfill({ json: { post: storedPost } });
   });
   await page.goto(origin);
+  assert.equal(await page.evaluate(() => typeof crypto.randomUUID), 'undefined', 'LAN HTTP has no crypto.randomUUID; native uploads must still work');
   const uploadResults = await page.evaluate(async compiledSource => {
     const imageUpload = {};
     new Function('exports', compiledSource)(imageUpload);
@@ -336,7 +393,7 @@ try {
   await text.fill('Draft content that stays local until pushed.');
   const maximumSizeImage = Buffer.alloc(30 * 1024 * 1024);
   imageBuffer.copy(maximumSizeImage);
-  const imageInput = page.getByLabel('Upload post image', { exact: true });
+  const imageInput = page.getByLabel('Upload post media', { exact: true });
   await imageInput.setInputFiles({ name: '30mb.png', mimeType: 'image/png', buffer: maximumSizeImage });
   await page.locator('.post-media-thumbnail img').waitFor();
   const uploadedPreview = await page.locator('.post-media-thumbnail img').getAttribute('src');
@@ -712,9 +769,228 @@ try {
     status: 'accepted', postizPostId: 'background-draft', auditId: 'background-audit' })) };
   await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
   await page.locator('.post-editor-target.accepted').waitFor();
+  console.log('PASS: original composer, image, copy/delete, review, autosave and async submission safeguards.');
+
+  // MP4 stays an independent raw upload; only a validated local id becomes draft state.
+  submitAsynchronously = false;
+  storedPost = { ...structuredClone(originalPost), content: 'A video draft', imageUrl: `data:image/png;base64,${imageBuffer.toString('base64')}`,
+    videoMediaId: null, editable: true, frozenReason: null, targets: [] };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  const videoInput = page.getByLabel('Upload post media', { exact: true });
+  const videoPreview = page.locator('.post-media-thumbnail video');
+  const saveDraft = page.getByRole('button', { name: 'Save draft', exact: true });
+  const outerNavigation = page.getByTestId('outer-navigation');
+  const videoFile = { name: 'sample.mp4', mimeType: 'video/mp4', buffer: videoBuffer };
+  const writes = () => requests.filter(request => request.method !== 'GET').length;
+  const expectedOldImage = storedPost.imageUrl;
+  assert.match(await videoInput.getAttribute('accept'), /video\/mp4/);
+  assert.doesNotMatch(await videoInput.getAttribute('accept'), /video\/\*/);
+  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /100 MB|30 MB/);
+  const boundary = await page.evaluate(() => {
+    const maximum = new File([new Uint8Array(100 * 1024 * 1024)], 'limit.mp4', { type: 'video/mp4' });
+    window.testValidateVideoUpload(maximum);
+    const rejected = [];
+    for (const file of [new File([maximum, new Uint8Array(1)], 'too-large.mp4', { type: 'video/mp4' }),
+      new File([], 'empty.mp4', { type: 'video/mp4' }), new File(['mov'], 'other.mov', { type: 'video/quicktime' })]) {
+      try { window.testValidateVideoUpload(file); } catch (error) { rejected.push(error.message); }
+    }
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([maximum, new Uint8Array(1)], 'too-large.mp4', { type: 'video/mp4' }));
+    const input = document.querySelector('input[type=file]');
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return rejected;
+  });
+  assert.deepEqual(boundary, ['This video exceeds 100 MB. Choose an MP4 up to 100 MB.', 'Choose a non-empty MP4 video.', 'Use a JPG, PNG, WebP image or an MP4 video.']);
+  await page.getByRole('alert').filter({ hasText: 'exceeds 100 MB' }).waitFor();
+  assert.equal(uploads.length, 0, 'oversized video is rejected before network work');
+  assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), expectedOldImage);
+  nextUploadFailure = true;
+  await videoInput.setInputFiles(videoFile);
+  await page.getByRole('alert').filter({ hasText: 'Could not save the video' }).waitFor();
+  assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), expectedOldImage, 'failed MP4 preserves the old image');
+  nextUploadInvalid = true;
+  await videoInput.setInputFiles(videoFile);
+  await page.getByRole('alert').filter({ hasText: 'Could not upload this video' }).waitFor();
+  assert.equal(storedPost.videoMediaId, null, 'a malformed successful response cannot become draft media');
+
+  await page.evaluate(() => {
+    window.testRevokedUrls = [];
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = value => { window.testRevokedUrls.push(value); revoke(value); };
+  });
+  const slowStarted = new Promise(resolveStarted => { holdUpload = resolveStarted; });
+  await text.fill('Text typed just before a slow video upload');
+  await videoInput.setInputFiles(videoFile);
+  await slowStarted;
+  await page.locator('.asset-video-progress').filter({ hasText: 'Validating and saving' }).waitFor();
+  assert.match(await videoPreview.getAttribute('src'), /^blob:/);
+  const localPreviewUrl = await videoPreview.getAttribute('src');
+  await videoPreview.evaluate(element => new Promise((resolveReady, rejectReady) => {
+    if (element.readyState >= 1) resolveReady();
+    else { element.onloadedmetadata = resolveReady; element.onerror = () => rejectReady(new Error('Local MP4 cannot be played')); }
+  }));
+  assert.equal(await videoPreview.evaluate(element => element.videoWidth), 64, 'actual H.264 MP4 metadata plays locally');
+  const writesDuringUpload = writes();
+  assert.equal(await saveDraft.isDisabled(), true);
+  assert.equal(await push.isDisabled(), true);
+  assert.equal(await outerNavigation.isDisabled(), true, 'outer navigation shares the synchronous upload lock');
+  assert.equal(await page.getByRole('button', { name: 'Back to posts', exact: true }).isDisabled(), true);
+  assert.equal(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }), true, 'closing the page warns during upload, even before a usable id exists');
+  await page.waitForTimeout(1400);
+  assert.equal(writes(), writesDuringUpload, 'an already queued autosave cannot save during server validation');
+  await page.getByRole('button', { name: 'Cancel upload', exact: true }).click();
+  const releaseCancelledUpload = releaseUpload;
+  assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), expectedOldImage, 'cancel restores old image');
+  assert.equal(await outerNavigation.isEnabled(), true);
+  assert.ok(await page.evaluate(value => window.testRevokedUrls.includes(value), localPreviewUrl), 'cancel revokes the local URL');
+
+  const replacementStarted = new Promise(resolveStarted => { holdUpload = resolveStarted; });
+  await videoInput.setInputFiles(videoFile);
+  await replacementStarted;
+  releaseCancelledUpload();
+  await page.waitForTimeout(100);
+  assert.equal(await outerNavigation.isDisabled(), true, 'late old finally cannot unlock a newer upload');
+  assert.equal(await videoInput.isDisabled(), true);
+  const firstVideoId = uploads.at(-1).id;
+  releaseUpload();
+  await page.waitForFunction(expected => document.querySelector('.post-media-thumbnail video')?.getAttribute('src') === `/api/media/uploads/${expected}`, firstVideoId);
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.videoMediaId, firstVideoId);
+  assert.equal(storedPost.imageUrl, null, 'a saved video atomically clears the image');
+  assert.equal(await page.locator('.post-media-thumbnail img').count(), 0);
+  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /100 MB|30 MB/);
+
+  // A save response for image=='' must not discard a different, newly selected video id.
+  delayNextSave = true;
+  const oldSaveStarted = new Promise(resolveStarted => { holdSave = resolveStarted; });
+  await text.fill('Old save snapshot with the first video');
+  await oldSaveStarted;
+  const secondUploadCompleted = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  await secondUploadCompleted;
+  const secondVideoId = uploads.at(-1).id;
+  await page.waitForFunction(expected => document.querySelector('.post-media-thumbnail video')?.getAttribute('src') === `/api/media/uploads/${expected}`, secondVideoId);
+  assert.notEqual(secondVideoId, firstVideoId);
+  releaseSave();
+  await page.waitForFunction(expected => document.querySelector('.post-media-thumbnail video')?.getAttribute('src') === `/api/media/uploads/${expected}`
+    && document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'), secondVideoId);
+  assert.equal(storedPost.videoMediaId, secondVideoId, 'the newer id still dirties and autosaves after the old save completes');
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await videoPreview.waitFor();
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${secondVideoId}`, 'reopening uses the durable id');
+  const copiedVideoLoaded = page.waitForResponse(response => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/posts/22222222-2222-4222-8222-222222222222');
+  await page.getByRole('button', { name: 'Copy as new draft', exact: true }).click();
+  await copiedVideoLoaded;
+  await page.waitForFunction(() => !document.querySelector('input[type=file]')?.disabled);
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${secondVideoId}`, 'copy shares the local media reference');
+
+  const cancelledReplacementStarted = new Promise(resolveStarted => { holdUpload = resolveStarted; });
+  await videoInput.setInputFiles(videoFile);
+  await cancelledReplacementStarted;
+  await page.getByRole('button', { name: 'Cancel upload', exact: true }).click();
+  releaseUpload();
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${secondVideoId}`, 'cancelled replacement preserves old video');
+  nextUploadFailure = true;
+  await videoInput.setInputFiles(videoFile);
+  await page.getByRole('alert').filter({ hasText: 'Could not save the video' }).waitFor();
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${secondVideoId}`, 'failed replacement preserves old video');
+  await videoInput.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: imageBuffer });
+  await page.locator('.post-media-thumbnail img').waitFor();
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.videoMediaId, null, 'image replacement clears video reference');
+  assert.ok(storedPost.imageUrl.startsWith('data:image/'));
+  const instagramUploadCompleted = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  await instagramUploadCompleted;
+  await page.waitForFunction(() => document.querySelector('.post-media-thumbnail video')?.getAttribute('src')?.startsWith('/api/media/uploads/'));
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  await addPlatform.click();
+  await page.getByRole('checkbox', { name: /Photo desk/ }).check();
+  await page.getByRole('checkbox', { name: /Photo desk/ }).press('Escape');
+  assert.equal(await push.isEnabled(), true, 'video satisfies Instagram media validation');
+  const instagramVideoId = storedPost.videoMediaId;
+  submitAsynchronously = true;
+  await push.click();
+  await page.locator('.post-editor-target.submitting').waitFor();
+  assert.equal(storedPost.videoMediaId, instagramVideoId);
+  assert.equal(await outerNavigation.isEnabled(), true, '202 releases navigation after the video reference has been saved');
+  await page.getByRole('button', { name: 'Back to posts', exact: true }).click();
+  await page.locator('.posts-view').waitFor();
+  await page.locator('.posts-row-thumb [aria-label="Post video"]').waitFor();
+  assert.equal(await page.locator('.posts-row-thumb [aria-label="Post video"]').count(), 1);
+  assert.equal(await page.locator('.posts-row-thumb video').count(), 0, 'listing never downloads full videos');
+
+  // Forcible editor replacement aborts and isolates its old completion from a new draft session.
+  storedPost = undefined;
+  await page.goto(origin);
+  const abandonedStarted = new Promise(resolveStarted => { holdUpload = resolveStarted; });
+  await videoInput.setInputFiles(videoFile);
+  await abandonedStarted;
+  await page.evaluate(() => window.dispatchEvent(new Event('test-editor-reset')));
+  releaseUpload();
+  await page.waitForTimeout(1400);
+  assert.equal(await videoPreview.count(), 0);
+  assert.equal(storedPost, undefined, 'late uploaded id cannot leak into a replacement session');
+  const videoOnlyCompleted = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  await videoOnlyCompleted;
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.ok(storedPost.videoMediaId, 'a video-only new draft is not mistaken for an untouched page');
+  assert.equal(storedPost.content, '');
+  assert.equal(storedPost.imageUrl, null);
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${storedPost.videoMediaId}`, 'new-to-id upgrade keeps the successful attachment');
+  await page.getByRole('button', { name: 'Remove video', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.videoMediaId, null, 'removing the video saves an explicit null reference');
+
+  // Back waits for the latest snapshot, and does not permit a new upload in that wait window.
+  delayNextSave = true;
+  const leavingSaveStarted = new Promise(resolveStarted => { holdSave = resolveStarted; });
+  await text.fill('Earlier snapshot before leaving');
+  await leavingSaveStarted;
+  await text.fill('Latest snapshot before leaving');
+  await page.getByRole('button', { name: 'Back to posts', exact: true }).click();
+  assert.equal(await videoInput.isDisabled(), true);
+  assert.equal(await text.isDisabled(), true);
+  assert.equal(await outerNavigation.isDisabled(), true);
+  const uploadsBeforeLeaving = uploads.length;
+  await videoInput.setInputFiles(videoFile);
+  assert.equal(uploads.length, uploadsBeforeLeaving, 'return-to-list save cannot admit a new upload');
+  releaseSave();
+  await page.locator('.posts-row').first().waitFor();
+  assert.equal(storedPost.content, 'Latest snapshot before leaving', 'Back flushes a newer edit after an older autosave');
+
+  // A delayed explicit Reload cannot overwrite a video selected while its old GET was pending.
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  conflictNextSave = true;
+  await text.fill('A conflict that requires reloading');
+  await page.getByRole('alert').filter({ hasText: 'changed in another tab' }).waitFor();
+  const reloadStarted = new Promise(resolveStarted => { holdRead = resolveStarted; });
+  await page.getByRole('button', { name: 'Reload post', exact: true }).click();
+  await reloadStarted;
+  assert.equal(await videoInput.isDisabled(), true);
+  assert.equal(await text.isDisabled(), true);
+  assert.equal(await outerNavigation.isDisabled(), true);
+  const uploadsBeforeReloading = uploads.length;
+  await videoInput.setInputFiles(videoFile);
+  assert.equal(uploads.length, uploadsBeforeReloading, 'reload locks media until its server snapshot settles');
+  releaseRead();
+  await page.getByRole('button', { name: 'Reload post', exact: true }).waitFor({ state: 'hidden' });
+  assert.equal(await videoInput.isEnabled(), true);
+  assert.equal(await outerNavigation.isEnabled(), true, 'reload restores the outer navigation lock');
+  assert.equal(await text.inputValue(), 'Latest snapshot before leaving');
   assert.deepEqual(errors, []);
-  console.log('PASS: compact picker, image upload, autosave flush, push/retry, mobile layout; safe deletion and copy; rejected sync, audit-bound individual/bulk resubmit, stale-poll protection, hidden/in-flight guards, preserved unsaved fields/selection, neutral copy and list attention counts.');
+  console.log('PASS: original composer safeguards; raw MP4 upload, 100 MiB boundary, local playback, validation-stage busy/navigation guards, failure/cancel recovery, stale completion fencing, save/reopen/copy, image/video exclusion, Instagram and async 202 navigation.');
 } finally {
   if (browser) await browser.close();
   await new Promise(resolveClosed => server.close(resolveClosed));
+  rmSync(fixtureDirectory, { recursive: true, force: true });
 }

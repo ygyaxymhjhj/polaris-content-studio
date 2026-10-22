@@ -73,7 +73,7 @@ test("accepted response is 202 and registers only a post-response worker wakeup"
 });
 
 test("role is sourced from the session and forged identity fields are rejected", async () => {
-  for (const field of ["userId", "isAdmin", "publishedBy", "publishedByName", "ownerHash"]) {
+  for (const field of ["userId", "isAdmin", "publishedBy", "publishedByName", "ownerHash", "uploadedMedia", "postizPath"]) {
     assert.equal((await route.POST(createRequest({ ...validBody, [field]: "forged" }))).status, 400);
   }
   assert.equal(calls.enqueues.length, 0);
@@ -84,7 +84,7 @@ test("role is sourced from the session and forged identity fields are rejected",
 
 test("bounded malformed/non-string payloads are refused before queueing", async () => {
   for (const body of ["{", "null", "[]", "123", '"text"']) assert.equal((await route.POST(createRequest(body))).status, 400);
-  for (const field of ["assetId", "integrationId", "content", "imageUrl", "publishAt", "projectId", "platform", "accountName", "requestId", "expectedAuditId"]) {
+  for (const field of ["assetId", "integrationId", "content", "imageUrl", "videoMediaId", "publishAt", "projectId", "platform", "accountName", "requestId", "expectedAuditId"]) {
     for (const invalid of [null, 42, true, {}, []]) assert.equal((await route.POST(createRequest({ ...validBody, [field]: invalid }))).status, 400);
   }
   assert.equal((await route.POST(createRequest({ ...validBody, content: "x".repeat(2_000_000) }))).status, 400);
@@ -99,6 +99,18 @@ test("request identity, source identity and legacy scheduling inputs remain vali
   }
   assert.equal(calls.enqueues.length, 0);
   assert.equal((await route.POST(createRequest({ ...validBody, publishAt: "2026-10-19T12:00:00Z" }))).status, 202);
+});
+
+test("video submissions accept only a local UUID and reject image/video combinations before enqueue", async () => {
+  const videoMediaId = "44444444-4444-4444-8444-444444444444";
+  for (const patch of [{ videoMediaId: "invalid" }, { videoMediaId: "https://media.test/clip.mp4" },
+    { videoMediaId, imageUrl: "https://media.test/photo.png" }]) {
+    assert.equal((await route.POST(createRequest({ ...validBody, ...patch }))).status, 400);
+  }
+  assert.equal(calls.enqueues.length, 0);
+  assert.equal((await route.POST(createRequest({ ...validBody, videoMediaId }))).status, 202);
+  assert.equal(calls.enqueues[0].videoMediaId, videoMediaId);
+  assert.equal(calls.enqueues[0].imageUrl, undefined);
 });
 
 test("local ownership and active/unknown conflicts do not trigger worker wakeups", async () => {

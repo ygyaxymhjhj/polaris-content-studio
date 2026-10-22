@@ -1,6 +1,6 @@
 # Manual posts (Overview and Posts)
 
-Overview and Posts let a signed-in member write a post by hand, attach one image, and hand it to
+Overview and Posts let a signed-in member write a post by hand, attach one image or one MP4, and hand it to
 Postiz as a **draft**. Polaris never publishes and never schedules: promoting the draft stays a
 human decision inside Postiz. The AI workspace, its projects and their export flow are unchanged.
 
@@ -13,7 +13,7 @@ human decision inside Postiz. The AI workspace, its projects and their export fl
 - **Posts** (`/?view=posts`) is the list: status tabs with live counts, search over the title and
   body, platform/account/edited-within filters, and paging. A row opens the editor; the row actions
   copy the post as a new draft or delete a purely local one with a visible text button.
-- **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and one image share a
+- **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and one media attachment share a
   compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
   usernames and multi-selection, without avatars or search/filter controls. There is no internal-title field, character counter, profile group,
   simulated feed, publish-now option or scheduler. The right-hand summary lists chosen accounts,
@@ -78,10 +78,10 @@ engine, so a simultaneous administrator change can still race with creation of t
 ## Rules worth knowing before using it
 
 - **Pushing is per account.** Each selected account receives its own Postiz draft of the same text
-  and image. Accounts with a current non-rejected acceptance are never submitted again; a failed account can be
+  and attachment. Accounts with a current non-rejected acceptance are never submitted again; a failed account can be
   retried on its own. The post is not blocked for everyone when one platform refuses it, and
-  Instagram alone requires an image.
-- **A successful hand-off freezes the text and image.** While any account is accepted, rejected, submitting
+  Instagram alone requires an image or video.
+- **A successful hand-off freezes the text and attachment.** While any account is accepted, rejected, submitting
   or unconfirmed, the editor is read-only and the account selection cannot change, so every account
   received the same content. To change the wording afterwards, use *Copy as new draft* and submit
   the copy; the original draft stays in Postiz for an administrator to edit there.
@@ -100,6 +100,14 @@ engine, so a simultaneous administrator change can still race with creation of t
 - **Images.** One JPG/PNG/WebP original up to 30 MiB (shown as 30 MB in the UI). The browser optimizes
   it to at most 1 MiB and a 2048 px longest edge before sending it; server validation and request
   limits are unchanged. Remote image URLs are not accepted for manual posts.
+- **Video references.** POST/PATCH accept `videoMediaId` as an omitted field, `null` or an uploaded
+  local UUID. On PATCH, omission keeps the stored attachment; `null` removes only the video. Setting
+  a video clears all image columns, and setting an image clears the video reference. Nonempty image
+  data and a video in one request are rejected. Owner validation shares the version/frozen save
+  transaction and is also enforced by storage helpers. Details expose `videoMediaId` (or `null`),
+  and list rows expose `hasVideo`; preview uses `/api/media/uploads/:id`. Copies reuse the same
+  owner's immutable upload receipt without copying targets. Removing or deleting a local draft
+  does not delete shared upstream media. Upload limits and readiness are covered in `docs/video-uploads.md`.
 - **Draft content is not publication.** No platform character budget is displayed or enforced by
   the composer; the bounded local storage limit remains. Postiz may refuse invalid content, and
   publication-specific validation is handled when reviewing/promoting a draft in Postiz.

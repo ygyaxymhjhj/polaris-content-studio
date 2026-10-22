@@ -153,6 +153,24 @@ CREATE TABLE IF NOT EXISTS social_notification_outbox (
   CONSTRAINT social_notification_audit_fk FOREIGN KEY (publish_audit_id) REFERENCES social_publishes(id)
 ) ENGINE=InnoDB;
 
+-- Uploaded videos are immutable, owner-scoped receipts; the media itself stays in Postiz.
+CREATE TABLE IF NOT EXISTS video_uploads (
+  id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  owner_user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  checksum CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  postiz_media_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  postiz_path VARCHAR(4096) NOT NULL,
+  filename VARCHAR(255) NOT NULL,
+  byte_size INT UNSIGNED NOT NULL,
+  width INT UNSIGNED NOT NULL,
+  height INT UNSIGNED NOT NULL,
+  duration_seconds DOUBLE NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY video_uploads_owner_request (owner_user_id, request_id),
+  CONSTRAINT video_uploads_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- Manual posts are written by hand in Polaris and never join an AI project snapshot. There is no
 -- media library yet, so the validated image (and its list thumbnail) live inline as data URLs;
 -- the thumbnail column keeps list payloads small without returning the full image.
@@ -166,6 +184,7 @@ CREATE TABLE IF NOT EXISTS posts (
   image_name VARCHAR(255) NULL,
   image_width INT UNSIGNED NULL,
   image_height INT UNSIGNED NULL,
+  video_media_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
   version INT UNSIGNED NOT NULL DEFAULT 1,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -233,6 +252,7 @@ CREATE TABLE IF NOT EXISTS draft_submissions (
 -- The app only reads/writes its own database; schema changes run separately as admin.
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE ON polaris_content_studio.draft_submissions TO 'polaris_app'@'%';
+GRANT SELECT, INSERT ON polaris_content_studio.video_uploads TO 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.projects TO 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.users TO 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.sessions TO 'polaris_app'@'%';

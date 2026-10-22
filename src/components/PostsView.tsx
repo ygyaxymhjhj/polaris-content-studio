@@ -12,7 +12,8 @@ import {
   RefreshCw,
   Search,
   Send,
-  Trash2
+  Trash2,
+  Video
 } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
@@ -307,7 +308,7 @@ export default function PostsView({
             <article className="posts-row" key={post.id}>
               <button type="button" className="posts-row-open" onClick={() => onOpenPost(post.id)} aria-label={`${t("Open post")}: ${post.title || post.excerpt.slice(0, 60)}`}>
                 <span className="posts-row-thumb">
-                  {post.hasImage ? (
+                  {post.hasVideo ? <Video size={24} aria-label={t("Post video")} /> : post.hasImage ? (
                     <img src={`/api/posts/${post.id}/image?size=thumb&v=${post.imageVersion}`} alt="" loading="lazy" />
                   ) : (
                     <ImageOff size={17} aria-hidden="true" />
@@ -364,7 +365,7 @@ export default function PostsView({
             <>
               <span className="posts-empty-icon"><Send size={24} aria-hidden="true" /></span>
               <h3>{t("Create your first post")}</h3>
-              <p>{t("Write the text and attach one image; Polaris hands it to Postiz as a draft for review.")}</p>
+              <p>{t("Write the text and add an image or MP4, then submit a draft for review.")}</p>
               <div className="posts-empty-actions">
                 <button type="button" className="primary-button" onClick={onNewPost}><Plus size={15} /> {t("New post")}</button>
                 {!accounts.length && !accountsLoading && <button type="button" className="secondary-button" onClick={onOpenAccounts}>{t("Connect an account")}</button>}

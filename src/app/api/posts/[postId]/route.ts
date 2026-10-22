@@ -3,7 +3,7 @@ import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
-import { deleteManualPost, getManualPost, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
+import { deleteManualPost, getManualPost, PostMediaValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
 import { listAccountOwners } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
@@ -24,9 +24,10 @@ const updateSchema = z.object({
   content: z.string().max(POST_CONTENT_MAX_LENGTH).optional(),
   /** Omitted keeps the stored image, null removes it, a data URL replaces it. */
   imageDataUrl: z.string().max(3_000_000).nullable().optional(),
+  videoMediaId: z.string().uuid().nullable().optional(),
   imageName: z.string().max(POST_TITLE_MAX_LENGTH).optional(),
   integrationIds: z.array(z.string().regex(integrationIdPattern)).max(MAX_POST_TARGETS).optional()
-}).strict();
+}).strict().refine(value => !value.imageDataUrl || !value.videoMediaId);
 
 async function readPostId(context: { params: Promise<{ postId: string }> }): Promise<string | null> {
   const { postId } = await context.params;
@@ -69,6 +70,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ p
   const patch: Parameters<typeof updateManualPost>[3] = {};
   if (parsed.data.title !== undefined) patch.title = parsed.data.title.trim();
   if (parsed.data.content !== undefined) patch.content = parsed.data.content;
+  if (parsed.data.videoMediaId !== undefined) patch.videoMediaId = parsed.data.videoMediaId;
   if (parsed.data.imageDataUrl === null) {
     patch.image = { kind: "remove" };
   } else if (typeof parsed.data.imageDataUrl === "string") {
@@ -102,6 +104,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ p
     }
     return json({ post: result.post });
   } catch (error) {
+    if (error instanceof PostMediaValidationError) return failure(error.message, 400, "INVALID_MEDIA");
     console.error("[posts] update failed", error);
     return failure("The post could not be saved. Keep this page open and try again.", 503, "STORAGE_UNAVAILABLE");
   }

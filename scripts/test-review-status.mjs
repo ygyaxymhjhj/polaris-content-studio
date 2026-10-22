@@ -13,7 +13,7 @@ const compilerOptions = { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarge
 const compile = source => ts.transpileModule(source, { compilerOptions }).outputText;
 try {
   await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(temporaryDirectory, "node_modules"), "dir");
-  for (const filename of ["types.ts", "social-account-platform.ts", "submission-status.ts", "draft-submission-types.ts", "draft-submission-client.ts", "image-upload.ts", "project-schema.ts", "i18n.tsx"]) {
+  for (const filename of ["types.ts", "social-account-platform.ts", "client-id.ts", "submission-status.ts", "draft-submission-types.ts", "draft-submission-client.ts", "image-upload.ts", "video-types.ts", "project-schema.ts", "i18n.tsx"]) {
     const source = await fs.readFile(`src/lib/${filename}`, "utf8");
     await fs.writeFile(path.join(temporaryDirectory, filename.replace(/\.tsx?$/, ".js")), compile(source));
   }
@@ -24,6 +24,7 @@ try {
   const { mergeDraftTask } = require(path.join(temporaryDirectory, "draft-submission-client.js"));
   const { isDraftSubmissionTask } = require(path.join(temporaryDirectory, "draft-submission-types.js"));
   const { getMatchingSocialAccounts } = require(path.join(temporaryDirectory, "social-account-platform.js"));
+  const { createClientId } = require(path.join(temporaryDirectory, "client-id.js"));
   const submittedAt = "2026-10-14T12:00:00.000Z";
   const detectedAt = "2026-10-15T12:00:00.000Z";
   const asset = {
@@ -167,7 +168,7 @@ try {
   let storedAssets = [rejected];
   const staleEditor = { ...asset, content: "Edited copy", title: "Edited title", publishStatus: "unpublished" };
   bindProductionFunction("saveAsset", {
-    selectedAsset: staleEditor, imageUploading: false, deliveryDraft: JSON.stringify(staleEditor.meta),
+    selectedAsset: staleEditor, imageUploadingRef: { current: false }, deliveryDraft: JSON.stringify(staleEditor.meta),
     rewriteSequence: { current: 0 }, setRewriting: noOperation, getAssetStatusFields,
     setAssets: update => { storedAssets = update(storedAssets); }, setSelectedAsset: noOperation,
     clearCandidates: noOperation, notify: noOperation, t: text => text
@@ -195,7 +196,8 @@ try {
   const submissionContext = {
     currentProjectRef: { current: "project-1" }, packSequence: { current: 1 }, submissionAttempts: { current: new Map() },
     acceptanceFlights: { current: new Set() }, mergeDraftTask, isDraftSubmissionTask,
-    getMatchingSocialAccounts, channelsLoading: false, channelsError: "",
+    imageUploadingRef: { current: false },
+    getMatchingSocialAccounts, createClientId, channelsLoading: false, channelsError: "",
     config, socialAccounts: [{ id: "account-1", identifier: "facebook", name: "Account" }], markSubmissionSucceeded,
     readJson: response => response.json(), t: text => text, notify: noOperation, setSubmissionNotice: noOperation,
     setAssets: update => { submissionAssets = update(submissionAssets); },

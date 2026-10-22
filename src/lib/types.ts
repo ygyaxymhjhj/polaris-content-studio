@@ -87,6 +87,7 @@ export interface ContentAsset {
   cta?: string;
   deepLink?: string;
   imageUrl?: string;
+  videoMediaId?: string;
   publishStatus?: PublishStatus;
   reviewStatus?: ReviewStatus;
   rejectedDetectedAt?: string;

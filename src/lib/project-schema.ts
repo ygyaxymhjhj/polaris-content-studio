@@ -14,14 +14,15 @@ const before = z.object({ title: str, content: str, cta: str.optional(), meta: m
 const asset = z.object({
   id: str, platform, assetType: str, generationMode: z.enum(["ai", "local"]).optional(), variant: str.optional(),
   title: str, hook: str.optional(), content: str, cta: str.optional(), deepLink: str.optional(),
-  imageUrl: imageUrl.optional(), publishStatus: z.enum(["unpublished", "publishing", "pending_unknown", "drafted", "queued", "published", "failed"]).optional(),
+  imageUrl: imageUrl.optional(), videoMediaId: z.string().uuid().optional(),
+  publishStatus: z.enum(["unpublished", "publishing", "pending_unknown", "drafted", "queued", "published", "failed"]).optional(),
   reviewStatus: z.enum(["unknown", "pending", "rejected"]).optional(), rejectedDetectedAt: str.optional(),
   submission: z.object({ auditId: str.nullable(), postId: str.nullable(), submittedAt: str }).optional(),
   submissionTask: z.object({ id: z.string().uuid(), state: z.enum(["queued", "running", "succeeded", "failed", "unknown"]), createdAt: str, warning: str.nullable() }).optional(),
   publishedUrl: str.optional(), publishedAt: str.optional(), publishError: str.optional(), targetAccountId: str.optional(),
   factIds: strings, riskFlags: strings,
   meta: metadata.optional(), updatedAt: str, revisions: z.array(z.object({ at: str, instruction: str, before })).max(40).optional()
-});
+}).refine(value => !value.imageUrl || !value.videoMediaId, { message: "Attach either one image or one video, not both.", path: ["videoMediaId"] });
 export const projectSchema = z.object({
   schemaVersion: z.literal(1), config, sourceText: str, sourceName: str, sourcePending: z.boolean(),
   importedSource: z.object({ text: str, title: str.optional(), sourceUrl: str.optional(), canonical: str.optional(), imageUrl: imageUrl.optional() }).nullable(),
@@ -59,4 +60,11 @@ export function parseSnapshot(value: unknown): ProjectSnapshot {
   });
 }
 export interface SavedProject { id: string; name: string; version: number; updatedAt: string; assetCount: number; }
-export const saveProjectSchema = z.object({ id: z.uuid(), version: z.number().int().min(0).max(2147483646), snapshot: projectSchema });
+// Reject upstream media fields on writes without tightening historical snapshot reads.
+const saveAsset = asset.safeExtend({
+  uploadedMedia: z.never().optional(), postizMediaId: z.never().optional(), postizPath: z.never().optional()
+});
+export const saveProjectSchema = z.object({
+  id: z.uuid(), version: z.number().int().min(0).max(2147483646),
+  snapshot: projectSchema.extend({ assets: z.array(saveAsset).max(200) })
+});

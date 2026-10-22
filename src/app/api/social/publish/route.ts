@@ -15,13 +15,14 @@ const schema = z.object({
   integrationId: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/),
   content: z.string().trim().min(1).max(20000),
   imageUrl: z.string().max(MAX_IMAGE_DATA_URL_LENGTH).optional(),
+  videoMediaId: z.string().uuid().optional(),
   projectId: z.string().uuid().optional(),
   platform: z.string().max(32).optional(),
   accountName: z.string().max(255).optional(),
   requestId: z.string().uuid(),
   expectedAuditId: z.string().uuid().optional(),
   publishAt: z.string().refine(value => !value || Number.isFinite(Date.parse(value))).optional()
-}).strict();
+}).strict().refine(value => !value.imageUrl || !value.videoMediaId);
 const failure = (error: string, status: number, code: string) => NextResponse.json({ error, code }, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function POST(request: NextRequest) {

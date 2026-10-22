@@ -7,6 +7,7 @@ import { claimPostTarget, readSubmissionTarget, type ClaimTargetRow, type Submit
 import { databaseEpoch, getManualPost } from "@/lib/posts";
 import { createStrictDraft, fetchPostizIntegrations, fetchPostizPostDetails } from "@/lib/postiz";
 import { recordSocialSubmission } from "@/lib/social-notifications";
+import { getVideoUpload } from "@/lib/video-uploads";
 import type { DraftSubmissionState, DraftSubmissionTask } from "./draft-submission-types";
 
 const utc = (date: Date) => date.toISOString().slice(0, 23).replace("T", " ");
@@ -18,6 +19,7 @@ const AUDIT_WARNING = "The draft was accepted, but local tracking could not be s
 type Snapshot = {
   content: string;
   imageUrl: string | null;
+  videoMediaId?: string;
   platform: string;
   accountName: string;
   version?: number;
@@ -109,9 +111,11 @@ export async function enqueueManualSubmission(options: {
       await insertTask(connection, {
         id: taskId, ownerUserId: options.userId, kind: "manual", sourceId: options.postId,
         integrationId: options.integrationId, attemptId: frozen.attemptId,
-        requestKey: digest(["manual", frozen.attemptId]), fingerprint: digest([options.postId, options.integrationId, options.expectedVersion, options.expectedAuditId]),
+        requestKey: digest(["manual", frozen.attemptId]), fingerprint: digest([options.postId, options.integrationId, options.expectedVersion, options.expectedAuditId,
+          ...(frozen.videoMediaId ? [{ videoMediaId: frozen.videoMediaId }] : [])]),
         activeKey: digest(["manual", options.userId, options.postId, options.integrationId]),
-        snapshot: { content: frozen.content, imageUrl: frozen.imageDataUrl, platform: account?.provider || "unknown",
+        snapshot: { content: frozen.content, imageUrl: frozen.imageDataUrl,
+          ...(frozen.videoMediaId ? { videoMediaId: frozen.videoMediaId } : {}), platform: account?.provider || "unknown",
           accountName: account?.accountName || options.integrationId, version: options.expectedVersion, rejectedBinding }
       });
     }
@@ -127,12 +131,15 @@ export async function enqueueManualSubmission(options: {
 
 export async function enqueueAssetSubmission(input: {
   userId: string; isAdmin: boolean; projectId?: string; assetId: string; integrationId: string;
-  content: string; imageUrl?: string; platform?: string; requestId: string; expectedAuditId?: string;
+  content: string; imageUrl?: string; videoMediaId?: string; platform?: string; requestId: string; expectedAuditId?: string;
 }): Promise<EnqueueOutcome> {
+  if (input.imageUrl && input.videoMediaId) return { kind: "validation", message: "Attach either one image or one video, not both." };
   const account = await getSocialAccount(input.integrationId);
   if (!input.isAdmin && account?.ownerUserId !== input.userId) return { kind: "forbidden", message: "This social account is not assigned to you." };
   const scope = ["asset", input.userId, input.projectId || null, input.assetId, input.integrationId];
-  const fingerprint = digest([...scope, input.content, input.imageUrl || null, input.expectedAuditId || null]);
+  // Keep the legacy image/text digest unchanged so successful pre-video snapshots still deduplicate.
+  const fingerprint = digest([...scope, input.content, input.imageUrl || null, input.expectedAuditId || null,
+    ...(input.videoMediaId ? [{ videoMediaId: input.videoMediaId }] : [])]);
   const requestKey = digest([input.userId, input.requestId]);
   const activeKey = digest(scope);
   const connection = await database().getConnection();
@@ -143,6 +150,10 @@ export async function enqueueAssetSubmission(input: {
     if (input.projectId) {
       const [projects] = await connection.execute<RowDataPacket[]>("SELECT id FROM projects WHERE id=? AND owner_hash=? FOR SHARE", [input.projectId, ownerHashFor(input.userId)]);
       if (!projects.length) { await connection.rollback(); return { kind: "forbidden", message: "This project does not belong to you." }; }
+    }
+    if (input.videoMediaId !== undefined && !await getVideoUpload(input.userId, input.videoMediaId, connection)) {
+      await connection.rollback();
+      return { kind: "validation", message: "The video attachment is unavailable in this account." };
     }
     const [existing] = await connection.execute<TaskRow[]>(
       `SELECT * FROM draft_submissions WHERE owner_user_id=? AND
@@ -172,7 +183,8 @@ export async function enqueueAssetSubmission(input: {
     await insertTask(connection, {
       id: taskId, ownerUserId: input.userId, kind: "asset", sourceId: input.assetId, projectId: input.projectId,
       integrationId: input.integrationId, requestKey, fingerprint, activeKey,
-      snapshot: { content: input.content, imageUrl: input.imageUrl || null, platform: account?.provider || input.platform || "unknown",
+      snapshot: { content: input.content, imageUrl: input.imageUrl || null,
+        ...(input.videoMediaId ? { videoMediaId: input.videoMediaId } : {}), platform: account?.provider || input.platform || "unknown",
         accountName: account?.accountName || input.integrationId, rejectedBinding }
     });
     await connection.commit();
@@ -273,6 +285,9 @@ async function executeTask(task: TaskRow): Promise<void> {
       const [projects] = await database().execute<RowDataPacket[]>("SELECT id FROM projects WHERE id=? AND owner_hash=?", [task.project_id, ownerHashFor(task.owner_user_id)]);
       if (!projects.length) throw new Error("The source project is no longer available. No draft was created.");
     }
+    if (snapshot.videoMediaId && snapshot.imageUrl) throw new Error("The frozen snapshot contains both image and video. No draft was created.");
+    const video = snapshot.videoMediaId ? await getVideoUpload(task.owner_user_id, snapshot.videoMediaId) : null;
+    if (snapshot.videoMediaId && !video) throw new Error("The video attachment is unavailable in this account. No draft was created.");
     const live = await fetchPostizIntegrations();
     const liveAccount = live.accounts.find(candidate => candidate.id === task.integration_id);
     if (!live.configured || live.error || !liveAccount || liveAccount.disabled) throw new Error("The target account could not be verified. No draft was created.");
@@ -306,7 +321,9 @@ async function executeTask(task: TaskRow): Promise<void> {
     if (!lease.length) return;
     createStarted = true;
     const result = await createStrictDraft({ integrationId: task.integration_id, content: snapshot.content,
-      imageUrl: snapshot.imageUrl || undefined, platform: liveAccount.identifier || snapshot.platform });
+      imageUrl: snapshot.imageUrl || undefined,
+      ...(video ? { uploadedMedia: { id: video.postizMediaId, path: video.postizPath } } : {}),
+      platform: liveAccount.identifier || snapshot.platform });
     if (result.success) {
       completion = { state: "succeeded", postId: result.postId, warning: result.warning };
       try {

@@ -147,7 +147,8 @@ test("an AI enqueue reads its committed result without requesting a second poole
     "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: "owner", provider: "x", accountName: "Account" }) },
     "@/lib/post-submission": {},
     "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
-    "@/lib/postiz": {}, "@/lib/social-notifications": {}
+    "@/lib/postiz": {}, "@/lib/social-notifications": {},
+    "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } }
   };
   const compiledModule = { exports: {} };
   new Function("require", "module", "exports", compiled)(specifier => dependencies[specifier] ?? nativeRequire(specifier), compiledModule, compiledModule.exports);

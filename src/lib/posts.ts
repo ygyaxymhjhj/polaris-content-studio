@@ -13,6 +13,7 @@ import {
   type PostsCounts
 } from "./post-types";
 import type { ValidatedPostImage } from "./post-media";
+import { getVideoUpload } from "@/lib/video-uploads";
 
 /**
  * Storage for manual posts. Every query is scoped by owner_user_id: unlike AI projects there is no
@@ -41,6 +42,7 @@ interface PostRow extends RowDataPacket {
   image_name: string | null;
   image_width: number | null;
   image_height: number | null;
+  video_media_id: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -64,6 +66,7 @@ interface ListedPostRow extends RowDataPacket {
   title: string;
   excerpt: string;
   has_image: number;
+  has_video: number;
   target_count: number;
   accepted_count: number;
   rejected_count: number;
@@ -104,6 +107,7 @@ const POST_STATUS_CTE = `
       p.id, p.title, p.created_at, p.updated_at,
       LEFT(p.content, 400) AS excerpt,
       (p.image_thumb IS NOT NULL) AS has_image,
+      (p.video_media_id IS NOT NULL) AS has_video,
       (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id) AS target_count,
       (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'accepted') AS accepted_count,
       (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'rejected') AS rejected_count,
@@ -139,6 +143,7 @@ function toListItem(row: ListedPostRow): ManualPostListItem {
     title: String(row.title || ""),
     excerpt: String(row.excerpt || "").replace(/\s+/g, " ").trim(),
     hasImage: Number(row.has_image) === 1,
+    hasVideo: Number(row.has_video) === 1,
     imageVersion: databaseEpoch(row.updated_at),
     status: row.status,
     targetCount: Number(row.target_count),
@@ -193,6 +198,7 @@ export function toPostDetail(row: PostRow, targets: PostTarget[]): ManualPostDet
     title: String(row.title || ""),
     content: String(row.content || ""),
     imageUrl: row.image_data ? `/api/posts/${row.id}/image?v=${imageEpoch}` : null,
+    videoMediaId: row.video_media_id ?? null,
     imageName: row.image_name ? String(row.image_name) : null,
     imageWidth: row.image_width == null ? null : Number(row.image_width),
     imageHeight: row.image_height == null ? null : Number(row.image_height),
@@ -225,7 +231,7 @@ export async function sweepStaleSubmissions(ownerUserId: string): Promise<number
 
 export async function loadPostRow(ownerUserId: string, postId: string): Promise<PostRow | null> {
   const [rows] = await database().execute<PostRow[]>(
-    "SELECT id, title, content, image_data, image_thumb, image_name, image_width, image_height, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=?",
+    "SELECT id, title, content, image_data, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=?",
     [postId, ownerUserId]
   );
   return rows.length ? rows[0] : null;
@@ -308,7 +314,7 @@ export async function listManualPosts(ownerUserId: string, filters: PostListFilt
   const [conditions, ...values] = filterArguments(filters);
   const [rows] = await database().execute<ListedPostRow[]>(
     `${POST_STATUS_CTE}
-     SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.target_count,
+     SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.has_video, r.target_count,
             r.accepted_count, r.rejected_count, r.submitting_count, r.unsettled_count, r.unknown_count, r.platforms, r.status
        FROM post_status r
       WHERE ${conditions ? `(${conditions}) AND ` : ""}(? = 'all' OR r.status = ?)
@@ -327,7 +333,17 @@ export interface CreatePostInput {
   title: string;
   content: string;
   image: ValidatedPostImage | null;
+  videoMediaId?: string | null;
   targets: PostAccountSnapshot[];
+}
+
+export class PostMediaValidationError extends Error {}
+
+async function validatePostMedia(ownerUserId: string, hasImage: boolean, videoMediaId: string | null | undefined, connection: Pick<PoolConnection, "execute">): Promise<void> {
+  if (hasImage && videoMediaId) throw new PostMediaValidationError("Attach either one image or one video, not both.");
+  if (videoMediaId != null && !await getVideoUpload(ownerUserId, videoMediaId, connection)) {
+    throw new PostMediaValidationError("The video attachment is unavailable in this account.");
+  }
 }
 
 export async function createManualPost(ownerUserId: string, input: CreatePostInput): Promise<ManualPostDetail> {
@@ -336,13 +352,15 @@ export async function createManualPost(ownerUserId: string, input: CreatePostInp
   const connection = await database().getConnection();
   try {
     await connection.beginTransaction();
+    await validatePostMedia(ownerUserId, Boolean(input.image), input.videoMediaId, connection);
     await connection.execute(
-      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, version, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [
         id, ownerUserId, input.title, input.content,
         input.image?.dataUrl ?? null, input.image?.thumbnailDataUrl ?? null,
         input.image?.filename ?? null, input.image?.width ?? null, input.image?.height ?? null,
+        input.videoMediaId ?? null,
         now, now
       ]
     );
@@ -375,6 +393,8 @@ export type UpdatePostPatch = {
   title?: string;
   content?: string;
   image?: { kind: "keep" } | { kind: "set"; image: ValidatedPostImage } | { kind: "remove" };
+  /** Omitted keeps the reference, null removes only the video, an ID replaces all media. */
+  videoMediaId?: string | null;
   targets?: PostAccountSnapshot[];
 };
 
@@ -389,7 +409,7 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
   try {
     await connection.beginTransaction();
     const [rows] = await connection.execute<PostRow[]>(
-      "SELECT id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
+      "SELECT id, image_data, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
       [postId, ownerUserId]
     );
     if (!rows.length) {
@@ -406,6 +426,15 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
       return { kind: "frozen" };
     }
 
+    if (patch.image?.kind === "set" && patch.videoMediaId) {
+      throw new PostMediaValidationError("Attach either one image or one video, not both.");
+    }
+    const setsVideo = patch.videoMediaId != null;
+    const setsImage = patch.image?.kind === "set";
+    const videoMediaId = setsImage ? null : patch.videoMediaId === undefined ? rows[0].video_media_id : patch.videoMediaId;
+    const hasImage = setsImage || (!setsVideo && patch.image?.kind !== "remove" && Boolean(rows[0].image_data));
+    await validatePostMedia(ownerUserId, hasImage, videoMediaId, connection);
+
     const assignments: string[] = [];
     const values: SqlValue[] = [];
     if (patch.title !== undefined) { assignments.push("title=?"); values.push(patch.title); }
@@ -414,9 +443,18 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
       if (patch.image.kind === "set") {
         assignments.push("image_data=?", "image_thumb=?", "image_name=?", "image_width=?", "image_height=?");
         values.push(patch.image.image.dataUrl, patch.image.image.thumbnailDataUrl, patch.image.image.filename, patch.image.image.width, patch.image.image.height);
-      } else if (patch.image.kind === "remove") {
+      } else if (patch.image.kind === "remove" && !setsVideo) {
         assignments.push("image_data=NULL", "image_thumb=NULL", "image_name=NULL", "image_width=NULL", "image_height=NULL");
       }
+    }
+    if (setsVideo) {
+      assignments.push("image_data=NULL", "image_thumb=NULL", "image_name=NULL", "image_width=NULL", "image_height=NULL");
+    }
+    if (setsImage || patch.videoMediaId === null) {
+      assignments.push("video_media_id=NULL");
+    } else if (patch.videoMediaId != null) {
+      assignments.push("video_media_id=?");
+      values.push(patch.videoMediaId);
     }
     const now = utc(new Date());
     assignments.push("version=version+1", "updated_at=?");
@@ -474,16 +512,17 @@ export async function deleteManualPost(ownerUserId: string, postId: string): Pro
   }
 }
 
-/** Copy for a new draft: content and image only. Targets are intentionally dropped so the copy can be re-checked. */
+/** Copy content and media references; targets are dropped so the new draft can be re-checked. */
 export async function duplicateManualPost(ownerUserId: string, postId: string): Promise<ManualPostDetail | null> {
   const row = await loadPostRow(ownerUserId, postId);
   if (!row) return null;
+  await validatePostMedia(ownerUserId, Boolean(row.image_data), row.video_media_id, database());
   const id = randomUUID();
   const now = utc(new Date());
   await database().execute(
-    `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, version, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
-    [id, ownerUserId, row.title, row.content, row.image_data, row.image_thumb, row.image_name, row.image_width, row.image_height, now, now]
+    `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+    [id, ownerUserId, row.title, row.content, row.image_data, row.image_thumb, row.image_name, row.image_width, row.image_height, row.video_media_id ?? null, now, now]
   );
   return getManualPost(ownerUserId, id);
 }

@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { ContentAsset } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n";
+import { getVideoPreviewUrl } from "@/lib/video-types";
 
 interface SocialPreviewProps {
   asset: ContentAsset;
@@ -34,9 +35,11 @@ export default function SocialPreview({
   authorHandle = "polaris_insight"
 }: SocialPreviewProps) {
   const currentImage = imageUrl ?? asset.imageUrl;
+  const currentVideo = asset.videoMediaId ? getVideoPreviewUrl(asset.videoMediaId) : "";
   const platform = asset.platform;
   const t = useTranslation();
   const [slideIndex, setSlideIndex] = useState(0);
+  const videoPreview = currentVideo ? <video key={currentVideo} src={currentVideo} controls preload="metadata" playsInline className="mock-video" aria-label={t("Post video")} /> : null;
 
   const slides = asset.assetType === "carousel" && Array.isArray(asset.meta?.slides)
     ? asset.meta.slides as Array<{ title?: string; body?: string }>
@@ -73,9 +76,9 @@ export default function SocialPreview({
 
             <div className="mock-content-text">{asset.content}</div>
 
-            {currentImage && (
+            {(currentVideo || currentImage) && (
               <div className="mock-image-container x-media">
-                <img
+                {videoPreview || <img
                   src={currentImage}
                   alt={asset.title}
                   className="mock-image"
@@ -85,7 +88,7 @@ export default function SocialPreview({
                     const fallback = e.currentTarget.parentElement?.querySelector(".mock-image-fallback") as HTMLElement;
                     if (fallback) fallback.style.display = "flex";
                   }}
-                />
+                />}
                 <div className="mock-image-fallback" style={{ display: "none" }}>
                   <ImageOff size={16} /> <span>{t("Image preview unavailable")}</span>
                 </div>
@@ -115,9 +118,9 @@ export default function SocialPreview({
 
             <div className="mock-content-text">{asset.content}</div>
 
-            {currentImage && (
+            {(currentVideo || currentImage) && (
               <div className="mock-image-container linkedin-media">
-                <img
+                {videoPreview || <img
                   src={currentImage}
                   alt={asset.title}
                   className="mock-image"
@@ -125,7 +128,7 @@ export default function SocialPreview({
                   onError={(e) => {
                     (e.currentTarget as HTMLElement).style.display = "none";
                   }}
-                />
+                />}
               </div>
             )}
 
@@ -151,9 +154,9 @@ export default function SocialPreview({
 
             <div className="mock-content-text">{asset.content}</div>
 
-            {currentImage && (
+            {(currentVideo || currentImage) && (
               <div className="mock-image-container fb-media">
-                <img
+                {videoPreview || <img
                   src={currentImage}
                   alt={asset.title}
                   className="mock-image"
@@ -161,11 +164,11 @@ export default function SocialPreview({
                   onError={(e) => {
                     (e.currentTarget as HTMLElement).style.display = "none";
                   }}
-                />
-                <div className="fb-domain-bar">
+                />}
+                {!currentVideo && <div className="fb-domain-bar">
                   <span>POLARIS.STUDIO</span>
                   <strong>{asset.title}</strong>
-                </div>
+                </div>}
               </div>
             )}
 
@@ -186,7 +189,7 @@ export default function SocialPreview({
             </div>
 
             <div className="mock-image-container ig-media">
-              {slides.length > 0 ? (
+              {videoPreview || (slides.length > 0 ? (
                 <div className="ig-slide-card">
                   <div className="ig-slide-head">
                     <span className="slide-badge">{t("Slides")} {currentSlideIndex + 1} / {slides.length}</span>
@@ -224,7 +227,7 @@ export default function SocialPreview({
                 <div className="mock-image-fallback">
                   <Sparkles size={20} /> <span>{t("Post image preview")}</span>
                 </div>
-              )}
+              ))}
             </div>
 
             <div className="mock-actions-bar ig-actions">
@@ -258,9 +261,9 @@ export default function SocialPreview({
                 </div>
                 <div className="mock-content-text">{asset.content}</div>
 
-                {currentImage && (
+                {(currentVideo || currentImage) && (
                   <div className="mock-image-container threads-media">
-                    <img
+                    {videoPreview || <img
                       src={currentImage}
                       alt={asset.title}
                       className="mock-image"
@@ -268,7 +271,7 @@ export default function SocialPreview({
                       onError={(e) => {
                         (e.currentTarget as HTMLElement).style.display = "none";
                       }}
-                    />
+                    />}
                   </div>
                 )}
 

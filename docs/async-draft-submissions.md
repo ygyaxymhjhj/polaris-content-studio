@@ -57,6 +57,17 @@ inline snapshots. A remote image is a frozen URL reference, not a copy of remote
 host must retain that image until the worker fetches it; upload failure aborts rather than sending
 text-only content.
 
+Single MP4 attachments use an owner-bound `videoMediaId` instead of image bytes or an upstream path.
+Manual claims read that ID under the post's version/frozen transaction; AI enqueue checks the ID's
+owner in its enqueue transaction. Project saves bulk-check asset video IDs in their save transaction,
+including for administrators; image-only snapshots do not query the video table. An asset's video
+suppresses any article-cover fallback at the caller, and a nonempty image plus video is rejected.
+The worker resolves the immutable ready receipt again for the task owner and supplies its registered
+`{ id, path }` as `uploadedMedia` to `createStrictDraft`, without downloading or uploading the video.
+Queued snapshots contain only the local video ID, never MP4/base64, temporary files or client paths.
+Video fingerprints include that ID; legacy text/image fingerprints retain their previous structure.
+Removing an attachment only unbinds it; shared upload receipts are not automatically deleted.
+
 AI callers supply a UUID `requestId`. Owner-scoped request keys deduplicate replay of that exact
 request; an active owner/project/asset/account key blocks different concurrent payloads and all
 unknown results. A successful snapshot fingerprint deduplicates lost-response retries even with a
@@ -93,6 +104,11 @@ permission changes, owner-only reads, stale/restart recovery and rejected/late-a
 Existing manual-post, manual-review, submission-status and real-browser composer suites also run
 without calling real external services. The adapter does not validate MySQL-specific locking or
 production deployment; no live database migration or upstream smoke test is performed here.
+
+For the local video-reference regressions, run
+`node --test --test-name-pattern=video scripts/test-async-submissions.mjs scripts/test-feishu-submission.mjs`.
+They use the same isolated SQL adapter plus mocked fetch, including a real `createStrictDraft`
+payload assertion that forbids media downloads/uploads. No live Postiz compatibility is implied.
 
 Exactly-once creation across an unavailable external API is impossible without upstream idempotency.
 This implementation deliberately prefers needs-review over automatic replay whenever creation may

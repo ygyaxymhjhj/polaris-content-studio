@@ -77,6 +77,16 @@ node scripts/check-user-roles.mjs
 
 ## 运维
 
+### 视频上传上线前检查
+
+视频上传当前只做本地隔离实现，尚未验收实际 Postiz。上线前由管理员执行
+`deploy/mysql/migrations/2026-10-22-video-uploads.sql`，应用账号只需新表 SELECT、INSERT。
+Ubuntu 的 `ffmpeg` 软件包提供 ffprobe；需以 `polaris-studio` 用户确认它可执行，必要时通过服务环境
+`FFPROBE_PATH=/usr/bin/ffprobe` 指定路径。缺失会安全返回 503，不自动安装、不转码。
+当前服务器 Node 20.19.5 需单独验证原生 openAsBlob/FormData 的大文件流式上传和取消，不能以开发机 Node22 测试替代。
+保留现有 PrivateTmp/ProtectSystem 配置；确认私有临时空间容量，并验收 Postiz 媒体持久化、浏览器播放、
+实际 provider 草稿及备份。预览 307 不会让公开上游媒体变私有。完整契约与失败窗口见 `docs/video-uploads.md`。
+
 ### 异步草稿提交迁移
 
 升级前需执行 `deploy/mysql/migrations/2026-10-19-draft-submissions.sql`（已有手动贴文、通知表为前提）。

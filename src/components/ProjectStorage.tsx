@@ -3,12 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { parseSnapshot, type ProjectSnapshot, type SavedProject } from "@/lib/project-schema";
+import { createClientId } from "@/lib/client-id";
 
-function uuid() {
-  const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
-  const h = Array.from(b, n => n.toString(16).padStart(2, "0")).join("");
-  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
-}
 const lastKey = "polaris-last-project";
 export default function ProjectStorage({ snapshot, busy, onRestore, onProjectChange, hidden = false }: { snapshot: ProjectSnapshot; busy: boolean; /**
  * `source` distinguishes the silent restore on page load from the user picking a project, so the
@@ -64,7 +60,7 @@ onRestore: (snapshot: ProjectSnapshot, source: "auto" | "manual") => void; onPro
         if (!response.ok) throw new Error(data.error || "Storage unavailable");
         if (!data.enabled) { setStatus("Database is not configured"); return; }
         if (controller.signal.aborted) return;
-        setProjects(data.projects); applyProject(uuid(), 0);
+        setProjects(data.projects); applyProject(createClientId(), 0);
         let last = ""; try { last = localStorage.getItem(lastKey) || ""; } catch { /* Optional preference. */ }
         if (last && data.projects.some((p: SavedProject) => p.id === last)) {
           const response = await fetch(`/api/projects?id=${encodeURIComponent(last)}`, { signal: controller.signal, cache: "no-store" }); const item = await response.json();
@@ -154,7 +150,7 @@ onRestore: (snapshot: ProjectSnapshot, source: "auto" | "manual") => void; onPro
     if (working || busy) return;
     // A conflicted tab may save its work as a new project without overwriting the other tab.
     if (!conflict.current && serialize() !== saved.current && !await save()) return;
-    applyProject(uuid(), 0); conflict.current = false;
+    applyProject(createClientId(), 0); conflict.current = false;
     await save(true);
   }
   const dirty = serialized !== saved.current;
@@ -222,7 +218,7 @@ onRestore: (snapshot: ProjectSnapshot, source: "auto" | "manual") => void; onPro
             type="button"
             className="storage-btn icon-only"
             disabled={working}
-            onClick={() => void refreshHistory().then(() => { enabled.current = true; if (!project.current.id) project.current.id = uuid(); setReady(true); setError(""); setStatus("Ready to save"); }).catch(e => setError(e.message))}
+            onClick={() => void refreshHistory().then(() => { enabled.current = true; if (!project.current.id) project.current.id = createClientId(); setReady(true); setError(""); setStatus("Ready to save"); }).catch(e => setError(e.message))}
             title={t("Refresh history")}
             aria-label={t("Refresh history")}
           >

@@ -38,6 +38,8 @@ globalThis.fetch = async (requestUrl, options) => {
 };
 const platformTypes = loadModule("../src/lib/types.ts");
 const postiz = loadModule("../src/lib/postiz.ts", { "./types": platformTypes });
+const tinyPng = await sharp({ create: { width: 1, height: 1, channels: 3, background: "#3366cc" } }).png().toBuffer();
+const tinyPngDataUrl = `data:image/png;base64,${tinyPng.toString("base64")}`;
 
 const uploadOk = () => Response.json({ id: "media-one", path: "https://uploads.postiz.example.test/one.png" });
 
@@ -53,7 +55,7 @@ beforeEach(() => {
 
 test("an image that cannot be uploaded blocks the draft instead of sending text only", async () => {
   respond = async (url) => url.includes("/upload") ? new Response("nope", { status: 500 }) : Response.json([{ postId: "should-not-exist" }]);
-  const result = await postiz.createStrictDraft({ integrationId: "channel-one", content: "With image", imageUrl: "data:image/png;base64,AAAA", platform: "instagram" });
+  const result = await postiz.createStrictDraft({ integrationId: "channel-one", content: "With image", imageUrl: tinyPngDataUrl, platform: "instagram" });
   assert.equal(result.success, false);
   assert.equal(result.uncertain, undefined, "a refused upload is a definite failure, not an unknown result");
   assert.match(result.error, /image/i);
@@ -75,7 +77,7 @@ test("every supported account receives the documented draft-only payload and aut
       integrationId: `account-${platform}`,
       platform,
       content: "Exact draft text\nwith a second line",
-      imageUrl: "data:image/png;base64,AAAA"
+      imageUrl: tinyPngDataUrl
     });
     assert.equal(result.success, true);
     assert.equal(calls.requests.length, 2, "upload must precede exactly one create request");
@@ -108,7 +110,7 @@ test("an explicit Postiz refusal is a failure, and an accepted draft without an 
   respond = async (url) => url.includes("/upload")
     ? uploadOk()
     : Response.json({ posts: [{ integration: "channel-one" }] });
-  const accepted = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Text", imageUrl: "data:image/png;base64,AAAA", platform: "x" });
+  const accepted = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Text", imageUrl: tinyPngDataUrl, platform: "x" });
   assert.equal(accepted.success, true);
   assert.equal(accepted.postId, undefined);
   assert.match(accepted.warning, /no post ID/i);

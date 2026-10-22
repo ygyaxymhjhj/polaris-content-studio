@@ -27,6 +27,7 @@ import {
   Send,
   Settings2,
   ShieldCheck,
+  Video,
   Sparkles,
   TriangleAlert,
   Wand2,
@@ -56,6 +57,7 @@ import { getAssetStatusFields, getPersistedAssets, getPublishBadge, getSubmissio
 import { fetchAssetDraftTasks, mergeDraftTask } from "@/lib/draft-submission-client";
 import { isDraftSubmissionTask, type DraftSubmissionTask } from "@/lib/draft-submission-types";
 import { getMatchingSocialAccounts } from "@/lib/social-account-platform";
+import { createClientId } from "@/lib/client-id";
 import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
@@ -231,6 +233,14 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   const [selectedPlatforms, setSelectedPlatforms] = useState<Platform[]>(DEFAULT_PLATFORMS);
   const [selectedAsset, setSelectedAsset] = useState<ContentAsset | null>(null);
   const [imageUploading, setImageUploading] = useState(false);
+  const imageUploadingRef = useRef(false);
+  const assetUploadLocation = useRef("");
+  const [assetEditorSession, setAssetEditorSession] = useState(0);
+  const handleAssetMediaBusy = useCallback((busy: boolean) => {
+    imageUploadingRef.current = busy;
+    assetUploadLocation.current = busy ? window.location.href : "";
+    setImageUploading(busy);
+  }, []);
   const [deliveryDraft, setDeliveryDraft] = useState("{}");
   const [assetFilter, setAssetFilter] = useState<Platform | "all">("all");
   const [loading, setLoading] = useState<"parse" | "fetch" | "analyze" | "generate" | "export" | null>(null);
@@ -377,8 +387,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
   useEffect(() => {
     function onPopState() {
-      if (postDeletionLocation.current) {
-        window.history.pushState({ polarisView: "posts" }, "", postDeletionLocation.current);
+      if (postDeletionLocation.current || assetUploadLocation.current) {
+        window.history.pushState(null, "", postDeletionLocation.current || assetUploadLocation.current);
         return;
       }
       const query = new URLSearchParams(window.location.search);
@@ -397,6 +407,16 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    const preventUploadLoss = (event: BeforeUnloadEvent) => {
+      if (!imageUploadingRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", preventUploadLoss);
+    return () => window.removeEventListener("beforeunload", preventUploadLoss);
   }, []);
 
   useEffect(() => {
@@ -544,7 +564,9 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   // A candidate is previewed by projecting it into the draft column, so the text under review is
   // read in the real editor instead of a nested scroll box.
   const previewCandidate = previewIndex !== null ? candidates[previewIndex] || null : null;
-  const viewAsset = previewCandidate?.asset ?? selectedAsset;
+  const viewAsset = previewCandidate && selectedAsset ? {
+    ...previewCandidate.asset, imageUrl: selectedAsset.imageUrl, videoMediaId: selectedAsset.videoMediaId
+  } : selectedAsset;
   const viewRiskFlags = previewCandidate ? [...new Set([...previewCandidate.asset.riskFlags, ...previewCandidate.issues])] : selectedAsset?.riskFlags ?? [];
 
   const filteredAssets = useMemo(() => {
@@ -560,6 +582,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
    * working on something unrelated to the AI project that happens to load in the background.
    */
   function restoreProject(snapshot: ProjectSnapshot, source: "auto" | "manual" = "manual") {
+    if (imageUploadingRef.current) return;
     clearDerivedContent();
     importedSource.current = snapshot.importedSource;
     editedConfig.current = new Set(snapshot.editedConfig);
@@ -577,6 +600,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   function signOut() {
+    if (imageUploadingRef.current || postDeletionLocation.current) return;
     // Navigate regardless of the response: the cookie is cleared client-side either way.
     void fetch("/api/auth/logout", { method: "POST" }).finally(() => location.assign("/login"));
   }
@@ -825,6 +849,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   function openAsset(asset: ContentAsset, mode: "edit" | "preview" = "edit") {
+    if (imageUploadingRef.current) return;
+    setAssetEditorSession(session => session + 1);
     setDrawerMode(mode);
     rewriteSequence.current += 1;
     setRewriting(false);
@@ -840,6 +866,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   // Closing without saving rolls the conversation back too: the thread must never claim a change
   // the draft did not keep.
   const closeDrawer = useCallback(() => {
+    if (imageUploadingRef.current) return;
     rewriteSequence.current += 1;
     setRewriting(false);
     const id = selectedAsset?.id;
@@ -871,7 +898,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }, [candidates]);
 
   async function requestRewrite() {
-    if (!selectedAsset || !analysis) return;
+    if (!selectedAsset || !analysis || imageUploadingRef.current) return;
     const text = instruction.trim();
     if (!text) { notify("Type what you want changed."); return; }
     let meta: Record<string, unknown>;
@@ -978,7 +1005,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   function saveAsset() {
-    if (!selectedAsset || imageUploading) return;
+    if (!selectedAsset || imageUploadingRef.current) return;
     let meta: Record<string, unknown>;
     try {
       meta = JSON.parse(deliveryDraft);
@@ -996,6 +1023,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       cta: draft.cta,
       deepLink: draft.deepLink,
       imageUrl: draft.imageUrl,
+      videoMediaId: draft.videoMediaId,
       ...getAssetStatusFields(asset),
       factIds: draft.factIds,
       riskFlags: draft.riskFlags,
@@ -1014,6 +1042,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
    * draft inside Postiz.
    */
   async function submitDraft(asset: ContentAsset, accountId: string, announceResult = true) {
+    if (imageUploadingRef.current) return { success: false, warning: false };
     if (acceptanceFlights.current.has(asset.id) || asset.publishStatus === "publishing" || asset.publishStatus === "pending_unknown") {
       return { success: false, warning: false };
     }
@@ -1053,11 +1082,11 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           assetId: asset.id,
           integrationId: accountId,
           content: asset.content,
-          imageUrl: asset.imageUrl ?? config.imageUrl,
+          ...(asset.videoMediaId ? { videoMediaId: asset.videoMediaId } : { imageUrl: asset.imageUrl ?? config.imageUrl }),
           projectId: projectId || undefined,
           platform: asset.platform,
           accountName: targetAccount.name,
-          requestId: crypto.randomUUID(),
+          requestId: createClientId(),
           expectedAuditId: asset.reviewStatus === "rejected" ? asset.submission?.auditId || undefined : undefined
         })
       });
@@ -1177,6 +1206,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   function goTo(viewName: View) {
+    if (imageUploadingRef.current || postDeletionLocation.current) return;
     if (viewName === "facts" && !analysis) {
       notify("Analyze an article first.");
       return;
@@ -1194,6 +1224,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }
 
   const openPostsWithStatus = useCallback((status: PostsStatusFilter) => {
+    if (imageUploadingRef.current || postDeletionLocation.current) return;
     setPostsInitialStatus(status);
     setActivePostId("");
     setPostsComposing(false);
@@ -1201,6 +1232,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   }, []);
 
   const openPost = useCallback((postId: string) => {
+    if (imageUploadingRef.current || postDeletionLocation.current) return;
     setPostEditorSession(session => session + 1);
     setActivePostId(postId);
     setPostsComposing(false);
@@ -1209,6 +1241,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
   // Stable callbacks for the manual-post views: the editor lists these in effect dependencies.
   const startNewPost = useCallback(() => {
+    if (imageUploadingRef.current || postDeletionLocation.current) return;
     setPostEditorSession(session => session + 1);
     setActivePostId("");
     setPostsComposing(true);
@@ -1234,14 +1267,18 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
     setView("posts");
   }, []);
 
-  const openAccountsView = useCallback(() => setView("accounts"), []);
-  const openWorkspaceView = useCallback(() => setView("workspace"), []);
+  const openAccountsView = useCallback(() => {
+    if (!imageUploadingRef.current && !postDeletionLocation.current) setView("accounts");
+  }, []);
+  const openWorkspaceView = useCallback(() => {
+    if (!imageUploadingRef.current && !postDeletionLocation.current) setView("workspace");
+  }, []);
   const markPostsSaved = useCallback(() => setPostsRefreshToken(token => token + 1), []);
   const refreshAccounts = useCallback(() => { void loadChannels(); }, [loadChannels]);
 
   return (
     <LocaleContext.Provider value={uiLanguage}><div className={`app-shell ${view === "overview" || view === "posts" ? "posts-surface" : ""}`}>
-      <aside className="sidebar" inert={postDeletionPending}>
+      <aside className="sidebar" inert={postDeletionPending || imageUploading}>
         <div className="brand-lockup">
           <div className="brand-copy">
             <div className="brand-name">POLARIS</div>
@@ -1286,7 +1323,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
         </div>
       </aside>
 
-      <main className="main-area">
+      <main className="main-area" inert={imageUploading}>
         <header className="topbar">
           <div className="breadcrumbs"><span>Growth OS</span><span className="slash">/</span><strong>{view === "overview" ? t("Overview") : view === "posts" ? t("Posts") : config.name || t("New project")}</strong></div>
         </header>
@@ -1389,7 +1426,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           <aside className="asset-drawer" style={{ maxWidth: 880 }}>
             <div className="drawer-header">
               <div><span className="eyebrow">{t("EDIT ASSET")}</span><h2>{t(PLATFORM_META[selectedAsset.platform].label)}</h2></div>
-              <button className="icon-button" aria-label={t("Close editor")} onClick={closeDrawer}><X size={18} /></button>
+              <button className="icon-button" disabled={imageUploading} aria-label={t("Close editor")} onClick={closeDrawer}><X size={18} /></button>
             </div>
             <div className="drawer-meta" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[selectedAsset.platform].accent } as React.CSSProperties}>
@@ -1411,14 +1448,14 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
 
             {drawerMode === "preview" ? (
               <div style={{ padding: "16px 0", maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
-                <SocialPreview asset={viewAsset} imageUrl={viewAsset.imageUrl ?? config.imageUrl} />
+                <SocialPreview asset={viewAsset} imageUrl={viewAsset.videoMediaId ? "" : viewAsset.imageUrl ?? config.imageUrl} />
               </div>
             ) : (
             <div className="drawer-columns" ref={columnsAnchor}>
               <div className="drawer-col">
                 <div className="col-head">
                   {candidates.length
-                    ? <div className="preview-tabs"><button className={previewIndex === null ? "active" : ""} onClick={() => setPreviewIndex(null)}>{t("Draft")}</button>{candidates.map((_, index) => <button key={index} className={previewIndex === index ? "active" : ""} onClick={() => setPreviewIndex(index)}>{t("Option")} {index + 1}</button>)}</div>
+                    ? <div className="preview-tabs" inert={imageUploading}><button className={previewIndex === null ? "active" : ""} onClick={() => setPreviewIndex(null)}>{t("Draft")}</button>{candidates.map((_, index) => <button key={index} className={previewIndex === index ? "active" : ""} onClick={() => setPreviewIndex(index)}>{t("Option")} {index + 1}</button>)}</div>
                     : <span className="eyebrow">{t("Draft")}</span>}
                   <span className="col-hint">{viewAsset.content.length.toLocaleString()} {t("characters")}</span>
                 </div>
@@ -1430,13 +1467,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 <label className="field-label">{t("Title / internal name")}<input value={viewAsset.title} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("title", event.target.value)} /></label>
                 
                 <AssetImageEditor
-                  key={`${selectedAsset.id}-${previewIndex ?? "draft"}`}
-                  value={viewAsset.imageUrl ?? config.imageUrl ?? ""}
+                  key={`${assetEditorSession}-${selectedAsset.id}-${previewIndex ?? "draft"}`}
+                  value={viewAsset.videoMediaId ? "" : viewAsset.imageUrl ?? config.imageUrl ?? ""}
+                  videoMediaId={viewAsset.videoMediaId}
                   originalImageUrl={config.imageUrl}
                   title={viewAsset.title}
-                  disabled={!!previewCandidate}
-                  onChange={(imageUrl) => updateSelectedAsset("imageUrl", imageUrl)}
-                  onBusyChange={setImageUploading}
+                  disabled={!!previewCandidate || rewriting}
+                  onChange={imageUrl => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, imageUrl, videoMediaId: undefined } : asset)}
+                  onVideoChange={videoMediaId => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, videoMediaId: videoMediaId ?? undefined, imageUrl: "" } : asset)}
+                  onBusyChange={handleAssetMediaBusy}
                 />
 
                 <label className="field-label">{t("Content")}<textarea className="drawer-textarea" value={viewAsset.content} disabled={!!previewCandidate} onChange={(event) => updateSelectedAsset("content", event.target.value)} /></label>
@@ -1446,7 +1485,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 {!!viewRiskFlags.length && <div className="info-banner"><div><strong>{t("Review before publishing")}</strong><ul>{viewRiskFlags.map((flag, index) => <li key={index}>{flag}</li>)}</ul></div></div>}
               </div>
 
-              <div className="drawer-col rewrite-col">
+              <div className="drawer-col rewrite-col" inert={imageUploading}>
                 <div className="col-head"><span className="eyebrow">{t("AI REWRITE")}</span></div>
 
                 {!!rewriteError && <div className="rewrite-error"><TriangleAlert size={15} /><div><strong>{t("The rewrite did not run")}</strong><p>{rewriteError}</p><button className="text-button" onClick={requestRewrite}>{t("Try again")}</button></div></div>}
@@ -1495,8 +1534,8 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             )}
 
             <div className="drawer-footer">
-              <button className="secondary-button" onClick={closeDrawer}>{t("Cancel")}</button>
-              <button type="button" className="secondary-button" style={{ color: "var(--text-strong)", borderColor: "var(--border-strong)", fontWeight: 700 }} disabled={imageUploading} onClick={() => setPublishModalAsset(viewAsset)}>
+              <button className="secondary-button" disabled={imageUploading} onClick={closeDrawer}>{t("Cancel")}</button>
+              <button type="button" className="secondary-button" style={{ color: "var(--text-strong)", borderColor: "var(--border-strong)", fontWeight: 700 }} disabled={imageUploading} onClick={() => { if (!imageUploadingRef.current) setPublishModalAsset(viewAsset); }}>
                 <Send size={14} /> {t("Submit to Postiz draft")}
               </button>
               <button className="primary-button" onClick={saveAsset} disabled={imageUploading}><Check size={16} /> {t("Save changes")}</button>
@@ -1847,7 +1886,7 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
 function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPublish, onGenerate, onExport, loading, usedFallback, pendingPlatforms, targetCount, config }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset, mode?: "edit" | "preview") => void; onPublish: (asset: ContentAsset) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean; pendingPlatforms: Platform[]; targetCount: number; config: ProjectConfig }) {
   const t = useTranslation();
   const counts = assets.reduce<Record<string, number>>((result, asset) => { result[asset.platform] = (result[asset.platform] || 0) + 1; return result; }, {});
-  const cardImage = (asset: ContentAsset) => asset.imageUrl ?? config.imageUrl;
+  const cardImage = (asset: ContentAsset) => asset.videoMediaId ? "" : asset.imageUrl ?? config.imageUrl;
 
   const pendingForView = pendingPlatforms.filter((platform) => filter === "all" || platform === filter);
   const generating = pendingPlatforms.length > 0;
@@ -1860,7 +1899,7 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPubli
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "var(--text-strong)", background: "var(--surface-muted)", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{asset.videoMediaId ? <button type="button" className="asset-card-media asset-card-video" onClick={() => onOpen(asset, "preview")} aria-label={t("Post video")}><Video size={30} aria-hidden="true" /><span>MP4</span></button> : img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "var(--text-strong)", background: "var(--surface-muted)", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );

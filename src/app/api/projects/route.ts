@@ -5,6 +5,7 @@ import { currentUser, unauthorized } from "@/lib/auth";
 import { database } from "@/lib/project-db";
 import { projectSchema, saveProjectSchema, type ProjectSnapshot } from "@/lib/project-schema";
 import { isSameOrigin } from "@/lib/same-origin";
+import { ownsVideoUploads } from "@/lib/video-uploads";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,6 +64,11 @@ export async function PUT(request: NextRequest) {
       const [rows] = await connection.execute<RowDataPacket[]>("SELECT version, snapshot FROM projects WHERE id=? AND owner_hash=? FOR UPDATE", [id, auth.ownerHash]);
       if ((rows.length && rows[0].version !== version) || (!rows.length && version !== 0)) {
         await connection.rollback(); return json({ error: "Project changed in another tab. Reload it from history before saving.", code: "CONFLICT" }, 409);
+      }
+      const videoMediaIds = snapshot.assets.flatMap(asset => asset.videoMediaId ? [asset.videoMediaId] : []);
+      if (videoMediaIds.length && !await ownsVideoUploads(auth.user.id, videoMediaIds, connection)) {
+        await connection.rollback();
+        return json({ error: "A video attachment is unavailable in this account.", code: "INVALID_VIDEO" }, 400);
       }
       if (rows.length) {
         const previous: ProjectSnapshot = typeof rows[0].snapshot === "string" ? JSON.parse(rows[0].snapshot) : rows[0].snapshot;

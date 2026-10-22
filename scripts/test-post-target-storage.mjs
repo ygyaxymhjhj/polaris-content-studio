@@ -64,7 +64,8 @@ function createStorageHarness(expectedTargets) {
   };
   const storage = loadModule("../src/lib/posts.ts", {
     "@/lib/project-db": { database: () => ({ execute, getConnection: async () => connection }) },
-    "./post-types": postTypes
+    "./post-types": postTypes,
+    "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy posts must not query video uploads"); } }
   });
   return { storage, targetInserts, getCommits: () => commits };
 }
@@ -107,7 +108,8 @@ test("the list exposes deletion for local drafts and protects every frozen targe
   };
   const storage = loadModule("../src/lib/posts.ts", {
     "@/lib/project-db": { database: () => ({ execute }) },
-    "./post-types": postTypes
+    "./post-types": postTypes,
+    "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy posts must not query video uploads"); } }
   });
   const result = await storage.listManualPosts("owner-one", {
     status: "all", search: "", platform: "", integrationId: "", updatedSince: 0, page: 1, perPage: 20
