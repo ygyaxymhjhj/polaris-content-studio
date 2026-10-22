@@ -27,6 +27,7 @@ const filters = { status: "all", search: "", platform: "", integrationId: "", up
 function createHarness() {
   const sql = new DatabaseSync(":memory:");
   sql.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, disabled INTEGER, display_name TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY, owner_user_id TEXT, title TEXT, content TEXT, image_data TEXT,
       image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER,
       created_at TEXT, updated_at TEXT);
@@ -37,7 +38,11 @@ function createHarness() {
       published_by TEXT, postiz_post_id TEXT);
     CREATE TABLE social_post_tracking (publish_audit_id TEXT PRIMARY KEY, postiz_post_id TEXT, review_status TEXT,
       state TEXT, save_action TEXT, postiz_publish_date TEXT, rejected_detected_at TEXT);
-    CREATE TABLE draft_submissions (attempt_id TEXT, kind TEXT, state TEXT);
+    CREATE TABLE draft_submissions (id TEXT PRIMARY KEY, owner_user_id TEXT, kind TEXT, source_id TEXT,
+      project_id TEXT, integration_id TEXT, attempt_id TEXT, request_key TEXT UNIQUE, fingerprint TEXT,
+      active_key TEXT UNIQUE, snapshot TEXT, state TEXT, lease_token TEXT, lease_expires_at TEXT,
+      audit_id TEXT, postiz_post_id TEXT, warning TEXT, error TEXT, created_at TEXT, updated_at TEXT, finished_at TEXT);
+    INSERT INTO users VALUES ('owner', 'member', 0, 'Owner');
     INSERT INTO posts VALUES ('${postId}', 'owner', 'Frozen title', 'Frozen content', NULL, NULL, NULL, NULL,
       NULL, 4, '${submittedAt}', '${submittedAt}');
     INSERT INTO post_targets VALUES ('target', '${postId}', 'account', 'x', 'Account', 'accepted', 4,
@@ -48,31 +53,44 @@ function createHarness() {
   `);
   const statements = [];
   let transactionOpen = false;
+  let connectionTail = Promise.resolve();
   // SQLite executes the actual joins, CASE expressions, CTEs and conditional updates. Only MySQL
   // syntax that is not portable is translated; no canned status/count query responses are used.
   const execute = async (statement, parameters = []) => {
     statements.push(statement);
-    let portableSql = statement.replace(/ FOR UPDATE(?: OF t, tracking)?\b/g, "")
+    let portableSql = statement.replace(/ FOR UPDATE(?: OF t, tracking| SKIP LOCKED)?\b/g, "")
       .replace(/ AS BINARY\)/g, " AS BLOB)")
+      .replace(/<=>/g, "IS")
+      .replace("IF(?='unknown',active_key,NULL)", "CASE WHEN ?='unknown' THEN active_key ELSE NULL END")
       .replace(/LEFT\(p.content, 400\)/g, "substr(p.content, 1, 400)")
       .replace(/GROUP_CONCAT\(DISTINCT t.platform ORDER BY t.platform\)/g, "GROUP_CONCAT(DISTINCT t.platform)");
     if (portableSql.startsWith("UPDATE post_targets t JOIN posts")) {
       portableSql = portableSql.replace("UPDATE post_targets t JOIN posts p ON p.id = t.post_id", "UPDATE post_targets")
         .replace("p.owner_user_id = ?", "post_id IN (SELECT id FROM posts WHERE owner_user_id = ?)")
+        .replace("submission.attempt_id=t.attempt_id", "submission.attempt_id=post_targets.attempt_id")
         .replace(/\bt\./g, "");
     }
     const prepared = sql.prepare(portableSql);
-    if (/^\s*(SELECT|WITH)\b/.test(portableSql)) return [prepared.all(...parameters)];
+    if (/^\s*(SELECT|WITH)\b/.test(portableSql)) {
+      const rows = prepared.all(...parameters);
+      if (statement.includes("t.attempt_started_at") && !statement.includes("FOR UPDATE")) await harness.afterTargetRead?.();
+      return [rows];
+    }
     return [{ affectedRows: prepared.run(...parameters).changes }];
   };
-  const connection = {
-    execute,
-    beginTransaction: async () => { assert.equal(transactionOpen, false); transactionOpen = true; sql.exec("BEGIN"); },
-    commit: async () => { sql.exec("COMMIT"); transactionOpen = false; },
-    rollback: async () => { sql.exec("ROLLBACK"); transactionOpen = false; },
-    release() {}
-  };
-  const pool = { execute, getConnection: async () => connection };
+  const pool = { execute, getConnection: async () => {
+    const precedingConnection = connectionTail;
+    let releaseConnection;
+    connectionTail = new Promise(resolve => { releaseConnection = resolve; });
+    await precedingConnection;
+    return {
+      execute,
+      beginTransaction: async () => { assert.equal(transactionOpen, false); transactionOpen = true; sql.exec("BEGIN"); },
+      commit: async () => { sql.exec("COMMIT"); transactionOpen = false; },
+      rollback: async () => { if (transactionOpen) sql.exec("ROLLBACK"); transactionOpen = false; },
+      release: releaseConnection
+    };
+  } };
   const storage = loadModule("../src/lib/posts.ts", {
     "@/lib/project-db": { database: () => pool }, "./post-types": postTypes
   });
@@ -83,18 +101,23 @@ function createHarness() {
     sql, storage, statements, requests, auditHistory,
     livePost: { id: "old-upstream", state: "DRAFT", saveAction: "pass" },
     draftResponse: () => Response.json([{ postId: "new-upstream" }]),
+    afterTargetRead: null,
     afterLiveCheck: null,
     beforeDraftResponse: null,
     accountOwner: "owner",
     accountDisabled: false
   };
-  const submission = loadModule("../src/lib/post-submission.ts", {
+  const dependencies = {
     "@/lib/project-db": { database: () => pool },
     "@/lib/posts": storage,
-    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner }) },
+    "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
+    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: "x", accountName: "Account" }) },
     "@/lib/postiz": {
       ...upstream,
-      fetchPostizIntegrations: async () => ({ configured: true, accounts: [{ id: "account", identifier: "x", disabled: harness.accountDisabled }] })
+      fetchPostizIntegrations: async () => {
+        assert.equal(transactionOpen, false, "live account checks never hold a storage transaction");
+        return { configured: true, accounts: [{ id: "account", identifier: "x", disabled: harness.accountDisabled }] };
+      }
     },
     "@/lib/social-notifications": {
       recordSocialSubmission: async entry => {
@@ -109,12 +132,15 @@ function createHarness() {
         return { auditId: newAuditId };
       }
     }
-  });
-  harness.submit = (overrides = {}) => submission.submitPostTarget({
-    userId: "owner", userName: "Owner", isAdmin: false, postId, integrationId: "account", expectedVersion: 4,
+  };
+  const submission = loadModule("../src/lib/post-submission.ts", dependencies);
+  harness.queue = loadModule("../src/lib/draft-submissions.ts", { ...dependencies, "@/lib/post-submission": submission });
+  harness.enqueue = (overrides = {}) => harness.queue.enqueueManualSubmission({
+    userId: "owner", isAdmin: false, postId, integrationId: "account", expectedVersion: 4,
     expectedAuditId: auditId, ...overrides
   });
   harness.getTarget = () => sql.prepare("SELECT * FROM post_targets WHERE integration_id='account'").get();
+  harness.getTask = () => sql.prepare("SELECT * FROM draft_submissions").get();
   harness.fetch = async (url, options) => {
     assert.equal(transactionOpen, false, "network calls never hold the storage transaction");
     requests.push({ url: String(url), options });
@@ -198,55 +224,103 @@ test("missing action preserves the worker's known rejected marker but cannot aut
   harness.sql.exec("UPDATE social_post_tracking SET save_action=NULL");
   assert.equal((await harness.storage.getManualPost("owner", postId)).targets[0].status, "rejected");
   harness.livePost = { id: "old-upstream", state: "DRAFT" };
-  assert.equal((await harness.submit()).kind, "validation");
+  assert.equal((await harness.enqueue()).kind, "queued");
+  assert.equal(harness.requests.length, 0);
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.getTask().state, "failed");
+  assert.match(harness.getTask().error, /no longer confirms this draft as rejected/);
+  const detail = await harness.storage.getManualPost("owner", postId);
+  assert.equal(detail.targets[0].status, "rejected");
+  assert.equal(detail.targets[0].auditId, auditId);
+  assert.equal(detail.targets[0].postizPostId, "old-upstream");
+  assert.equal(detail.editable, false);
   assert.equal(harness.requests.length, 1);
 }));
 
 test("a rejected retry creates one new draft, atomically binds its audit and excludes the old rejection", () => withHarness(async harness => {
-  const result = await harness.submit();
-  assert.equal(result.kind, "ok");
-  assert.equal(result.post.targets[0].status, "accepted");
-  assert.equal(result.post.targets[0].auditId, "33333333-3333-4333-8333-333333333333");
-  assert.equal(result.post.targets[0].postizPostId, "new-upstream");
+  const queued = await harness.enqueue();
+  assert.equal(queued.kind, "queued");
+  assert.equal(queued.task.state, "queued");
+  assert.equal(queued.post.targets[0].status, "submitting");
+  assert.equal(queued.post.targets[0].auditId, null);
+  assert.equal(queued.post.targets[0].postizPostId, null);
+  assert.equal(queued.post.editable, false);
+  assert.equal(harness.requests.length, 0, "enqueue persists the frozen attempt without remote work");
+  const snapshot = JSON.parse(harness.getTask().snapshot);
+  assert.equal(snapshot.content, "Frozen content");
+  assert.equal(snapshot.rejectedBinding.audit_id, auditId);
+  assert.equal(harness.getTask().attempt_id, harness.getTarget().attempt_id);
+  assert.equal(await harness.queue.processDraftSubmissions(), 1);
+  assert.equal(harness.getTask().state, "succeeded");
+  const detail = await harness.storage.getManualPost("owner", postId);
+  assert.equal(detail.targets[0].status, "accepted");
+  assert.equal(detail.targets[0].auditId, "33333333-3333-4333-8333-333333333333");
+  assert.equal(detail.targets[0].postizPostId, "new-upstream");
+  assert.equal(harness.getTask().audit_id, detail.targets[0].auditId);
+  assert.equal(harness.getTask().postiz_post_id, detail.targets[0].postizPostId);
   const lookup = new URL(harness.requests[0].url);
   assert.ok(Date.parse(lookup.searchParams.get("startDate")) < Date.parse(submittedAt.replace(" ", "T") + "Z"));
   assert.ok(Date.parse(lookup.searchParams.get("endDate")) > Date.parse("2030-03-01T00:00:00Z"));
   assert.equal(harness.sql.prepare("SELECT COUNT(*) AS total FROM social_publishes").get().total, 2);
   assert.equal((await harness.storage.listManualPosts("owner", filters)).items[0].rejectedCount, 0);
-  assert.equal((await harness.submit()).kind, "conflict", "stale retry audit cannot create again");
-  assert.equal((await harness.submit({ expectedAuditId: undefined })).kind, "ok", "ordinary accepted click remains idempotent");
+  assert.equal((await harness.enqueue()).kind, "conflict", "stale retry audit cannot create again");
+  assert.equal((await harness.enqueue({ expectedAuditId: undefined })).kind, "ok", "ordinary accepted click remains idempotent");
+  assert.equal(await harness.queue.processDraftSubmissions(), 0);
+  assert.equal(harness.sql.prepare("SELECT COUNT(*) AS total FROM draft_submissions").get().total, 1);
   assert.equal(harness.requests.filter(request => request.options.method === "POST").length, 1);
 }));
 
 test("definite rejected retry failure restores the original frozen binding and rejection", () => withHarness(async harness => {
   harness.draftResponse = () => new Response("refused", { status: 400 });
-  const result = await harness.submit();
-  assert.equal(result.kind, "ok");
-  assert.equal(result.post.targets[0].status, "rejected");
-  assert.equal(result.post.targets[0].auditId, auditId);
-  assert.equal(result.post.targets[0].postizPostId, "old-upstream");
-  assert.equal(result.post.targets[0].submittedAt, submittedAt);
-  assert.equal(result.post.editable, false);
-  assert.match(result.post.targets[0].warning, /original rejected draft remains frozen/);
-  assert.match(result.post.targets[0].error, /400/);
+  assert.equal((await harness.enqueue()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.getTask().state, "failed");
+  assert.equal(harness.getTask().error, "The publishing engine refused the draft. No draft was created.");
+  const detail = await harness.storage.getManualPost("owner", postId);
+  assert.equal(detail.targets[0].status, "rejected");
+  assert.equal(detail.targets[0].auditId, auditId);
+  assert.equal(detail.targets[0].postizPostId, "old-upstream");
+  assert.equal(detail.targets[0].submittedAt, submittedAt);
+  assert.equal(detail.editable, false);
+  assert.equal(detail.targets[0].error, harness.getTask().error);
+  assert.equal((await harness.storage.updateManualPost("owner", postId, 4, { content: "Changed" })).kind, "frozen");
+  assert.equal((await harness.storage.deleteManualPost("owner", postId)).kind, "frozen");
   assert.equal(harness.auditHistory[0].status, "failed");
+  assert.notEqual(harness.getTask().audit_id, detail.targets[0].auditId, "failure auditing never replaces the rejected binding");
+  const failedTask = harness.getTask();
+  assert.equal(failedTask.active_key, null);
+  const retry = await harness.enqueue();
+  assert.equal(retry.kind, "queued", "a definite failure permits a fresh retry of the original rejected binding");
+  assert.notEqual(retry.task.id, failedTask.id);
+  assert.equal(harness.requests.filter(request => request.options.method === "POST").length, 1);
 }));
 
 test("uncertain retry clears old binding and never permits a blind retry", () => withHarness(async harness => {
-  harness.draftResponse = () => { throw new Error("transport failure"); };
-  const first = await harness.submit();
-  assert.equal(first.post.targets[0].status, "pending_unknown");
-  assert.equal(first.post.targets[0].auditId, null);
-  assert.equal(first.post.targets[0].postizPostId, null);
-  assert.equal(first.post.editable, false);
-  assert.equal((await harness.submit()).kind, "conflict");
-  assert.equal((await harness.submit({ expectedAuditId: undefined })).kind, "unconfirmed");
+  let transportFailureInjected = false;
+  harness.draftResponse = () => { transportFailureInjected = true; throw new Error("transport failure"); };
+  assert.equal((await harness.enqueue()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(transportFailureInjected, true, "unknown must come from the intended transport failure, not a swallowed fetch assertion");
+  assert.equal(harness.getTask().state, "unknown");
+  assert.ok(harness.getTask().active_key, "unknown work keeps its duplicate-prevention key");
+  const detail = await harness.storage.getManualPost("owner", postId);
+  assert.equal(detail.targets[0].status, "pending_unknown");
+  assert.equal(detail.targets[0].auditId, null);
+  assert.equal(detail.targets[0].postizPostId, null);
+  assert.equal(detail.editable, false);
+  assert.match(detail.targets[0].warning, /Check the publishing engine before submitting again/);
+  assert.equal((await harness.enqueue()).kind, "conflict");
+  assert.equal((await harness.enqueue({ expectedAuditId: undefined })).kind, "unconfirmed");
+  assert.equal(await harness.queue.processDraftSubmissions(), 0, "unknown work is never automatically retried");
+  assert.equal(harness.auditHistory.length, 0);
   assert.equal(harness.requests.length, 2);
 }));
 
 test("missing/mismatched expected audit blocks retry before remote checks", () => withHarness(async harness => {
-  assert.equal((await harness.submit({ expectedAuditId: undefined })).kind, "validation");
-  assert.equal((await harness.submit({ expectedAuditId: "wrong" })).kind, "conflict");
+  assert.equal((await harness.enqueue({ expectedAuditId: undefined })).kind, "conflict");
+  assert.equal((await harness.enqueue({ expectedAuditId: "wrong" })).kind, "conflict");
+  assert.equal(harness.getTask(), undefined);
+  assert.equal(harness.getTarget().audit_id, auditId);
   assert.equal(harness.requests.length, 0);
 }));
 
@@ -255,29 +329,63 @@ for (const livePost of [null, { id: "wrong", state: "DRAFT", saveAction: "pass" 
   { id: "old-upstream", state: "DRAFT", saveAction: "draft" }]) {
   test(`fresh upstream ${JSON.stringify(livePost)} refuses a retry`, () => withHarness(async harness => {
     harness.livePost = livePost;
-    assert.equal((await harness.submit()).kind, "validation");
+    assert.equal((await harness.enqueue()).kind, "queued");
+    assert.equal(harness.requests.length, 0);
+    await harness.queue.processDraftSubmissions();
+    assert.equal(harness.getTask().state, "failed");
+    assert.match(harness.getTask().error, /no longer confirms this draft as rejected/);
+    const detail = await harness.storage.getManualPost("owner", postId);
+    assert.equal(detail.targets[0].status, "rejected");
+    assert.equal(detail.targets[0].auditId, auditId);
+    assert.equal(detail.targets[0].postizPostId, "old-upstream");
+    assert.equal(detail.targets[0].submittedAt, submittedAt);
+    assert.equal(detail.editable, false);
     assert.equal(harness.requests.length, 1);
   }));
 }
 
 for (const mutation of ["UPDATE posts SET version=5", "UPDATE post_targets SET audit_id='new-audit'",
   "UPDATE post_targets SET postiz_post_id='new-upstream'", "UPDATE social_post_tracking SET review_status='pending'"]) {
-  test(`transaction recheck rejects a race: ${mutation}`, () => withHarness(async harness => {
+  test(`enqueue transaction recheck rejects a race: ${mutation}`, () => withHarness(async harness => {
+    harness.afterTargetRead = () => harness.sql.exec(mutation);
+    assert.equal((await harness.enqueue()).kind, "conflict");
+    assert.equal(harness.getTask(), undefined);
+    assert.equal(harness.requests.length, 0);
+  }));
+}
+
+for (const mutation of ["UPDATE posts SET version=5", "UPDATE social_publishes SET id='new-audit'",
+  "UPDATE social_publishes SET postiz_post_id='new-upstream'", "UPDATE social_post_tracking SET review_status='pending'"]) {
+  test(`worker recheck rejects a live-check race: ${mutation}`, () => withHarness(async harness => {
+    assert.equal((await harness.enqueue()).kind, "queued");
     harness.afterLiveCheck = () => harness.sql.exec(mutation);
-    assert.equal((await harness.submit()).kind, "conflict");
+    await harness.queue.processDraftSubmissions();
+    assert.equal(harness.getTask().state, "failed");
+    assert.equal(harness.getTask().error, "The frozen submission binding changed. No draft was created.");
+    const detail = await harness.storage.getManualPost("owner", postId);
+    assert.equal(detail.targets[0].auditId, auditId);
+    assert.equal(detail.targets[0].postizPostId, "old-upstream");
+    assert.equal(detail.editable, false);
     assert.equal(harness.requests.length, 1);
+    assert.equal(harness.auditHistory.length, 0);
   }));
 }
 
 test("double retry cannot reuse an in-flight claim", () => withHarness(async harness => {
   let nestedOutcome;
-  harness.beforeDraftResponse = async () => { nestedOutcome = await harness.submit(); };
-  assert.equal((await harness.submit()).kind, "ok");
+  harness.beforeDraftResponse = async () => { nestedOutcome = await harness.enqueue(); };
+  assert.equal((await harness.enqueue()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.getTask().state, "succeeded");
+  assert.equal((await harness.storage.getManualPost("owner", postId)).targets[0].status, "accepted");
   assert.equal(nestedOutcome.kind, "conflict");
   assert.equal(harness.requests.filter(request => request.options.method === "POST").length, 1);
 }));
 
-test("two retries that both pass the live check still create only one draft", () => withHarness(async harness => {
+test("concurrent retries and workers still create only one draft", () => withHarness(async harness => {
+  const outcomes = await Promise.all([harness.enqueue(), harness.enqueue()]);
+  assert.deepEqual(outcomes.map(outcome => outcome.kind).sort(), ["conflict", "queued"]);
+  assert.equal(harness.sql.prepare("SELECT COUNT(*) AS total FROM draft_submissions").get().total, 1);
   let signalFirstCheck;
   let releaseFirstCheck;
   const firstCheckStarted = new Promise(resolve => { signalFirstCheck = resolve; });
@@ -287,39 +395,80 @@ test("two retries that both pass the live check still create only one draft", ()
     signalFirstCheck();
     await firstCheckReleased;
   };
-  const first = harness.submit();
+  const firstWorker = harness.queue.processDraftSubmissions();
   await firstCheckStarted;
-  const second = await harness.submit();
-  releaseFirstCheck();
-  assert.equal(second.kind, "ok");
-  assert.equal((await first).kind, "conflict");
-  assert.equal(harness.requests.filter(request => request.options.method === "GET").length, 2);
+  try {
+    assert.equal(await harness.queue.processDraftSubmissions(), 0, "another worker cannot claim running work");
+    assert.equal((await harness.enqueue()).kind, "conflict");
+    assert.equal((await harness.enqueue({ expectedAuditId: undefined })).kind, "in_flight");
+    assert.equal(harness.requests.filter(request => request.options.method === "POST").length, 0);
+  } finally { releaseFirstCheck(); await firstWorker; }
+  assert.equal(harness.getTask().state, "succeeded");
+  assert.equal((await harness.storage.getManualPost("owner", postId)).targets[0].status, "accepted");
+  assert.equal(harness.requests.filter(request => request.options.method === "GET").length, 1);
   assert.equal(harness.requests.filter(request => request.options.method === "POST").length, 1);
 }));
 
-test("a late old finalizer cannot overwrite a newer pending_unknown attempt or its audit", () => withHarness(async harness => {
+test("a late old worker cannot overwrite a newer pending_unknown attempt or its audit", () => withHarness(async harness => {
   harness.beforeDraftResponse = () => harness.sql.exec(`UPDATE post_targets SET status='pending_unknown',
     attempt_id='newer-attempt', audit_id='newer-audit', postiz_post_id='newer-upstream'`);
-  await harness.submit();
-  assert.equal(harness.getTarget().status, "pending_unknown");
-  assert.equal(harness.getTarget().audit_id, "newer-audit");
-  assert.equal(harness.getTarget().postiz_post_id, "newer-upstream");
+  assert.equal((await harness.enqueue()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.getTask().state, "succeeded", "the completed old task retains its own result");
+  assert.equal(harness.getTask().audit_id, "33333333-3333-4333-8333-333333333333");
+  const detail = await harness.storage.getManualPost("owner", postId);
+  assert.equal(detail.targets[0].status, "pending_unknown");
+  assert.equal(harness.getTarget().attempt_id, "newer-attempt");
+  assert.equal(detail.targets[0].auditId, "newer-audit");
+  assert.equal(detail.targets[0].postizPostId, "newer-upstream");
 }));
 
-test("a swept same attempt may safely finalize accepted with its audit", () => withHarness(async harness => {
-  harness.beforeDraftResponse = () => harness.sql.exec("UPDATE post_targets SET status='pending_unknown'");
-  assert.equal((await harness.submit()).post.targets[0].status, "accepted");
-  assert.equal(harness.getTarget().audit_id, "33333333-3333-4333-8333-333333333333");
+test("a recovered unknown same attempt may safely finish accepted with its audit", () => withHarness(async harness => {
+  harness.beforeDraftResponse = async () => {
+    harness.sql.exec("UPDATE draft_submissions SET lease_expires_at='2020-01-01 00:00:00.000'");
+    await harness.queue.recoverDraftSubmissions();
+    assert.equal(harness.getTask().state, "unknown");
+    assert.equal(harness.getTarget().status, "pending_unknown");
+    assert.equal(harness.getTarget().attempt_id, harness.getTask().attempt_id);
+  };
+  assert.equal((await harness.enqueue()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.getTask().state, "succeeded");
+  const detail = await harness.storage.getManualPost("owner", postId);
+  assert.equal(detail.targets[0].status, "accepted");
+  assert.equal(detail.targets[0].auditId, "33333333-3333-4333-8333-333333333333");
+  assert.equal(detail.targets[0].postizPostId, "new-upstream");
+  assert.equal(detail.targets[0].warning, null);
+  assert.equal(harness.getTask().active_key, null);
+  assert.equal(harness.requests.filter(request => request.options.method === "POST").length, 1);
 }));
 
-test("ownership and enabled-channel checks still gate rejected retries", () => withHarness(async harness => {
+test("account and manual-post ownership gate rejected retries before enqueue", () => withHarness(async harness => {
   harness.accountOwner = "other";
-  assert.equal((await harness.submit()).kind, "forbidden");
+  assert.equal((await harness.enqueue()).kind, "forbidden");
   harness.accountOwner = "owner";
-  harness.accountDisabled = true;
-  assert.equal((await harness.submit()).kind, "forbidden");
+  assert.equal((await harness.enqueue({ userId: "other", isAdmin: true })).kind, "not_found", "admins cannot submit another owner's private manual post");
+  assert.equal(harness.getTask(), undefined);
   assert.equal(harness.requests.length, 0);
 }));
+
+for (const protection of ["reassigned account", "disabled account", "disabled owner"]) {
+  test(`worker ${protection} protection restores the frozen rejected binding`, () => withHarness(async harness => {
+    assert.equal((await harness.enqueue()).kind, "queued");
+    if (protection === "reassigned account") harness.accountOwner = "other";
+    else if (protection === "disabled account") harness.accountDisabled = true;
+    else harness.sql.exec("UPDATE users SET disabled=1");
+    await harness.queue.processDraftSubmissions();
+    assert.equal(harness.getTask().state, "failed");
+    assert.match(harness.getTask().error, /No draft was created/);
+    const detail = await harness.storage.getManualPost("owner", postId);
+    assert.equal(detail.targets[0].status, "rejected");
+    assert.equal(detail.targets[0].auditId, auditId);
+    assert.equal(detail.targets[0].postizPostId, "old-upstream");
+    assert.equal(detail.editable, false);
+    assert.equal(harness.requests.length, 0);
+  }));
+}
 
 test("submit route accepts only optional UUID expectedAuditId and forwards it", async () => {
   const { NextResponse } = nativeRequire("next/server");

@@ -508,7 +508,6 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .thread-turn p { margin: 0; color: var(--text); font-size: 11px; line-height: 1.6; white-space: pre-line; }
 .thread-turn.user p { color: var(--text-strong); }
 .thread-empty { border: 1px dashed var(--border-strong); border-radius: 9px; padding: 15px; margin-bottom: 14px; color: var(--text-faint); background: var(--surface-card); font-size: 11px; line-height: 1.65; }
-.thread-empty strong { display: block; margin-bottom: 5px; color: var(--text); font: 700 12px "Manrope", sans-serif; }
 .thread-thinking { display: flex; align-items: center; gap: 8px; border: 1px solid var(--accent-soft-border); border-radius: 8px; padding: 10px 11px; margin-bottom: 14px; color: var(--accent-text); background: var(--accent-soft); font-size: 11px; }
 .thread-note { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--warn-text); font: 9px "DM Mono", monospace; }
 .rewrite-error { display: flex; gap: 9px; border: 1px solid var(--danger-border); border-radius: 9px; padding: 11px 12px; margin-bottom: 14px; color: var(--danger-text); background: var(--danger-surface); }

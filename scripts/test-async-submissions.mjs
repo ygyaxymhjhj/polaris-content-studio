@@ -39,10 +39,9 @@ for (const kind of ["manual", "asset"]) {
       "@/lib/request-body": loadModule("../src/lib/request-body.ts"),
       "@/lib/image-upload": loadModule("../src/lib/image-upload.ts"),
       "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: "owner", provider: "x" }) },
-      "@/lib/post-submission": { submitPostTarget: async () => ({ kind: "ok", post: {} }) },
       "@/lib/draft-submissions": { enqueueManualSubmission: enqueue, enqueueAssetSubmission: enqueue },
       "@/lib/draft-submission-scheduler": { wakeDraftSubmissionWorker: async () => { externalCalls++; await never; } },
-      "@/lib/postiz": { publishToPostiz: async () => ({ success: true, postId: "old-sync" }), createStrictDraft: async () => { externalCalls++; await never; } },
+      "@/lib/postiz": { createStrictDraft: async () => { externalCalls++; await never; } },
       "@/lib/social-notifications": { recordSocialSubmission: async () => ({ auditId: "audit" }), deliverSocialNotifications: async () => ({ failed: 0 }) }
     };
     const path = kind === "manual" ? "../src/app/api/posts/[postId]/targets/[integrationId]/submit/route.ts" : "../src/app/api/social/publish/route.ts";
@@ -83,7 +82,7 @@ function createHarness() {
     INSERT INTO posts VALUES ('${postId}','owner','Title','Frozen text','data:image/png;base64,AAAA',NULL,NULL,NULL,NULL,4,'2020-01-01','2020-01-01');
     INSERT INTO post_targets VALUES ('target','${postId}','account','x','Account','not_started',0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2020-01-01','2020-01-01');
   `);
-  const harness = { sql, drafts: [], audits: [], accountOwner: "owner", liveDisabled: false,
+  const harness = { sql, drafts: [], audits: [], accountOwner: "owner", liveDisabled: false, liveAccountMissing: false,
     draftResult: { success: true, postId: "upstream-one" }, auditFailure: false, failInsert: false,
     livePost: { id: "old-upstream", state: "DRAFT", saveAction: "pass" }, afterLive: null, draftPromise: null };
   let connectionTail = Promise.resolve();
@@ -122,7 +121,7 @@ function createHarness() {
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
     "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: "x", accountName: "Account" }) },
     "@/lib/postiz": {
-      fetchPostizIntegrations: async () => { assert.equal(transactionOpen, false); return { configured: true, accounts: [{ id: "account", identifier: "x", disabled: harness.liveDisabled }] }; },
+      fetchPostizIntegrations: async () => { assert.equal(transactionOpen, false); return { configured: true, accounts: harness.liveAccountMissing ? [] : [{ id: "account", identifier: "x", disabled: harness.liveDisabled }] }; },
       fetchPostizPostDetails: async () => {
         assert.equal(transactionOpen, false);
         const observed = structuredClone(harness.livePost);
@@ -145,7 +144,7 @@ function createHarness() {
   const queue = loadModule("../src/lib/draft-submissions.ts", { ...dependencies, "@/lib/post-submission": submission });
   return Object.assign(harness, { queue, storage,
     enqueueAsset: (overrides = {}) => queue.enqueueAssetSubmission({ userId: "owner", isAdmin: false, assetId: "asset-one", integrationId: "account", content: "Frozen text", requestId, ...overrides }),
-    enqueueManual: (overrides = {}) => queue.enqueueManualSubmission({ userId: "owner", userName: "Owner", isAdmin: false, postId, integrationId: "account", expectedVersion: 4, ...overrides }),
+    enqueueManual: (overrides = {}) => queue.enqueueManualSubmission({ userId: "owner", isAdmin: false, postId, integrationId: "account", expectedVersion: 4, ...overrides }),
     tasks: () => sql.prepare("SELECT * FROM draft_submissions ORDER BY created_at, id").all(),
     target: () => sql.prepare("SELECT * FROM post_targets").get(),
     rejectOriginal: () => sql.exec(`UPDATE post_targets SET status='accepted', audit_id='old-audit', postiz_post_id='old-upstream', submitted_at='2020-01-01 00:00:00.000';
@@ -168,6 +167,60 @@ test("manual claim and durable insert are one transaction, including insert fail
   assert.equal(JSON.parse(harness.tasks()[0].snapshot).content, "Frozen text");
   assert.equal((await harness.enqueueManual()).kind, "in_flight");
   assert.equal((await harness.storage.updateManualPost("owner", postId, 4, { content: "different" })).kind, "frozen");
+  harness.sql.close();
+});
+
+test("manual success uses the frozen snapshot, binds its audit and never creates a duplicate", async () => {
+  const harness = createHarness();
+  assert.equal((await harness.enqueueManual()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.deepEqual(harness.drafts, [{ integrationId: "account", content: "Frozen text", imageUrl: "data:image/png;base64,AAAA", platform: "x" }]);
+  assert.equal(harness.target().status, "accepted");
+  assert.equal(harness.target().postiz_post_id, "upstream-one");
+  assert.equal(harness.target().audit_id, "new-audit");
+  assert.equal(harness.audits[0].assetId, postId);
+  assert.equal(harness.audits[0].projectId, undefined, "manual posts never borrow an AI project ID");
+  assert.equal(harness.audits[0].status, "drafted");
+  assert.equal((await harness.enqueueManual()).kind, "ok");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.tasks().length, 1);
+  assert.equal(harness.drafts.length, 1);
+  assert.equal(harness.audits.length, 1);
+  harness.sql.close();
+});
+
+for (const [mutation, expectedKind] of [
+  ["UPDATE posts SET version=5", "conflict"],
+  ["UPDATE posts SET content='   '", "validation"],
+  ["DELETE FROM post_targets", "target_missing"],
+  ["UPDATE posts SET owner_user_id='other'", "not_found"],
+  ["reassign", "forbidden"]
+]) {
+  test(`manual enqueue refuses invalid input before persisting work: ${mutation}`, async () => {
+    const harness = createHarness();
+    if (mutation === "reassign") harness.accountOwner = "other";
+    else harness.sql.exec(mutation);
+    assert.equal((await harness.enqueueManual()).kind, expectedKind);
+    assert.equal(harness.tasks().length, 0);
+    assert.equal(harness.drafts.length, 0);
+    harness.sql.close();
+  });
+}
+
+test("a definite manual draft failure can be retried through a fresh queued attempt", async () => {
+  const harness = createHarness();
+  harness.draftResult = { success: false, error: "explicit refusal" };
+  await harness.enqueueManual();
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.target().status, "failed");
+  assert.match(harness.target().error, /No draft was created/);
+  assert.equal(harness.audits[0].status, "failed");
+  harness.draftResult = { success: true, postId: "retry-upstream" };
+  assert.equal((await harness.enqueueManual()).kind, "queued");
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.target().status, "accepted");
+  assert.equal(harness.target().postiz_post_id, "retry-upstream");
+  assert.equal(harness.drafts.length, 2);
   harness.sql.close();
 });
 
@@ -203,6 +256,8 @@ for (const kind of ["asset", "manual"]) {
       assert.equal(harness.tasks()[0].state, expected);
       if (kind === "manual") assert.equal(harness.target().status, expected === "succeeded" ? "accepted" : expected === "unknown" ? "pending_unknown" : "failed");
       if (expected === "unknown") {
+        assert.equal(harness.audits.length, 0, "an unknown outcome is not a definite failure audit");
+        assert.match(harness.tasks()[0].warning, /Check the publishing engine/);
         await harness.queue.processDraftSubmissions();
         assert.equal(harness.drafts.length, 1);
         if (kind === "asset") assert.equal((await harness.enqueueAsset({ content: "try another text", requestId: postId })).kind, "unconfirmed");
@@ -244,7 +299,7 @@ test("queued jobs survive age and restart; expired running jobs become unknown w
   crashed.sql.close();
 });
 
-for (const mutation of ["UPDATE users SET disabled=1", "UPDATE users SET role='member'", "reassign", "disabled-account"]) {
+for (const mutation of ["UPDATE users SET disabled=1", "UPDATE users SET role='member'", "reassign", "disabled-account", "missing-account"]) {
   test(`worker rechecks current permissions: ${mutation}`, async () => {
     const harness = createHarness();
     harness.sql.exec("UPDATE users SET role='admin'");
@@ -252,6 +307,7 @@ for (const mutation of ["UPDATE users SET disabled=1", "UPDATE users SET role='m
     await harness.enqueueAsset({ isAdmin: true });
     if (mutation === "reassign") { harness.sql.exec("UPDATE users SET role='member'"); harness.accountOwner = "other"; }
     else if (mutation === "disabled-account") harness.liveDisabled = true;
+    else if (mutation === "missing-account") harness.liveAccountMissing = true;
     else harness.sql.exec(mutation);
     await harness.queue.processDraftSubmissions();
     assert.equal(harness.tasks()[0].state, "failed");

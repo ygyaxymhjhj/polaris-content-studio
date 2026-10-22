@@ -41,7 +41,6 @@ export async function POST(request: NextRequest, context: { params: Promise<{ po
   try {
     const outcome = await enqueueManualSubmission({
       userId: auth.user.id,
-      userName: auth.user.displayName,
       isAdmin: auth.user.role === "admin",
       postId,
       integrationId,

@@ -87,7 +87,14 @@ async function insertTask(connection: PoolConnection, input: {
 
 type EnqueueOutcome = Exclude<SubmitOutcome, { kind: "ok" }> | { kind: "queued"; task: DraftSubmissionTask; post?: Awaited<ReturnType<typeof getManualPost>> } | Extract<SubmitOutcome, { kind: "ok" }>;
 
-export async function enqueueManualSubmission(options: Parameters<typeof import("./post-submission").submitPostTarget>[0]): Promise<EnqueueOutcome> {
+export async function enqueueManualSubmission(options: {
+  userId: string;
+  isAdmin: boolean;
+  postId: string;
+  integrationId: string;
+  expectedVersion: number;
+  expectedAuditId?: string;
+}): Promise<EnqueueOutcome> {
   const account = await getSocialAccount(options.integrationId);
   if (!options.isAdmin && account?.ownerUserId !== options.userId) return { kind: "forbidden", message: "This social account is not assigned to you." };
   const current = await readSubmissionTarget(database(), options.userId, options.postId, options.integrationId);
