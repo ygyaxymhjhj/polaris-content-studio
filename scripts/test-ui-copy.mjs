@@ -34,6 +34,7 @@ const translationPath = resolve(repository, 'src/lib/i18n.tsx');
 const { translate, LocaleContext } = loadModule(translationPath);
 const { default: SocialAccountsView } = loadModule(resolve(repository, 'src/components/SocialAccountsView.tsx'));
 const { default: ConnectAccountsDialog } = loadModule(resolve(repository, 'src/components/ConnectAccountsDialog.tsx'));
+const { default: AssetImageEditor } = loadModule(resolve(repository, 'src/components/AssetImageEditor.tsx'));
 const syntaxTree = ts.createSourceFile(translationPath, readFileSync(translationPath, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const brandedMessages = new Set();
 function collectMessages(node) {
@@ -57,6 +58,13 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
   assert.doesNotMatch(translate(language, `Postiz returned an error at ${consoleUrl}`), /postiz/i, 'displayed error endpoints do not reveal the engine brand');
   assert.ok(translate(language, 'Retry https://example.test/status').endsWith('https://example.test/status'), 'unrelated URLs in messages remain unchanged');
   const render = component => renderToStaticMarkup(React.createElement(LocaleContext.Provider, { value: language }, component));
+  for (const variant of ['default', 'composer']) {
+    const imageMarkup = render(React.createElement(AssetImageEditor, {
+      value: '', title: '', variant, onChange() {}, onBusyChange() {}
+    }));
+    assert.doesNotMatch(imageMarkup, /30 MB|asset-image-help|aria-describedby/, 'upload limits are only shown on validation failure, without a dangling hint reference');
+    assert.match(translate(language, 'This image exceeds 30 MB. Choose an image up to 30 MB.'), /30 MB/);
+  }
   const accountMarkup = render(React.createElement(SocialAccountsView, {
     accounts: [{ id: 'account', name: 'Postiz Fan', identifier: 'x', disabled: true }],
     configured: true, uiUrl: consoleUrl, loading: false,

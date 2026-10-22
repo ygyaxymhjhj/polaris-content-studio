@@ -1128,7 +1128,6 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .post-media-replace { border-style: dashed; background: transparent; }
 .post-media-replace:hover { border-color: var(--border-strong); color: var(--text-strong); background: var(--surface-hover); }
 .post-media-remove { position: absolute; top: 5px; right: 5px; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-card); color: var(--text); }
-.post-composer-media .asset-image-help { margin: 10px 0 0; font-size: 11px; line-height: 1.5; }
 .post-platforms h2 { margin: 0 0 12px; color: var(--text-strong); font: 600 13px/1.5 "DM Sans", sans-serif; }
 .post-platform-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .post-add-platform.secondary-button { min-height: 40px; background: transparent; }

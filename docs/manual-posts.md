@@ -97,8 +97,9 @@ engine, so a simultaneous administrator change can still race with creation of t
 - **Accounts follow the existing ownership model.** Members only see and submit to their own
   accounts; administrators can use any account but cannot read another member's post. Members have
   no Postiz back office entry, so editing an accepted draft is an administrator hand-off.
-- **Images.** One JPG/PNG/WebP up to 5 MB from the browser (compressed to about 1 MB), re-validated
-  and thumbnailed on the server. Remote image URLs are not accepted for manual posts.
+- **Images.** One JPG/PNG/WebP original up to 30 MiB (shown as 30 MB in the UI). The browser optimizes
+  it to at most 1 MiB and a 2048 px longest edge before sending it; server validation and request
+  limits are unchanged. Remote image URLs are not accepted for manual posts.
 - **Draft content is not publication.** No platform character budget is displayed or enforced by
   the composer; the bounded local storage limit remains. Postiz may refuse invalid content, and
   publication-specific validation is handled when reviewing/promoting a draft in Postiz.

@@ -1,5 +1,5 @@
 export const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
-export const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
+export const MAX_IMAGE_UPLOAD_BYTES = 30 * 1024 * 1024;
 export const MAX_STORED_IMAGE_BYTES = 1024 * 1024;
 export const MAX_IMAGE_DATA_URL_LENGTH = 4 * Math.ceil(MAX_STORED_IMAGE_BYTES / 3) + 64;
 
@@ -39,8 +39,11 @@ export async function prepareUploadedImage(imageFile: File): Promise<PreparedIma
   if (!ACCEPTED_IMAGE_TYPES.includes(imageFile.type)) {
     throw new Error("Use a JPG, PNG or WebP image.");
   }
-  if (!imageFile.size || imageFile.size > MAX_IMAGE_UPLOAD_BYTES) {
-    throw new Error("Choose a non-empty image smaller than 5 MB.");
+  if (!imageFile.size) {
+    throw new Error("Choose a non-empty image.");
+  }
+  if (imageFile.size > MAX_IMAGE_UPLOAD_BYTES) {
+    throw new Error("This image exceeds 30 MB. Choose an image up to 30 MB.");
   }
 
   let imageBitmap: ImageBitmap;

@@ -129,7 +129,6 @@ export default function AssetImageEditor({
           </div>
           <button type="button" className="post-media-replace" disabled={locked} aria-label={t("Replace image")} onClick={() => fileInput.current?.click()}><ImagePlus size={22} aria-hidden="true" /></button>
         </div>}
-        <p className="asset-image-help">{t("JPG, PNG or WebP, up to 5 MB. Large images are optimized automatically.")}</p>
         {uploadError && <p className="asset-image-error" role="alert">{uploadError}</p>}
         <span className="post-composer-sr-only" role="status">{uploading ? t("Processing image…") : currentUpload ? t("Image added to the draft. Save changes to keep it.") : ""}</span>
       </section>
@@ -210,7 +209,6 @@ export default function AssetImageEditor({
         )}
       </div>
 
-      <p id={`${fieldId}-help`} className="asset-image-help">{t("JPG, PNG or WebP, up to 5 MB. Large images are optimized automatically.")}</p>
       {allowUrlInput && (
         <label className="field-label asset-image-url" htmlFor={`${fieldId}-url`}>
           {t("Or use an image link")}
@@ -221,7 +219,6 @@ export default function AssetImageEditor({
             value={isEmbeddedImage ? "" : value}
             disabled={locked}
             placeholder={isEmbeddedImage ? t("Paste a link to replace the uploaded image") : "https://..."}
-            aria-describedby={`${fieldId}-help`}
             onChange={(event) => changeImage(event.target.value.trim())}
           />
         </label>

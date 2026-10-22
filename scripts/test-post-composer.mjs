@@ -239,10 +239,50 @@ try {
     await route.fulfill({ json: { post: storedPost } });
   });
   await page.goto(origin);
+  const uploadResults = await page.evaluate(async compiledSource => {
+    const imageUpload = {};
+    new Function('exports', compiledSource)(imageUpload);
+    const canvas = document.createElement('canvas');
+    canvas.width = 3000;
+    canvas.height = 2000;
+    canvas.getContext('2d').fillRect(0, 0, canvas.width, canvas.height);
+    const originalImage = await new Promise(resolveBlob => canvas.toBlob(resolveBlob, 'image/png'));
+    const accepted = [];
+    for (const megabytes of [10, 30]) {
+      // Padding tests original-file byte limits without allocating enormous decoded pixel buffers.
+      const imageFile = new File([originalImage, new Uint8Array(megabytes * 1024 * 1024 - originalImage.size)], `${megabytes}mb.png`, { type: 'image/png' });
+      const prepared = await imageUpload.prepareUploadedImage(imageFile);
+      accepted.push({ inputBytes: imageFile.size, outputBytes: (await (await fetch(prepared.dataUrl)).blob()).size,
+        width: prepared.width, height: prepared.height, optimized: prepared.optimized });
+    }
+    const rejected = [];
+    for (const imageFile of [
+      new File([new Uint8Array(30 * 1024 * 1024 + 1)], 'oversized.png', { type: 'image/png' }),
+      new File([], 'empty.png', { type: 'image/png' }),
+      new File(['not an image'], 'corrupt.png', { type: 'image/png' }),
+      new File(['GIF89a'], 'unsupported.gif', { type: 'image/gif' })
+    ]) {
+      try { await imageUpload.prepareUploadedImage(imageFile); rejected.push(null); }
+      catch (error) { rejected.push(error.message); }
+    }
+    return { accepted, rejected };
+  }, transpile(readFileSync(resolve(repository, 'src/lib/image-upload.ts'), 'utf8')));
+  assert.deepEqual(uploadResults.accepted.map(result => result.inputBytes), [10, 30].map(megabytes => megabytes * 1024 * 1024));
+  for (const result of uploadResults.accepted) {
+    assert.ok(result.outputBytes <= 1024 * 1024, 'large originals do not enlarge saved image payloads');
+    assert.ok(Math.max(result.width, result.height) <= 2048);
+    assert.equal(result.optimized, true);
+  }
+  assert.deepEqual(uploadResults.rejected, [
+    'This image exceeds 30 MB. Choose an image up to 30 MB.', 'Choose a non-empty image.',
+    'Could not read this image. Please try another file.', 'Use a JPG, PNG or WebP image.'
+  ]);
   const text = page.getByRole('textbox', { name: 'Post text', exact: true });
   const addPlatform = page.getByRole('button', { name: 'Add platform', exact: true });
   const push = page.getByRole('button', { name: 'Push drafts', exact: true });
   await text.waitFor();
+  assert.equal(await page.locator('.post-composer-media .asset-image-help, .post-composer-media [role="alert"]').count(), 0, 'normal uploads need no persistent size hint or empty error placeholder');
+  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /30 MB/);
   assert.equal(await page.getByLabel('Internal title').count(), 0);
   assert.equal(await page.locator('.post-editor-counter, select').count(), 0);
   assert.equal(await page.locator('.post-account-picker').count(), 0);
@@ -294,8 +334,21 @@ try {
   await page.getByRole('button', { name: 'Remove account: Company page', exact: true }).click();
   assert.equal(await page.locator('.post-editor-target').count(), 1, 'summary updates before autosave');
   await text.fill('Draft content that stays local until pushed.');
-  await page.getByLabel('Upload post image', { exact: true }).setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: imageBuffer });
+  const maximumSizeImage = Buffer.alloc(30 * 1024 * 1024);
+  imageBuffer.copy(maximumSizeImage);
+  const imageInput = page.getByLabel('Upload post image', { exact: true });
+  await imageInput.setInputFiles({ name: '30mb.png', mimeType: 'image/png', buffer: maximumSizeImage });
   await page.locator('.post-media-thumbnail img').waitFor();
+  const uploadedPreview = await page.locator('.post-media-thumbnail img').getAttribute('src');
+  assert.ok(Buffer.from(uploadedPreview.split(',')[1], 'base64').length <= 1024 * 1024);
+  await imageInput.setInputFiles({ name: 'oversized.png', mimeType: 'image/png', buffer: Buffer.alloc(30 * 1024 * 1024 + 1) });
+  await page.getByRole('alert').filter({ hasText: 'This image exceeds 30 MB. Choose an image up to 30 MB.' }).waitFor();
+  assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), uploadedPreview, 'a rejected replacement preserves the current image');
+  assert.equal(await imageInput.isEnabled(), true);
+  await imageInput.setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: imageBuffer });
+  await page.locator('.post-composer-media [role="alert"]').waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: 'Replace image', exact: true }).first().waitFor();
+  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /30 MB/);
   await page.screenshot({ path: '/tmp/polaris-composer-dark.png', fullPage: true });
   await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
 
