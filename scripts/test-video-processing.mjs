@@ -71,13 +71,24 @@ function createHarness() {
     const connection = {
       release,
       destroy() { if (snapshot) { harness.jobs = snapshot.jobs; harness.receipts = snapshot.receipts; snapshot = null; } harness.lockHeld = false; release(); },
+      async query(options) {
+        assert.equal(released, false, "destroyed connections cannot execute late SQL");
+        assert.equal(options.timeout, 5_000);
+        assert.equal(options.sql, "START TRANSACTION", "only transaction startup needs the text protocol");
+        harness.queries.push({ statement: options.sql, parameters: [], transaction: Boolean(snapshot), protocol: "query" });
+        assert.equal(snapshot, null);
+        snapshot = structuredClone({ jobs: harness.jobs, receipts: harness.receipts });
+        return [{}];
+      },
       async execute(query, parameters = []) {
         assert.equal(released, false, "destroyed connections cannot execute late SQL");
         const statement = typeof query === "string" ? query : query.sql;
         if (typeof query !== "string") assert.equal(query.timeout, 5_000);
         const normalized = statement.replace(/\s+/g, " ").trim();
-        harness.queries.push({ statement: normalized, parameters, transaction: Boolean(snapshot) });
-        if (normalized === "START TRANSACTION") { assert.equal(snapshot, null); snapshot = structuredClone({ jobs: harness.jobs, receipts: harness.receipts }); return [{}]; }
+        harness.queries.push({ statement: normalized, parameters, transaction: Boolean(snapshot), protocol: "execute" });
+        if (normalized === "START TRANSACTION") {
+          throw Object.assign(new Error("This command is not supported in the prepared statement protocol yet"), { code: "ER_UNSUPPORTED_PS", errno: 1295 });
+        }
         if (normalized === "COMMIT") {
           snapshot = null;
           if (harness.unknownCommit) { harness.unknownCommit = false; throw new Error("synthetic secret /private/unknown-commit"); }

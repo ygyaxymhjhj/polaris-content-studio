@@ -20,7 +20,7 @@ const VIDEO_UPLOAD_SQL_TIMEOUT_MS = 5_000;
 
 /** Only short upload receipt SQL belongs here, never file processing or an upstream request. */
 export function withVideoUploadConnection<Result>(
-  callback: (connection: VideoUploadConnection) => Promise<Result>,
+  callback: (connection: Pick<PoolConnection, "execute" | "query">) => Promise<Result>,
   signal: AbortSignal
 ): Promise<Result> {
   return new Promise<Result>((resolve, reject) => {

@@ -116,7 +116,8 @@ export async function registerVideoProcessingJob(input: {
       const [locks] = await connection.execute<RowDataPacket[]>(sql("SELECT GET_LOCK(?, 1) AS acquired"), [capacityLock]);
       if (Number(locks[0]?.acquired) !== 1) throw new VideoUploadError("Video processing is busy. Try again shortly.", "UPLOAD_BUSY", 429);
       try {
-        await connection.execute(sql("START TRANSACTION"));
+        // MySQL 8.4 does not support START TRANSACTION in the prepared-statement protocol.
+        await connection.query(sql("START TRANSACTION"));
         const [users] = await connection.execute<RowDataPacket[]>(sql("SELECT id FROM users WHERE id = ? AND disabled = 0"), [input.ownerUserId]);
         if (!users.length) throw new VideoUploadError("This account cannot process videos.", "FORBIDDEN", 403);
         const [existing] = await connection.execute<JobRow[]>(sql(
@@ -174,7 +175,7 @@ export async function cancelVideoProcessingJob(ownerUserId: string, jobId: strin
   if (!isVideoMediaId(jobId)) return null;
   let cancelledBeforeClaim = false;
   const job = await withVideoUploadConnection(async connection => {
-    await connection.execute(sql("START TRANSACTION"));
+    await connection.query(sql("START TRANSACTION"));
     try {
       const row = await readJob(connection, ownerUserId, jobId.toLowerCase(), true);
       if (!row) return null;
@@ -215,7 +216,7 @@ async function changePhase(job: JobRow, phase: VideoProcessingJob["phase"], sign
 
 async function claimJob(): Promise<JobRow | null> {
   return withVideoUploadConnection(async connection => {
-    await connection.execute(sql("START TRANSACTION"));
+    await connection.query(sql("START TRANSACTION"));
     try {
       const [rows] = await connection.execute<JobRow[]>(sql(
         "SELECT * FROM video_processing_jobs WHERE state='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
@@ -262,7 +263,7 @@ async function recoverReceipt(connection: Connection, job: JobRow): Promise<bool
 
 async function reconcileInterrupted(): Promise<void> {
   await withVideoUploadConnection(async connection => {
-    await connection.execute(sql("START TRANSACTION"));
+    await connection.query(sql("START TRANSACTION"));
     try {
       const [rows] = await connection.execute<JobRow[]>(sql(
         "SELECT * FROM video_processing_jobs WHERE state='running' AND lease_expires_at<=? ORDER BY created_at LIMIT 8 FOR UPDATE SKIP LOCKED"
@@ -294,7 +295,7 @@ async function processJob(job: JobRow): Promise<void> {
   poll.unref();
   try {
     const recovered = await withVideoUploadConnection(async connection => {
-      await connection.execute(sql("START TRANSACTION"));
+      await connection.query(sql("START TRANSACTION"));
       try {
         const row = await readJob(connection, job.owner_user_id, job.id, true);
         if (!row || row.state !== "running" || row.lease_token !== job.lease_token) throw new Error("Video processing lease was lost.");
@@ -322,7 +323,7 @@ async function processJob(job: JobRow): Promise<void> {
     signal.throwIfAborted();
     // The row lock fences BOTH receipt insertion and success. DELETE must take this same lock.
     await withVideoUploadConnection(async connection => {
-      await connection.execute(sql("START TRANSACTION"));
+      await connection.query(sql("START TRANSACTION"));
       try {
         const current = await readJob(connection, job.owner_user_id, job.id, true);
         if (!current || current.state !== "running" || current.lease_token !== job.lease_token

@@ -108,11 +108,12 @@ async function ensureNewOutput(inputPath: string, outputPath: string): Promise<v
 }
 
 function buildConversionArguments(inputPath: string, outputPath: string, inspected: InspectedVideoFile, plan: CompatibilityPlan): string[] {
+  // Autorotation is enabled by default; explicit boolean syntax differs between FFmpeg versions.
   const arguments_ = [
     "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-xerror", "-max_alloc", "67108864",
     "-filter_threads", "2", "-filter_complex_threads", "2", "-threads", "2",
     "-protocol_whitelist", "file", "-f", "mov", "-enable_drefs", "0", "-use_absolute_path", "0",
-    "-probesize", "8388608", "-analyzeduration", "5000000", "-autorotate", "-i", inputPath,
+    "-probesize", "8388608", "-analyzeduration", "5000000", "-i", inputPath,
     "-map", `0:${inspected.video.index}`
   ];
   if (inspected.audio) arguments_.push("-map", `0:${inspected.audio.index}`);

@@ -12,8 +12,8 @@ import { after, test } from "node:test";
 import typescript from "typescript";
 
 const nativeRequire = createRequire(import.meta.url);
-const ffmpegPath = "/opt/homebrew/bin/ffmpeg";
-const ffprobePath = "/opt/homebrew/bin/ffprobe";
+const ffmpegPath = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
+const ffprobePath = process.env.FFPROBE_PATH || "/opt/homebrew/bin/ffprobe";
 const previousEnvironment = process.env;
 const originalFetch = globalThis.fetch;
 process.env = { TMPDIR: "/tmp", FFMPEG_PATH: ffmpegPath, FFPROBE_PATH: ffprobePath };
@@ -81,6 +81,8 @@ function assertBoundedArguments(arguments_) {
   assert.equal(option("-filter_threads"), "2");
   assert.equal(option("-filter_complex_threads"), "2");
   assert.equal(option("-threads"), "2");
+  assert.ok(!arguments_.includes("-autorotate") && !arguments_.includes("-noautorotate"),
+    "use enabled-by-default autorotation without version-dependent boolean syntax");
   assert.equal(option("-movflags"), "+faststart");
   assert.equal(option("-map_metadata"), "-1");
   assert.equal(option("-map_metadata:s"), "-1");
