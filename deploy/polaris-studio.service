@@ -11,6 +11,9 @@ WorkingDirectory=/opt/polaris-content-studio/app
 Environment=NODE_ENV=production
 Environment=NEXT_TELEMETRY_DISABLED=1
 Environment=ARTICLE_CRAWLER_LOCAL_BROWSER=false
+Environment=VIDEO_PROCESSING_DIRECTORY=/var/lib/polaris-content-studio/video-processing
+StateDirectory=polaris-content-studio/video-processing
+StateDirectoryMode=0700
 ExecStart=/usr/local/bin/node node_modules/next/dist/bin/next start --hostname 192.168.220.109 --port 13300
 Restart=on-failure
 RestartSec=5
@@ -19,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/polaris-content-studio/app/.next
+ReadWritePaths=/opt/polaris-content-studio/app/.next /var/lib/polaris-content-studio/video-processing
 
 [Install]
 WantedBy=multi-user.target

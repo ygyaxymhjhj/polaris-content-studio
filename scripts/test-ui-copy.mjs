@@ -71,7 +71,14 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
     assert.doesNotMatch(mediaMarkup, /100 MB|30 MB|video\/\*|aria-describedby/, 'MP4 selection adds no persistent limits or unsupported formats');
     assert.match(mediaMarkup, /accept="[^"]*video\/mp4/);
     for (const message of ['Post media', 'Upload post media', 'Post video', 'Replace video', 'Remove video', 'Cancel upload',
-      'Uploading video…', 'Video transferred. Validating and saving…', 'This platform requires an image or MP4 video.',
+      'Uploading video…', 'Video transferred. Waiting for processing…', 'Video queued…', 'Validating video…',
+      'Converting video to H.264…', 'Saving video…', 'This platform requires an image or MP4 video.',
+      'Video conversion is unavailable. Ask an administrator to check the server.',
+      'Could not convert this video to H.264. Please try another MP4.', 'Video conversion timed out. Please try another MP4.',
+      'Could not process this video. Please try another MP4.', 'Video job ID:', 'Retry processing status',
+      'This video exceeds the processing limits. Choose a smaller or shorter MP4.',
+      'Could not confirm video processing status. The job may still be running. Do not upload the file again.',
+      'Video processing is taking longer than expected. The job may still be running. Do not upload the file again.',
       'This video exceeds 100 MB. Choose an MP4 up to 100 MB.', 'Could not upload this video. Please try again.']) {
       if (language !== 'en') assert.notEqual(translate(language, message), message, `${language}: missing media copy: ${message}`);
     }

@@ -5,8 +5,8 @@ import Image from "next/image";
 import { useEffect, useId, useRef, useState, type DragEvent } from "react";
 import { useTranslation } from "@/lib/i18n";
 import { ACCEPTED_IMAGE_TYPES, prepareUploadedImage, type PreparedImage } from "@/lib/image-upload";
-import { getVideoPreviewUrl } from "@/lib/video-types";
-import { uploadVideo, validateVideoUpload } from "@/lib/video-upload-client";
+import { getVideoPreviewUrl, type VideoProcessingJob } from "@/lib/video-types";
+import { resumeVideoProcessing, uploadVideo, validateVideoUpload, VideoProcessingStatusError, type VideoProcessingPhase } from "@/lib/video-upload-client";
 
 interface AssetImageEditorProps {
   value: string;
@@ -49,6 +49,8 @@ export default function AssetImageEditor({
   const [uploading, setUploading] = useState(false);
   const [videoPreview, setVideoPreview] = useState("");
   const [videoProgress, setVideoProgress] = useState<number | null>(null);
+  const [videoProcessing, setVideoProcessing] = useState<VideoProcessingPhase | null>(null);
+  const [recoverableJob, setRecoverableJob] = useState<VideoProcessingJob | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [failedPreviewUrl, setFailedPreviewUrl] = useState("");
@@ -65,8 +67,11 @@ export default function AssetImageEditor({
   const acceptedTypes = [...ACCEPTED_IMAGE_TYPES, ...(onVideoChange ? ["video/mp4", ".mp4"] : [])].join(",");
   const inputLabel = t(onVideoChange ? "Upload post media" : "Upload post image");
   const mediaLabel = t(onVideoChange ? "Post media" : "Post image");
-  const busyLabel = videoProgress === null ? t("Processing image…") : videoProgress < 100
-    ? `${t("Uploading video…")} ${videoProgress}%` : t("Video transferred. Validating and saving…");
+  const processingLabels: Record<VideoProcessingPhase, string> = {
+    queued: "Video queued…", validating: "Validating video…", converting: "Converting video to H.264…", saving: "Saving video…"
+  };
+  const busyLabel = videoProgress === null ? t("Processing image…") : videoProcessing ? t(processingLabels[videoProcessing]) : videoProgress < 100
+    ? `${t("Uploading video…")} ${videoProgress}%` : t("Video transferred. Waiting for processing…");
   const replaceLabel = t(videoUrl ? "Replace video" : "Replace image");
   const removeLabel = t(videoUrl ? "Remove video" : "Remove image");
 
@@ -85,6 +90,8 @@ export default function AssetImageEditor({
     clearLocalPreview();
     setUploading(false);
     setVideoProgress(null);
+    setVideoProcessing(null);
+    setRecoverableJob(null);
     busyCallback.current(false);
   }
 
@@ -97,21 +104,23 @@ export default function AssetImageEditor({
     busyCallback.current(false);
   }, []);
 
-  async function uploadImages(imageFiles: File[]) {
-    if (disabled || uploadInProgress.current || !imageFiles.length) return;
+  async function uploadImages(imageFiles: File[], processingJob?: VideoProcessingJob) {
+    if (disabled || uploadInProgress.current || (!processingJob && !imageFiles.length)) return;
     setUploadError("");
-    if (imageFiles.length !== 1) {
+    if (!processingJob && imageFiles.length !== 1) {
       setUploadError(t(onVideoChange ? "Please upload one image or MP4 at a time." : "Please upload one image at a time."));
       return;
     }
 
     const file = imageFiles[0];
-    const isVideo = Boolean(onVideoChange && !ACCEPTED_IMAGE_TYPES.includes(file.type));
-    if (isVideo) {
+    const isVideo = Boolean(processingJob || (onVideoChange && !ACCEPTED_IMAGE_TYPES.includes(file.type)));
+    if (isVideo && !processingJob) {
       try { validateVideoUpload(file); }
       catch (error) { setUploadError(t((error as Error).message)); return; }
     }
     const sequence = ++uploadSequence.current;
+    // Selecting other media explicitly abandons only the local recovery receipt, not another job.
+    setRecoverableJob(null);
     uploadInProgress.current = true;
     setUploading(true);
     busyCallback.current(true);
@@ -119,17 +128,25 @@ export default function AssetImageEditor({
       if (isVideo) {
         const controller = new AbortController();
         uploadController.current = controller;
-        setVideoProgress(0);
-        localPreview.current = URL.createObjectURL(file);
-        setVideoPreview(localPreview.current);
-        const video = await uploadVideo(file, controller.signal, progress => {
-          if (sequence === uploadSequence.current) setVideoProgress(progress);
-        });
+        setVideoProgress(processingJob ? 100 : 0);
+        setVideoProcessing(null);
+        if (!processingJob) {
+          localPreview.current = URL.createObjectURL(file);
+          setVideoPreview(localPreview.current);
+        }
+        const updateProcessing = (phase: VideoProcessingPhase) => {
+          if (sequence === uploadSequence.current) setVideoProcessing(phase);
+        };
+        const video = await (processingJob ? resumeVideoProcessing(processingJob, controller.signal, updateProcessing)
+          : uploadVideo(file, controller.signal, progress => {
+            if (sequence === uploadSequence.current) setVideoProgress(progress);
+          }, updateProcessing));
         if (sequence !== uploadSequence.current) return;
         onVideoChange?.(video.id);
         setUploadedImage(null);
       } else {
         setVideoProgress(null);
+        setVideoProcessing(null);
         const preparedImage = await prepareUploadedImage(file);
         if (sequence !== uploadSequence.current) return;
         setUploadedImage(preparedImage);
@@ -138,7 +155,10 @@ export default function AssetImageEditor({
       }
     } catch (error) {
       if (sequence !== uploadSequence.current) return;
-      setUploadError(t(error instanceof Error ? error.message : isVideo ? "Could not upload this video. Please try again." : "Could not process this image. Please try another file."));
+      if (error instanceof Error && error.name === "AbortError") return;
+      const message = t(error instanceof Error ? error.message : isVideo ? "Could not upload this video. Please try again." : "Could not process this image. Please try another file.");
+      if (error instanceof VideoProcessingStatusError) setRecoverableJob(error.job);
+      setUploadError(error instanceof VideoProcessingStatusError ? `${message} ${t("Video job ID:")} ${error.job.id}` : message);
     } finally {
       if (sequence === uploadSequence.current) {
         uploadInProgress.current = false;
@@ -146,12 +166,14 @@ export default function AssetImageEditor({
         clearLocalPreview();
         setUploading(false);
         setVideoProgress(null);
+        setVideoProcessing(null);
         busyCallback.current(false);
       }
     }
   }
 
   function changeImage(imageUrl: string) {
+    setRecoverableJob(null);
     setUploadError("");
     setFailedPreviewUrl("");
     setUploadedImage(null);
@@ -159,6 +181,7 @@ export default function AssetImageEditor({
   }
 
   function removeMedia() {
+    setRecoverableJob(null);
     setUploadError("");
     if (videoMediaId) onVideoChange?.(null);
     else changeImage("");
@@ -169,6 +192,8 @@ export default function AssetImageEditor({
     <span>{busyLabel}</span>
     {videoProgress !== null && <button type="button" className="text-button" onClick={cancelUpload}>{t("Cancel upload")}</button>}
   </div> : null;
+  const recoveryAction = recoverableJob && !uploading ? <button type="button" className="text-button" disabled={locked}
+    onClick={() => void uploadImages([], recoverableJob)}>{t("Retry processing status")}</button> : null;
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     if (!event.dataTransfer.types.includes("Files")) return;
@@ -207,6 +232,7 @@ export default function AssetImageEditor({
           <button type="button" className="post-media-replace" disabled={locked} aria-label={replaceLabel} onClick={() => fileInput.current?.click()}><ImagePlus size={22} aria-hidden="true" /></button>
         </div>}
         {uploadStatus}
+        {recoveryAction}
         {uploadError && <p className="asset-image-error" role="alert">{uploadError}</p>}
         <span className="post-composer-sr-only" role="status">{!uploading && currentUpload ? t("Image added to the draft. Save changes to keep it.") : ""}</span>
       </section>
@@ -304,6 +330,7 @@ export default function AssetImageEditor({
       {uploadError && <p className="asset-image-error" role="alert">{uploadError}</p>}
       {previewFailed && allowUrlInput && <p className="asset-image-error">{t("Check the image link or upload a local file instead.")}</p>}
       {uploadStatus}
+      {recoveryAction}
       {!uploading && <div className="asset-image-status" role="status">{currentUpload ? t(currentUpload.optimized ? "Image optimized and added to the draft. Save changes to keep it." : "Image added to the draft. Save changes to keep it.") : ""}</div>}
       {disabled && <p className="asset-image-help">{t("Apply or discard the AI option before changing the image.")}</p>}
     </section>

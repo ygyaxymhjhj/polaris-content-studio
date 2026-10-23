@@ -96,14 +96,14 @@ const server = createServer((request, response) => {
   if (request.url === '/api/media/uploads' && request.method === 'POST') {
     void handleVideoUpload(request, response);
   } else if (request.url === '/bundle.js') {
-    response.setHeader('Content-Type', 'application/javascript');
+    response.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     response.end(bundle);
   } else if (request.url === '/styles.css') {
-    response.setHeader('Content-Type', 'text/css');
+    response.setHeader('Content-Type', 'text/css; charset=utf-8');
     response.end(styles);
   } else {
-    response.setHeader('Content-Type', 'text/html');
-    response.end('<!doctype html><html data-theme="dark"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/styles.css"></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
+    response.setHeader('Content-Type', 'text/html; charset=utf-8');
+    response.end('<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/styles.css"></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>');
   }
 });
 await new Promise(resolveListening => server.listen(0, '127.0.0.1', resolveListening));
@@ -155,10 +155,20 @@ try {
   let releaseUpload;
   let nextUploadFailure = false;
   let nextUploadInvalid = false;
+  let nextUploadStatus = 201;
+  let nextUploadJob;
+  let heldVideoJobId = '';
+  let holdJobRead;
+  let releaseJobRead;
+  const processingJobs = new Map();
+  const jobReads = [];
+  const jobDeletes = [];
+  const uploadRequestIds = [];
   const videoIds = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'];
   handleVideoUpload = async (request, response) => {
     assert.equal(request.headers['content-type'], 'video/mp4');
     assert.match(request.headers['x-upload-request-id'], /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i);
+    uploadRequestIds.push(request.headers['x-upload-request-id']);
     assert.ok(decodeURIComponent(request.headers['x-file-name']).endsWith('.mp4'));
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -167,20 +177,59 @@ try {
     uploads.push(video);
     const failure = nextUploadFailure;
     const invalid = nextUploadInvalid;
+    const status = nextUploadStatus;
+    const processing = nextUploadJob;
     nextUploadFailure = false;
     nextUploadInvalid = false;
+    nextUploadStatus = 201;
+    nextUploadJob = undefined;
     if (holdUpload) {
       holdUpload();
       holdUpload = null;
       await new Promise(resolveUpload => { releaseUpload = resolveUpload; });
     }
-    response.writeHead(failure ? 503 : 201, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify(failure ? { code: 'POSTIZ_UPLOAD_FAILED', error: 'Synthetic video failure' }
+    if (processing) {
+      const job = { id: `dddddddd-dddd-4ddd-8ddd-${String(uploads.length).padStart(12, '0')}`, state: 'queued', phase: 'validating', ...processing.initial };
+      const reads = (processing.reads || []).map(update => ({ ...job, ...update, ...(update.state === 'succeeded' && !processing.malformedSuccess ? { video } : {}) }));
+      processingJobs.set(job.id, { job, reads, failuresRemaining: processing.failuresRemaining || 0 });
+      response.writeHead(202, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ job }));
+      return;
+    }
+    response.writeHead(failure ? 503 : status, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(failure ? { code: 'POSTIZ_UPLOAD_FAILED', error: '/private/server stderr must not be displayed' }
       : { video: invalid ? { ...video, id: 'invalid-id' } : video }));
   };
   await page.route('**/api/media/uploads**', async route => {
     if (route.request().method() === 'POST') await route.continue();
     else await route.fulfill({ contentType: 'video/mp4', body: videoBuffer });
+  });
+  await page.route('**/api/media/video-jobs/**', async route => {
+    const request = route.request();
+    const identifier = new URL(request.url()).pathname.split('/').at(-1);
+    const processing = processingJobs.get(identifier);
+    assert.ok(processing, 'The job route receives job JSON, never the raw MP4 POST route');
+    if (request.method() === 'DELETE') {
+      jobDeletes.push(identifier);
+      processing.job = { ...processing.job, state: 'cancelled' };
+      await route.fulfill({ json: { job: processing.job } });
+      return;
+    }
+    assert.equal(request.method(), 'GET');
+    jobReads.push(identifier);
+    if (processing.failuresRemaining > 0) {
+      processing.failuresRemaining -= 1;
+      await route.fulfill({ status: 503, json: { error: '/private/server stderr' } });
+      return;
+    }
+    processing.job = processing.reads.shift() || processing.job;
+    const snapshot = structuredClone(processing.job);
+    if (identifier === heldVideoJobId) {
+      holdJobRead?.();
+      holdJobRead = null;
+      await new Promise(resolveRead => { releaseJobRead = resolveRead; });
+    }
+    await route.fulfill({ json: { job: snapshot }, headers: { 'Cache-Control': 'no-store' } });
   });
   await page.route('**/api/posts**', async route => {
     const request = route.request();
@@ -824,7 +873,7 @@ try {
   await text.fill('Text typed just before a slow video upload');
   await videoInput.setInputFiles(videoFile);
   await slowStarted;
-  await page.locator('.asset-video-progress').filter({ hasText: 'Validating and saving' }).waitFor();
+  await page.locator('.asset-video-progress').filter({ hasText: 'Waiting for processing' }).waitFor();
   assert.match(await videoPreview.getAttribute('src'), /^blob:/);
   const localPreviewUrl = await videoPreview.getAttribute('src');
   await videoPreview.evaluate(element => new Promise((resolveReady, rejectReady) => {
@@ -872,8 +921,9 @@ try {
   await text.fill('Old save snapshot with the first video');
   await oldSaveStarted;
   const secondUploadCompleted = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/media/uploads');
+  nextUploadStatus = 200;
   await videoInput.setInputFiles(videoFile);
-  await secondUploadCompleted;
+  assert.equal((await secondUploadCompleted).status(), 200, 'A successful receipt replay remains compatible');
   const secondVideoId = uploads.at(-1).id;
   await page.waitForFunction(expected => document.querySelector('.post-media-thumbnail video')?.getAttribute('src') === `/api/media/uploads/${expected}`, secondVideoId);
   assert.notEqual(secondVideoId, firstVideoId);
@@ -987,7 +1037,135 @@ try {
   assert.equal(await videoInput.isEnabled(), true);
   assert.equal(await outerNavigation.isEnabled(), true, 'reload restores the outer navigation lock');
   assert.equal(await text.inputValue(), 'Latest snapshot before leaving');
+
+  // Real composer async processing: POST returns immediately while validation/conversion stays pending.
+  storedPost = { ...structuredClone(originalPost), imageUrl: expectedOldImage, videoMediaId: null,
+    targets: [{ integrationId: 'channel-x', platform: 'x', accountName: 'News desk', status: 'not_started' }] };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  nextUploadJob = { reads: [{ state: 'failed', phase: 'converting', code: 'VIDEO_CONVERSION_FAILED', error: '/private/ffmpeg stderr' }] };
+  await videoInput.setInputFiles(videoFile);
+  await page.getByRole('alert').filter({ hasText: 'Could not convert this video' }).waitFor();
+  assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), expectedOldImage, 'Failed job preserves the old image');
+  assert.doesNotMatch(await page.getByRole('alert').innerText(), /private|stderr/);
+  assert.equal(await push.isEnabled(), true);
+
+  nextUploadJob = {};
+  const asyncPostResponse = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/media/uploads');
+  const uploadCountBeforeProcessing = uploads.length;
+  const readsBeforeProcessing = jobReads.length;
+  await videoInput.setInputFiles(videoFile);
+  const queuedResponse = await asyncPostResponse;
+  assert.equal(queuedResponse.status(), 202);
+  const queuedJob = (await queuedResponse.json()).job;
+  const controlledProcessing = processingJobs.get(queuedJob.id);
+  assert.equal(jobReads.length, readsBeforeProcessing, 'POST 202 does not wait for even the first processing poll');
+  const writesBeforeProcessing = writes();
+  const processingLabels = ['Video queued…', 'Validating video…', 'Converting video to H.264…', 'Saving video…'];
+  const processingUpdates = [{ state: 'running', phase: 'validating' }, { state: 'running', phase: 'converting' },
+    { state: 'running', phase: 'saving' }, { state: 'succeeded', phase: 'saving', video: uploads.at(-1) }];
+  for (const [phaseIndex, label] of processingLabels.entries()) {
+    await page.locator('.asset-video-progress').filter({ hasText: label }).waitFor();
+    for (const control of [saveDraft, push, outerNavigation, page.getByRole('button', { name: 'Back to posts', exact: true })]) {
+      assert.equal(await control.isDisabled(), true, `${label} retains every media busy lock`);
+    }
+    assert.equal(writes(), writesBeforeProcessing, 'No autosave/push during queued/running processing');
+    assert.equal(storedPost.videoMediaId, null, 'Unfinished job never becomes a draft media reference');
+    if (label === 'Converting video to H.264…') {
+      await videoPreview.evaluate(element => element.dispatchEvent(new Event('error')));
+      assert.equal(await page.getByRole('alert').count(), 0, 'Unsupported local preview does not reject server conversion');
+      assert.equal(await videoPreview.evaluate(element => element.autoplay), false, 'Local preview never auto-plays');
+    }
+    controlledProcessing.job = { ...controlledProcessing.job, ...processingUpdates[phaseIndex] };
+  }
+  await page.waitForFunction(() => document.querySelector('.post-media-thumbnail video')?.getAttribute('src')?.startsWith('/api/media/uploads/'));
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  const processedVideoId = storedPost.videoMediaId;
+  assert.ok(processedVideoId);
+  assert.equal(storedPost.imageUrl, null);
+  assert.equal(uploads.length, uploadCountBeforeProcessing + 1, 'All processing phases reuse exactly one raw-file POST');
+
+  nextUploadJob = { reads: [{ state: 'failed', phase: 'saving', code: 'POSTIZ_UPLOAD_FAILED', error: '/private/server path' }] };
+  await videoInput.setInputFiles(videoFile);
+  await page.getByRole('alert').filter({ hasText: 'Could not save the video' }).waitFor();
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${processedVideoId}`, 'Failed job preserves the previous video');
+  for (const processing of [{ initial: { state: 'succeeded' } }, { malformedSuccess: true, reads: [{ state: 'succeeded', phase: 'saving' }] }]) {
+    nextUploadJob = processing;
+    await videoInput.setInputFiles(videoFile);
+    await page.getByRole('alert').waitFor();
+    assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${processedVideoId}`, 'Malformed job success never replaces the previous media');
+    assert.equal(await videoInput.isEnabled(), true);
+  }
+  assert.match(await page.getByRole('alert').innerText(), /may still be running.*Video job ID:/, 'Unconfirmed GET keeps safe job receipt information');
+
+  // Exhaust the three transient retries, then recover the SAME job without resending the File.
+  const retryProcessing = page.getByRole('button', { name: 'Retry processing status', exact: true });
+  nextUploadJob = { failuresRemaining: 4 };
+  const recoveryPost = page.waitForResponse(response => response.status() === 202 && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  const recoveryJob = (await (await recoveryPost).json()).job;
+  await retryProcessing.waitFor();
+  assert.equal(jobReads.filter(identifier => identifier === recoveryJob.id).length, 4);
+  assert.equal(jobDeletes.includes(recoveryJob.id), false, 'Status failure never secretly cancels the original job');
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${processedVideoId}`);
+  assert.equal(await outerNavigation.isEnabled(), true, 'Old attachments can still be saved while status is unconfirmed');
+  const recoveryUploadCount = uploads.length;
+  const recoveryRequestIds = [...uploadRequestIds];
+  processingJobs.get(recoveryJob.id).job = { ...recoveryJob, state: 'succeeded', phase: 'saving', video: uploads.at(-1) };
+  await retryProcessing.click();
+  assert.equal(await saveDraft.isDisabled(), true);
+  assert.equal(await push.isDisabled(), true);
+  assert.equal(await outerNavigation.isDisabled(), true);
+  await page.locator('.asset-video-progress').waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.videoMediaId, uploads.at(-1).id);
+  assert.equal(uploads.length, recoveryUploadCount, 'Recovery performs no second raw upload');
+  assert.deepEqual(uploadRequestIds, recoveryRequestIds, 'Recovery creates no new request ID');
+  assert.equal(await retryProcessing.count(), 0);
+  const recoveredVideoId = storedPost.videoMediaId;
+
+  // A held late GET from a cancelled session cannot unlock or mutate a newer queued job.
+  nextUploadJob = { failuresRemaining: 4, reads: [{ state: 'succeeded', phase: 'saving' }] };
+  const firstQueuedResponse = page.waitForResponse(response => response.status() === 202 && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  const firstQueuedJob = (await (await firstQueuedResponse).json()).job;
+  await retryProcessing.waitFor();
+  heldVideoJobId = firstQueuedJob.id;
+  const oldReadStarted = new Promise(resolveStarted => { holdJobRead = resolveStarted; });
+  await retryProcessing.click();
+  await oldReadStarted;
+  const deletedOldJob = page.waitForRequest(request => request.method() === 'DELETE' && request.url().endsWith(firstQueuedJob.id));
+  await page.getByRole('button', { name: 'Cancel upload', exact: true }).click();
+  await deletedOldJob;
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${recoveredVideoId}`);
+  nextUploadJob = {};
+  const secondQueuedResponse = page.waitForResponse(response => response.status() === 202 && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  const secondQueuedJob = (await (await secondQueuedResponse).json()).job;
+  releaseJobRead();
+  heldVideoJobId = '';
+  await page.waitForTimeout(100);
+  assert.equal(await outerNavigation.isDisabled(), true, 'Late cancelled GET cannot unlock a new queued job');
+  assert.equal(await videoInput.isDisabled(), true);
+  assert.equal(storedPost.videoMediaId, recoveredVideoId, 'Late cancelled recovery success cannot replace saved media');
+  assert.equal(jobDeletes.includes(secondQueuedJob.id), false, 'Old cleanup never cancels the new job');
+  const deletedNewJob = page.waitForRequest(request => request.method() === 'DELETE' && request.url().endsWith(secondQueuedJob.id));
+  await page.getByRole('button', { name: 'Cancel upload', exact: true }).click();
+  await deletedNewJob;
+  assert.equal(await outerNavigation.isEnabled(), true);
+
+  nextUploadJob = {};
+  const abandonedJobResponse = page.waitForResponse(response => response.status() === 202 && new URL(response.url()).pathname === '/api/media/uploads');
+  await videoInput.setInputFiles(videoFile);
+  const abandonedJob = (await (await abandonedJobResponse).json()).job;
+  const abandonedJobDeleted = page.waitForRequest(request => request.method() === 'DELETE' && request.url().endsWith(abandonedJob.id));
+  await page.evaluate(() => window.dispatchEvent(new Event('test-editor-reset')));
+  await abandonedJobDeleted;
+  await page.waitForTimeout(100);
+  assert.equal(await videoPreview.count(), 0, 'Unmounted job cannot leak media into the fresh session');
+  assert.equal(await outerNavigation.isEnabled(), true);
   assert.deepEqual(errors, []);
+  console.log('PASS: async video phases and early 202, queue/running locks, safe failed/malformed jobs, same-job status recovery without POST/request ID, cancelled recovery fencing and unmount isolation.');
   console.log('PASS: original composer safeguards; raw MP4 upload, 100 MiB boundary, local playback, validation-stage busy/navigation guards, failure/cancel recovery, stale completion fencing, save/reopen/copy, image/video exclusion, Instagram and async 202 navigation.');
 } finally {
   if (browser) await browser.close();

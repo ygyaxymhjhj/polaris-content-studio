@@ -9,6 +9,15 @@ export interface VideoAttachment {
   durationSeconds: number;
 }
 
+export interface VideoProcessingJob {
+  id: string;
+  state: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  phase: "validating" | "converting" | "saving";
+  video?: VideoAttachment;
+  error?: string;
+  code?: string;
+}
+
 export function isVideoMediaId(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -30,4 +39,15 @@ export function isVideoAttachment(value: unknown): value is VideoAttachment {
 
 export function isVideoUploadResponse(value: unknown): value is { video: VideoAttachment } {
   return typeof value === "object" && value !== null && "video" in value && isVideoAttachment(value.video);
+}
+
+export function isVideoProcessingResponse(value: unknown): value is { job: VideoProcessingJob } {
+  if (typeof value !== "object" || value === null || !("job" in value)
+    || typeof value.job !== "object" || value.job === null) return false;
+  const job = value.job as Record<string, unknown>;
+  if (!isVideoMediaId(job.id) || typeof job.state !== "string" || !["queued", "running", "succeeded", "failed", "cancelled"].includes(job.state)
+    || typeof job.phase !== "string" || !["validating", "converting", "saving"].includes(job.phase)) return false;
+  if (job.error !== undefined && (typeof job.error !== "string" || job.error.length > 512)) return false;
+  if (job.code !== undefined && (typeof job.code !== "string" || !/^[A-Z0-9_]{1,64}$/.test(job.code))) return false;
+  return job.state === "succeeded" ? isVideoAttachment(job.video) : job.video === undefined;
 }

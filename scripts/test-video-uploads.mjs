@@ -49,7 +49,7 @@ const tinyPng = await sharp({ create: { width: 1, height: 1, channels: 3, backgr
 const tinyPngDataUrl = `data:image/png;base64,${tinyPng.toString("base64")}`;
 
 function createStorageHarness() {
-  const harness = { rows: [], queries: [], failSelect: false, failInsert: false, acquired: 0, released: 0, destroyed: 0 };
+  const harness = { rows: [], jobs: [], queries: [], failSelect: false, failInsert: false, acquired: 0, released: 0, destroyed: 0 };
   harness.connection = {
     release: () => { harness.released++; },
     destroy: () => { harness.destroyed++; },
@@ -59,6 +59,11 @@ function createStorageHarness() {
       harness.queries.push({ statement, parameters });
       if (/^\s*INSERT/.test(statement)) {
         if (harness.failInsert) throw new Error("synthetic-video-secret /private/tmp/storage-unavailable");
+        if (statement.includes("video_processing_jobs")) {
+          const [id, ownerUserId, requestId, checksum, name, bytes] = parameters;
+          harness.jobs.push({ id, ownerUserId, requestId, checksum, name, bytes, state: "queued", phase: "validating" });
+          return [{ affectedRows: 1 }];
+        }
         const [id, ownerUserId, requestId, checksum, postizMediaId, postizPath, name, bytes, width, height, durationSeconds] = parameters;
         if (harness.rows.some(row => row.ownerUserId === ownerUserId && row.requestId === requestId)) {
           throw Object.assign(new Error("duplicate"), { code: "ER_DUP_ENTRY" });
@@ -89,7 +94,7 @@ function createStorageHarness() {
 function createRouteHarness() {
   const harness = Object.assign(createStorageHarness(), {
     user: { id: "owner-one", role: "member" }, configured: true, postizConfigured: true,
-    temporaryFiles: [], uploads: [], probeCalls: 0
+    temporaryFiles: [], uploads: [], probeCalls: 0, afterCallbacks: []
   });
   harness.probe = async () => { harness.probeCalls++; return metadata; };
   harness.upload = async (filePath, signal) => {
@@ -101,6 +106,7 @@ function createRouteHarness() {
     return upstreamMedia;
   };
   const dependencies = {
+    "next/server": { NextRequest, NextResponse, after: callback => { harness.afterCallbacks.push(callback); } },
     "@/lib/auth": {
       currentUser: async () => harness.user ? { user: harness.user } : null,
       unauthorized: () => NextResponse.json({ error: "Sign in to continue.", code: "UNAUTHORIZED" }, { status: 401 })
@@ -109,6 +115,40 @@ function createRouteHarness() {
     "@/lib/same-origin": loadModule("../src/lib/same-origin.ts"),
     "@/lib/video-types": videoTypes,
     "@/lib/video-uploads": harness.storage,
+    "@/lib/video-processing-scheduler": { wakeVideoProcessingWorker: () => harness.finishJobs() },
+    "@/lib/video-processing": {
+      getVideoProcessingRequest: async (ownerUserId, requestId, signal) => ({
+        receipt: await harness.storage.withVideoUploadConnection(connection => harness.storage.getVideoUploadByRequest(ownerUserId, requestId, connection), signal),
+        job: null
+      }),
+      createVideoProcessingInput: async () => {
+        const temporary = { ...await validation.createVideoUploadTempFile(), id: randomUUID() };
+        harness.temporaryFiles.push(temporary);
+        return { id: temporary.id, partPath: temporary.filePath };
+      },
+      completeVideoProcessingInput: async () => {},
+      removeVideoProcessingInput: async id => {
+        await validation.removeVideoUploadTempFile(harness.temporaryFiles.find(temporary => temporary.id === id).directory);
+      },
+      registerVideoProcessingJob: async (input, signal) => {
+        const temporary = harness.temporaryFiles.find(temporary => temporary.id === input.id);
+        try {
+          const existing = harness.jobs.find(job => job.ownerUserId === input.ownerUserId && job.requestId === input.requestId);
+          if (existing) {
+            if (existing.checksum !== input.checksum) throw new harness.storage.VideoUploadRequestConflictError();
+            await validation.removeVideoUploadTempFile(temporary.directory);
+            return { job: { id: existing.id, state: existing.state, phase: existing.phase } };
+          }
+          await harness.storage.withVideoUploadConnection(connection => connection.execute({
+            sql: "INSERT INTO video_processing_jobs (id,owner_user_id,request_id,checksum,filename,input_bytes) VALUES (?,?,?,?,?,?)", timeout: 5_000
+          }, [input.id, input.ownerUserId, input.requestId, input.checksum, input.name, input.bytes]), signal);
+          return { job: { id: input.id, state: "queued", phase: "validating" } };
+        } catch (error) {
+          await validation.removeVideoUploadTempFile(temporary.directory);
+          throw error;
+        }
+      }
+    },
     "@/lib/postiz": {
       ...postiz, getPostizConfig: () => harness.postizConfigured ? {} : null,
       uploadVideoFileToPostiz: (...arguments_) => harness.upload(...arguments_)
@@ -125,6 +165,24 @@ function createRouteHarness() {
   };
   harness.route = loadModule("../src/app/api/media/uploads/route.ts", dependencies);
   harness.preview = loadModule("../src/app/api/media/uploads/[mediaId]/route.ts", dependencies);
+  harness.finishJobs = async (signal = new AbortController().signal) => {
+    for (const job of harness.jobs.filter(job => job.state === "queued")) {
+      const temporary = harness.temporaryFiles.find(temporary => temporary.id === job.id);
+      job.state = "running";
+      try {
+        const metadata = await harness.probe(temporary.filePath, signal);
+        const uploaded = await harness.upload(temporary.filePath, signal);
+        signal.throwIfAborted();
+        const recorded = await harness.storage.withVideoUploadConnection(connection => harness.storage.recordVideoUpload({
+          ownerUserId: job.ownerUserId, requestId: job.requestId, checksum: job.checksum, name: job.name, bytes: job.bytes,
+          ...metadata, postizMediaId: uploaded.id, postizPath: uploaded.path
+        }, connection), signal);
+        job.state = "succeeded";
+        job.phase = "saving";
+        job.video = recorded.video;
+      } finally { await validation.removeVideoUploadTempFile(temporary.directory); }
+    }
+  };
   harness.assertClean = async () => {
     for (const temporary of harness.temporaryFiles) await assert.rejects(access(temporary.directory), { code: "ENOENT" });
   };
@@ -156,16 +214,25 @@ function assertSafe(text) {
   assert.doesNotMatch(text, /synthetic-video-secret|\/private\/tmp|polaris-video-|postiz-media-one/);
 }
 
-test("route streams exactly 100 MiB without Content-Length, persists then responds, and cleans private files", async () => {
+test("route streams exactly 100 MiB without Content-Length, queues before processing, then exposes a ready receipt", async () => {
   const harness = createRouteHarness();
   const response = await harness.route.POST(makeRequest(sizedStream(videoTypes.MAX_VIDEO_UPLOAD_BYTES)));
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 202);
   const body = await response.json();
-  assert.equal(body.video.bytes, 100 * 1024 * 1024);
+  assert.ok(videoTypes.isVideoProcessingResponse(body));
+  assert.equal(body.job.state, "queued");
+  assert.equal(harness.rows.length, 0);
+  assert.equal(harness.uploads.length, 0);
+  assert.equal(harness.jobs[0].bytes, 100 * 1024 * 1024);
+  await access(harness.temporaryFiles[0].filePath);
+  await harness.finishJobs();
+  const video = harness.jobs.find(job => job.id === body.job.id).video;
+  assert.equal(video.bytes, 100 * 1024 * 1024);
   assert.equal(harness.rows.length, 1);
   assert.equal(harness.uploads.length, 1);
-  assert.deepEqual(Object.keys(body.video).sort(), ["bytes", "durationSeconds", "height", "id", "name", "width"]);
-  assert.ok(videoTypes.isVideoUploadResponse(body));
+  const ready = await (await harness.route.POST(makeRequest(sizedStream(videoTypes.MAX_VIDEO_UPLOAD_BYTES)))).json();
+  assert.deepEqual(Object.keys(ready.video).sort(), ["bytes", "durationSeconds", "height", "id", "name", "width"]);
+  assert.ok(videoTypes.isVideoUploadResponse(ready));
   assert.equal(response.headers.get("cache-control"), "no-store");
   assertSafe(JSON.stringify(body));
   await harness.assertClean();
@@ -227,6 +294,8 @@ test("auth, cross-origin, content type, request ID, filename and early size chec
 
 test("same owner successful request ID replays only identical SHA-256, never uploads again or creates drafts", async () => {
   const harness = createRouteHarness();
+  assert.equal((await harness.route.POST(makeRequest())).status, 202);
+  await harness.finishJobs();
   const original = await (await harness.route.POST(makeRequest())).json();
   const replay = await harness.route.POST(makeRequest(undefined, { headers: { "x-file-name": "renamed.mp4" } }));
   assert.equal(replay.status, 200);
@@ -239,7 +308,8 @@ test("same owner successful request ID replays only identical SHA-256, never upl
   assert.equal(harness.rows.length, 1);
   assert.ok(harness.queries.every(query => !/draft_submissions|social_publishes|post_targets/.test(query.statement)));
   harness.user = { id: "owner-two", role: "member" };
-  assert.equal((await harness.route.POST(makeRequest())).status, 201, "request IDs are owner-scoped");
+  assert.equal((await harness.route.POST(makeRequest())).status, 202, "request IDs are owner-scoped");
+  await harness.finishJobs();
   assert.equal(harness.rows.length, 2);
   await harness.assertClean();
 });
@@ -252,7 +322,7 @@ test("missing table fails before upload; INSERT failure is sanitized and leaves 
     assert.equal(response.status, 503);
     assertSafe(await response.text());
     assert.equal(harness.rows.length, 0);
-    assert.equal(harness.uploads.length, stage === "failSelect" ? 0 : 1);
+    assert.equal(harness.uploads.length, 0);
     assert.equal(harness.temporaryFiles.length, stage === "failSelect" ? 0 : 1);
     await harness.assertClean();
   }
@@ -304,7 +374,7 @@ for (const phase of ["preflight", "record"]) {
         assert.equal(response.status, interruption === "cancel" ? 499 : 503);
         assertSafe(await response.text());
         assert.equal(harness.rows.length, 0);
-        assert.equal(harness.uploads.length, phase === "preflight" ? 0 : 1);
+        assert.equal(harness.uploads.length, 0, "receiving and enqueueing never run an upstream upload");
         await harness.assertClean();
         const releaseSlot = validation.acquireVideoUploadSlot("owner-one");
         releaseSlot();
@@ -338,7 +408,9 @@ test("stream cancellation wakes a pending read, cleans its file and releases the
   assert.equal(cancelled, true);
   assert.equal(harness.uploads.length, 0);
   await harness.assertClean();
-  assert.equal((await harness.route.POST(makeRequest())).status, 201);
+  assert.equal((await harness.route.POST(makeRequest())).status, 202);
+  await harness.finishJobs();
+  await harness.assertClean();
 });
 
 test("stream timeout wakes a stalled body rather than hanging on reader.read", async () => {
@@ -352,7 +424,7 @@ test("stream timeout wakes a stalled body rather than hanging on reader.read", a
   } finally { await validation.removeVideoUploadTempFile(temporary.directory); }
 });
 
-test("upstream abort must settle before private file removal and slot release", async () => {
+test("accepted job upstream abort must settle before file removal; request receive slot is already released", async () => {
   const harness = createRouteHarness();
   const abort = new AbortController();
   let completeUpstream;
@@ -363,23 +435,23 @@ test("upstream abort must settle before private file removal and slot release", 
     signal.addEventListener("abort", () => upstreamStarted(filePath), { once: true });
     upstreamStarted(filePath);
   });
-  const pending = harness.route.POST(makeRequest(undefined, { signal: abort.signal }));
+  assert.equal((await harness.route.POST(makeRequest())).status, 202);
+  const pending = harness.finishJobs(abort.signal);
   const filePath = await started;
   abort.abort();
   await delay(5);
   await access(filePath);
-  assert.throws(() => validation.acquireVideoUploadSlot("owner-one"), error => error.code === "UPLOAD_BUSY");
+  const receiveRelease = validation.acquireVideoUploadSlot("owner-one");
+  receiveRelease();
   completeUpstream();
-  const response = await pending;
-  assert.equal(response.status, 499);
-  assertSafe(await response.text());
+  await assert.rejects(pending);
   assert.equal(harness.rows.length, 0);
   await harness.assertClean();
   const release = validation.acquireVideoUploadSlot("owner-one");
   release();
 });
 
-test("process allows two owners and one upload per owner, without a task queue", () => {
+test("receiving allows two owners and one stream per owner, independently from durable processing", () => {
   const releaseFirst = validation.acquireVideoUploadSlot("first");
   try {
     assert.throws(() => validation.acquireVideoUploadSlot("first"), error => error.status === 429);
@@ -456,6 +528,8 @@ test("concurrent INSERT dedup returns the immutable receipt, different hash conf
 
 test("preview is an owner-only no-store 307, ignores arbitrary path and never fetches media", async () => {
   const harness = createRouteHarness();
+  assert.equal((await harness.route.POST(makeRequest())).status, 202);
+  await harness.finishJobs();
   const { video } = await (await harness.route.POST(makeRequest())).json();
   const request = new NextRequest(`https://polaris.test/api/media/uploads/${video.id}?path=https://attacker.test`);
   const context = { params: Promise.resolve({ mediaId: video.id }) };
@@ -676,7 +750,9 @@ test("real ffprobe accepts a local H264/AAC MP4, rejects fake, truncated, wrong 
     globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
     const harness = createRouteHarness();
     harness.probe = validation.validateVideoFile;
-    assert.equal((await harness.route.POST(makeRequest(validBytes))).status, 201);
+    assert.equal((await harness.route.POST(makeRequest(validBytes))).status, 202);
+    await harness.finishJobs();
+    assert.equal(harness.jobs[0].state, "succeeded");
     await harness.assertClean();
     const forgedPath = join(fixtureDirectory, "fake.mp4");
     const truncatedPath = join(fixtureDirectory, "truncated.mp4");
@@ -726,18 +802,21 @@ test("ffprobe execution is bounded, blocks external resources, and waits for chi
   await checked;
 });
 
-test("missing ffprobe returns a safe operational 503 and route still cleans its file", async () => {
+test("missing ffprobe fails the accepted background job safely and cleans its file", async () => {
   const previousPath = process.env.FFPROBE_PATH;
   process.env.FFPROBE_PATH = "/missing-polaris-test-ffprobe";
   const harness = createRouteHarness();
   harness.probe = validation.validateVideoFile;
   try {
     const response = await harness.route.POST(makeRequest());
-    assert.equal(response.status, 503);
-    const body = await response.json();
-    assert.equal(body.code, "FFPROBE_UNAVAILABLE");
-    assert.match(body.error, /install ffprobe|FFPROBE_PATH/);
-    assert.doesNotMatch(body.error, /missing-polaris-test|polaris-video-/);
+    assert.equal(response.status, 202);
+    await assert.rejects(harness.finishJobs(), error => {
+      assert.equal(error.status, 503);
+      assert.equal(error.code, "FFPROBE_UNAVAILABLE");
+      assert.match(error.message, /install ffprobe|FFPROBE_PATH/);
+      assert.doesNotMatch(error.message, /missing-polaris-test|polaris-video-/);
+      return true;
+    });
     await harness.assertClean();
     assert.equal(harness.uploads.length, 0);
   } finally { process.env.FFPROBE_PATH = previousPath; }

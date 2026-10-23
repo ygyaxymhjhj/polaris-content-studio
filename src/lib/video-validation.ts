@@ -151,12 +151,37 @@ export interface ValidatedVideoMetadata {
   durationSeconds: number;
 }
 
-interface ProbeResult {
-  format?: { format_name?: string; duration?: string; tags?: { major_brand?: string } };
-  streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number; disposition?: { attached_pic?: number } }>;
+export interface InspectedVideoStream {
+  index: number;
+  codec_type?: string;
+  codec_name?: string;
+  width?: number;
+  height?: number;
+  pix_fmt?: string;
+  bits_per_raw_sample?: string;
+  avg_frame_rate?: string;
+  r_frame_rate?: string;
+  sample_aspect_ratio?: string;
+  duration?: string;
+  tags?: { rotate?: string };
+  side_data_list?: Array<{ rotation?: number }>;
+  disposition?: { attached_pic?: number };
 }
 
-export async function validateVideoFile(filePath: string, signal?: AbortSignal): Promise<ValidatedVideoMetadata> {
+export interface InspectedVideoFile extends ValidatedVideoMetadata {
+  video: InspectedVideoStream;
+  audio?: InspectedVideoStream;
+  streams: InspectedVideoStream[];
+}
+
+interface ProbeResult {
+  format?: { format_name?: string; duration?: string; tags?: { major_brand?: string } };
+  streams?: InspectedVideoStream[];
+}
+
+/** Inspects only a self-contained MP4; codec compatibility is decided separately. */
+export async function inspectVideoFile(filePath: string, signal?: AbortSignal): Promise<InspectedVideoFile> {
+  if (signal) throwIfUploadAborted(signal);
   const probeSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(15_000)]);
   let completeProbe!: (result: { error: ExecFileException | null; stdout: string }) => void;
   const probeResult = new Promise<{ error: ExecFileException | null; stdout: string }>(resolve => { completeProbe = resolve; });
@@ -164,7 +189,7 @@ export async function validateVideoFile(filePath: string, signal?: AbortSignal):
     "-v", "error", "-max_alloc", "67108864", "-threads", "1",
     "-protocol_whitelist", "file", "-f", "mov", "-enable_drefs", "0", "-use_absolute_path", "0",
     "-probesize", "8388608", "-analyzeduration", "5000000",
-    "-show_entries", "format=format_name,duration:format_tags=major_brand:stream=codec_type,codec_name,width,height:stream_disposition=attached_pic",
+    "-show_entries", "format=format_name,duration:format_tags=major_brand:stream=index,codec_type,codec_name,width,height,pix_fmt,bits_per_raw_sample,avg_frame_rate,r_frame_rate,sample_aspect_ratio,duration:stream_tags=rotate:stream_side_data=rotation:stream_disposition=attached_pic",
     "-of", "json", "-i", filePath
   ], { encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024, killSignal: "SIGKILL", signal: probeSignal, windowsHide: true },
   (error, stdout) => { completeProbe({ error, stdout }); });
@@ -190,16 +215,30 @@ export async function validateVideoFile(filePath: string, signal?: AbortSignal):
     throw new VideoUploadError("This MP4 could not be validated. Convert it to H.264 MP4 and try again.", "INVALID_VIDEO", 400);
   }
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  if (streams.some(stream => !stream || typeof stream !== "object")) {
+    throw new VideoUploadError("This MP4 could not be validated. Choose a valid MP4 and try again.", "INVALID_VIDEO", 400);
+  }
   const videos = streams.filter(stream => stream.codec_type === "video");
   const video = videos[0];
   const durationSeconds = Number(probe.format?.duration);
   const supportedBrand = /^(isom|iso[2-9]|mp4[12]|avc1|dash)$/.test(probe.format?.tags?.major_brand?.trim() || "");
   if (!probe.format?.format_name?.split(",").includes("mp4") || !supportedBrand
-    || videos.length !== 1 || !video || video.codec_name !== "h264" || video.disposition?.attached_pic
+    || videos.length !== 1 || !video || !video.codec_name || video.disposition?.attached_pic
+    || !Number.isInteger(video.index) || video.index < 0
     || !Number.isInteger(video.width) || !Number.isInteger(video.height) || !video.width || !video.height || video.width < 0 || video.height < 0
-    || !Number.isFinite(durationSeconds) || durationSeconds <= 0
-    || streams.some(stream => stream.codec_type !== "video" && (stream.codec_type !== "audio" || stream.codec_name !== "aac"))) {
+    || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    throw new VideoUploadError("Use a valid MP4 containing one video stream and optional audio. MOV and MKV are not supported.", "UNSUPPORTED_VIDEO", 400);
+  }
+  return { width: video.width, height: video.height, durationSeconds, video,
+    audio: streams.find(stream => stream.codec_type === "audio"), streams };
+}
+
+/** Preserves the strict H.264/AAC validation contract for existing callers. */
+export async function validateVideoFile(filePath: string, signal?: AbortSignal): Promise<ValidatedVideoMetadata> {
+  const inspected = await inspectVideoFile(filePath, signal);
+  if (inspected.video.codec_name !== "h264"
+    || inspected.streams.some(stream => stream.codec_type !== "video" && (stream.codec_type !== "audio" || stream.codec_name !== "aac"))) {
     throw new VideoUploadError("Use an MP4 containing one H.264 video and optional AAC audio. Convert this file and try again.", "UNSUPPORTED_VIDEO", 400);
   }
-  return { width: video.width, height: video.height, durationSeconds };
+  return { width: inspected.width, height: inspected.height, durationSeconds: inspected.durationSeconds };
 }

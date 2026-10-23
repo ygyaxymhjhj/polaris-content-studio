@@ -80,11 +80,19 @@ node scripts/check-user-roles.mjs
 ### 视频上传上线前检查
 
 视频上传当前只做本地隔离实现，尚未验收实际 Postiz。上线前由管理员执行
-`deploy/mysql/migrations/2026-10-22-video-uploads.sql`，应用账号只需新表 SELECT、INSERT。
-Ubuntu 的 `ffmpeg` 软件包提供 ffprobe；需以 `polaris-studio` 用户确认它可执行，必要时通过服务环境
-`FFPROBE_PATH=/usr/bin/ffprobe` 指定路径。缺失会安全返回 503，不自动安装、不转码。
+`deploy/mysql/migrations/2026-10-22-video-uploads.sql`，随后执行新增的 `2026-10-22-video-processing.sql`。
+ready receipt 表仍只需 SELECT、INSERT；持久任务表另外需要 SELECT、INSERT、UPDATE，不给应用 DDL。
+Ubuntu 的 `ffmpeg` 软件包提供 ffmpeg/ffprobe；需以 `polaris-studio` 用户确认 H.264/AAC 编码器及二进制可用，必要时通过服务环境
+`FFPROBE_PATH=/usr/bin/ffprobe`、`FFMPEG_PATH=/usr/bin/ffmpeg` 指定路径。缺失会在受理后的任务中安全失败，不自动安装。
 当前服务器 Node 20.19.5 需单独验证原生 openAsBlob/FormData 的大文件流式上传和取消，不能以开发机 Node22 测试替代。
-保留现有 PrivateTmp/ProtectSystem 配置；确认私有临时空间容量，并验收 Postiz 媒体持久化、浏览器播放、
+必须由管理员安装更新后的 `deploy/polaris-studio.service` 并 daemon-reload：主 service 模板目前不会被部署脚本自动替换。
+模板使用 `StateDirectory=polaris-content-studio/video-processing`、0700、对应 Environment/ReadWritePaths，spool 位于
+`/var/lib/polaris-content-studio/video-processing`，不在 app rsync --delete 范围，不能放回代码目录或临时目录。
+默认 `.data/video-processing` 只用于开发。保留现有 PrivateTmp/ProtectSystem 配置，确认持久磁盘容量与备份策略。
+生产视频 worker 独立于通知自动启动；开发定时恢复需显式 `VIDEO_PROCESSING_SCHEDULER_ENABLED=true`，请求 after 唤醒仍可用。
+目前仅支持单应用进程/单节点；排队可恢复，过期 running 无 receipt 会失败而不自动重传，取消需等旧读取者 settle 才清文件。
+崩溃可留下输入/输出，有界 24 小时清理不是磁盘硬配额；任务行保留审计，跨 Postiz/MySQL 不承诺媒体 exactly-once。
+还需验收 Postiz 媒体持久化、浏览器播放、
 实际 provider 草稿及备份。预览 307 不会让公开上游媒体变私有。完整契约与失败窗口见 `docs/video-uploads.md`。
 
 ### 异步草稿提交迁移

@@ -1,13 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
-import { getPostizConfig, PostizConnectionError, uploadVideoFileToPostiz } from "@/lib/postiz";
+import { getPostizConfig } from "@/lib/postiz";
 import { isVideoMediaId, type VideoAttachment } from "@/lib/video-types";
-import { getVideoUploadByRequest, recordVideoUpload, VideoUploadRequestConflictError, withVideoUploadConnection } from "@/lib/video-uploads";
+import { VideoUploadRequestConflictError } from "@/lib/video-uploads";
 import {
-  acquireVideoUploadSlot, createVideoUploadTempFile, readVideoContentLength, readVideoFilename,
-  removeVideoUploadTempFile, streamVideoUpload, validateVideoFile, VideoUploadError
+  completeVideoProcessingInput, createVideoProcessingInput, getVideoProcessingRequest,
+  registerVideoProcessingJob, removeVideoProcessingInput
+} from "@/lib/video-processing";
+import { wakeVideoProcessingWorker } from "@/lib/video-processing-scheduler";
+import {
+  acquireVideoUploadSlot, readVideoContentLength, readVideoFilename, streamVideoUpload, VideoUploadError
 } from "@/lib/video-validation";
 
 export const runtime = "nodejs";
@@ -29,7 +33,8 @@ export async function POST(request: NextRequest) {
   if (!isSameOrigin(request)) return failure("Same-origin request required.", "FORBIDDEN", 403);
 
   let releaseSlot: (() => void) | undefined;
-  let temporaryDirectory: string | undefined;
+  let inputId: string | undefined;
+  let registrationStarted = false;
   try {
     const auth = await currentUser();
     if (!auth) return unauthorized();
@@ -46,37 +51,37 @@ export async function POST(request: NextRequest) {
     releaseSlot = acquireVideoUploadSlot(auth.user.id);
 
     // Preflight also fails closed on a missing migration, before receiving or uploading a large file.
-    const existing = await withVideoUploadConnection(
-      connection => getVideoUploadByRequest(auth.user.id, requestId, connection), request.signal
-    );
-    const temporary = await createVideoUploadTempFile();
-    temporaryDirectory = temporary.directory;
+    const existing = await getVideoProcessingRequest(auth.user.id, requestId, request.signal);
+    const input = await createVideoProcessingInput();
+    inputId = input.id;
     const incomingSignal = AbortSignal.any([request.signal, AbortSignal.timeout(300_000)]);
-    const received = await streamVideoUpload(request, temporary.filePath, expectedBytes, incomingSignal);
-    if (existing) {
-      if (existing.checksum !== received.checksum) throw new VideoUploadRequestConflictError();
-      return success(existing, 200);
+    const received = await streamVideoUpload(request, input.partPath, expectedBytes, incomingSignal);
+    if (existing.receipt && existing.job?.state !== "cancelled") {
+      if (existing.receipt.checksum !== received.checksum) throw new VideoUploadRequestConflictError();
+      return success(existing.receipt, 200);
     }
-
-    const metadata = await validateVideoFile(temporary.filePath, request.signal);
-    // Do not Promise.race this call: its abort must settle before finally removes the file and slot.
-    const uploaded = await uploadVideoFileToPostiz(temporary.filePath, request.signal);
+    await completeVideoProcessingInput(input.id);
     request.signal.throwIfAborted();
-    const recorded = await withVideoUploadConnection(connection => recordVideoUpload({
-      ownerUserId: auth.user.id, requestId, checksum: received.checksum, name, bytes: received.bytes,
-      ...metadata, postizMediaId: uploaded.id, postizPath: uploaded.path
-    }, connection), request.signal);
-    return success(recorded.video, recorded.replayed ? 200 : 201);
+    registrationStarted = true;
+    const registered = await registerVideoProcessingJob({ id: input.id,
+      ownerUserId: auth.user.id, requestId, checksum: received.checksum, name, bytes: received.bytes
+    }, request.signal);
+    if ("video" in registered) return success(registered.video, 200);
+    // This callback only wakes the durable worker; receiving the request never awaits media processing.
+    try { after(wakeVideoProcessingWorker); } catch {
+      console.warn("[video-processing] Immediate wakeup unavailable; the scheduler will resume the job.");
+    }
+    return json(registered, 202);
   } catch (error) {
     if (error instanceof VideoUploadError) return failure(error.message, error.code, error.status);
     if (error instanceof VideoUploadRequestConflictError) return failure(error.message, "REQUEST_ID_CONFLICT", 409);
     if (request.signal.aborted) return failure("Video upload was cancelled.", "UPLOAD_CANCELLED", 499);
-    if (error instanceof PostizConnectionError) return failure(error.message, "POSTIZ_UPLOAD_FAILED", error.status);
     console.error("[video-upload] video storage was unavailable; verify the migration and SELECT/INSERT permissions");
     return failure("Video storage is unavailable. Ask an administrator to check the video migration, then try again.", "STORAGE_UNAVAILABLE", 503);
   } finally {
     try {
-      if (temporaryDirectory) await removeVideoUploadTempFile(temporaryDirectory);
+      // register owns the uncertain-commit boundary; never unconditionally remove its persistent source.
+      if (inputId && !registrationStarted) await removeVideoProcessingInput(inputId);
     } finally {
       releaseSlot?.();
     }
