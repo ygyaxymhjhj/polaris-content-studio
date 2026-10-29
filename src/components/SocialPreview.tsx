@@ -20,6 +20,7 @@ import {
 import type { ContentAsset } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n";
 import { getVideoPreviewUrl } from "@/lib/video-types";
+import { getImagePreviewUrl } from "@/lib/image-types";
 
 interface SocialPreviewProps {
   asset: ContentAsset;
@@ -34,14 +35,14 @@ export default function SocialPreview({
   authorName = "Polaris Insights",
   authorHandle = "polaris_insight"
 }: SocialPreviewProps) {
-  const currentImage = imageUrl ?? asset.imageUrl;
-  const currentVideo = asset.videoMediaId ? getVideoPreviewUrl(asset.videoMediaId) : "";
+  const currentImage = asset.imageMediaIds !== undefined ? asset.imageMediaIds[0] ? getImagePreviewUrl(asset.imageMediaIds[0]) : undefined : imageUrl ?? asset.imageUrl;
+  const currentVideo = !asset.imageMediaIds?.length && asset.videoMediaId ? getVideoPreviewUrl(asset.videoMediaId) : "";
   const platform = asset.platform;
   const t = useTranslation();
   const [slideIndex, setSlideIndex] = useState(0);
   const videoPreview = currentVideo ? <video key={currentVideo} src={currentVideo} controls preload="metadata" playsInline className="mock-video" aria-label={t("Post video")} /> : null;
 
-  const slides = asset.assetType === "carousel" && Array.isArray(asset.meta?.slides)
+  const slides = !currentImage && asset.imageMediaIds === undefined && asset.assetType === "carousel" && Array.isArray(asset.meta?.slides)
     ? asset.meta.slides as Array<{ title?: string; body?: string }>
     : [];
   const currentSlideIndex = Math.min(slideIndex, Math.max(0, slides.length - 1));
@@ -53,6 +54,7 @@ export default function SocialPreview({
           <span className="preview-badge-dot" />
           {platform.toUpperCase()} {t("Real social preview")}
         </span>
+        {(asset.imageMediaIds?.length ?? 0) > 1 && <span className="preview-char-count">{asset.imageMediaIds?.length} {t("images")}</span>}
         <span className="preview-char-count">
           {platform === "instagram" ? `${asset.content.length} / 2200` : `${asset.content.length} ${t("characters")}`}
         </span>

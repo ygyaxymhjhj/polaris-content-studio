@@ -5,6 +5,7 @@ import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
 import { createManualPost, listManualPosts, PostMediaValidationError, sweepStaleSubmissions, type PostAccountSnapshot } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
+import { areImageMediaIds } from "@/lib/image-types";
 import { listAccountOwners } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
 import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
@@ -24,9 +25,12 @@ const createSchema = z.object({
   content: z.string().max(POST_CONTENT_MAX_LENGTH).optional(),
   imageDataUrl: z.string().max(3_000_000).nullable().optional(),
   videoMediaId: z.string().uuid().nullable().optional(),
+  imageMediaIds: z.custom<string[]>(areImageMediaIds).optional(),
   imageName: z.string().max(POST_TITLE_MAX_LENGTH).optional(),
   integrationIds: z.array(z.string().regex(integrationIdPattern)).max(MAX_POST_TARGETS).optional()
-}).strict().refine(value => !value.imageDataUrl || !value.videoMediaId);
+}).strict().refine(value => value.imageMediaIds?.length
+  ? !value.imageDataUrl && !value.videoMediaId
+  : value.imageMediaIds !== undefined || !value.imageDataUrl || !value.videoMediaId);
 
 const updatedWithinValues = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000 } as const;
 
@@ -103,12 +107,12 @@ export async function POST(request: NextRequest) {
   const title = (parsed.data.title || "").trim();
   const content = parsed.data.content || "";
   // An untouched editor page must not create a record: something has to have been written.
-  if (!title && !content.trim() && !parsed.data.imageDataUrl && !parsed.data.videoMediaId) {
+  if (!title && !content.trim() && !(parsed.data.imageMediaIds === undefined ? parsed.data.imageDataUrl : parsed.data.imageMediaIds.length) && !parsed.data.videoMediaId) {
     return failure("Write something before saving this post.", 400, "EMPTY_POST");
   }
 
   let image = null;
-  if (parsed.data.imageDataUrl) {
+  if (parsed.data.imageMediaIds === undefined && parsed.data.imageDataUrl) {
     const validated = await validatePostImage(parsed.data.imageDataUrl, parsed.data.imageName);
     if (!validated.ok) return failure(validated.error, 400, "INVALID_IMAGE");
     image = validated.image;
@@ -117,7 +121,7 @@ export async function POST(request: NextRequest) {
   try {
     const targets = await resolveTargets(auth.user.id, auth.user.role === "admin", parsed.data.integrationIds);
     if (!targets.ok) return failure(targets.message, 400, "INVALID_TARGET");
-    const post = await createManualPost(auth.user.id, { title, content, image, videoMediaId: parsed.data.videoMediaId, targets: targets.targets });
+    const post = await createManualPost(auth.user.id, { title, content, image, imageMediaIds: parsed.data.imageMediaIds, videoMediaId: parsed.data.videoMediaId, targets: targets.targets });
     return json({ post }, 201);
   } catch (error) {
     if (error instanceof PostMediaValidationError) return failure(error.message, 400, "INVALID_MEDIA");

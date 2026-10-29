@@ -152,6 +152,11 @@ try {
   let releaseSubmission;
   const submissions = [];
   const uploads = [];
+  const imageUploads = [];
+  const imageReceipts = new Map();
+  const failImageNames = new Set();
+  let holdImageUpload;
+  let releaseImageUpload;
   let holdUpload;
   let releaseUpload;
   let nextUploadFailure = false;
@@ -201,6 +206,31 @@ try {
     response.end(JSON.stringify(failure ? { code: 'POSTIZ_UPLOAD_FAILED', error: '/private/server stderr must not be displayed' }
       : { video: invalid ? { ...video, id: 'invalid-id' } : video }));
   };
+  await page.route('**/api/media/images**', async route => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ contentType: 'image/png', body: imageBuffer });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    assert.match(body.requestId, /^[a-f0-9-]{36}$/i);
+    assert.ok(body.dataUrl?.startsWith('data:image/') || body.sourceUrl);
+    imageUploads.push(body);
+    if (holdImageUpload) {
+      holdImageUpload();
+      holdImageUpload = null;
+      await new Promise(resolveImage => { releaseImageUpload = resolveImage; });
+    }
+    if (failImageNames.delete(body.name)) {
+      await route.fulfill({ status: 503, json: { error: 'Could not upload this image. Please try again.' } });
+      return;
+    }
+    let image = imageReceipts.get(body.requestId);
+    if (!image) {
+      image = { id: `cccccccc-cccc-4ccc-8ccc-${String(imageReceipts.size + 1).padStart(12, '0')}`, name: body.name, bytes: imageBuffer.length, width: 120, height: 120 };
+      imageReceipts.set(body.requestId, image);
+    }
+    await route.fulfill({ status: 201, json: { image } });
+  });
   await page.route('**/api/media/uploads**', async route => {
     if (route.request().method() === 'POST') await route.continue();
     else await route.fulfill({ contentType: 'video/mp4', body: videoBuffer });
@@ -281,7 +311,7 @@ try {
       const rejectedCount = storedPost?.targets.filter(target => target.status === 'rejected').length || 0;
       const acceptedCount = storedPost?.targets.filter(target => target.status === 'accepted').length || 0;
       const status = rejectedCount ? 'attention' : acceptedCount ? 'pushed' : 'draft';
-      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: Boolean(storedPost.imageUrl), hasVideo: Boolean(storedPost.videoMediaId), status, platforms: [], rejectedCount,
+      const posts = storedPost ? [{ ...storedPost, excerpt: storedPost.content, hasImage: Boolean(storedPost.imageMediaIds === undefined ? storedPost.imageUrl : storedPost.imageMediaIds.length), hasVideo: Boolean(storedPost.videoMediaId), status, platforms: [], rejectedCount,
         targetCount: storedPost.targets.length, acceptedCount, deletable: storedPost.editable }] : [];
       await route.fulfill({ json: { posts, total: posts.length, counts: { all: posts.length, draft: status === 'draft' ? posts.length : 0,
         pushing: 0, pushed: status === 'pushed' ? posts.length : 0, attention: rejectedCount ? posts.length : 0 } } });
@@ -334,8 +364,9 @@ try {
       const timestamp = new Date().toISOString();
       storedPost = {
         id: request.method() === 'PATCH' ? pathname.split('/').at(-1) : '11111111-1111-4111-8111-111111111111', title: body.title || '', content: body.content,
-        imageUrl: body.videoMediaId || body.imageDataUrl === null ? null : body.imageDataUrl || storedPost?.imageUrl || null,
-        videoMediaId: body.imageDataUrl ? null : body.videoMediaId === undefined ? storedPost?.videoMediaId ?? null : body.videoMediaId,
+        imageUrl: body.imageMediaIds !== undefined || body.videoMediaId || body.imageDataUrl === null ? null : body.imageDataUrl || storedPost?.imageUrl || null,
+        imageMediaIds: body.imageMediaIds !== undefined ? body.imageMediaIds : body.videoMediaId || body.imageDataUrl !== undefined ? [] : storedPost?.imageMediaIds,
+        videoMediaId: body.imageMediaIds !== undefined || body.imageDataUrl ? null : body.videoMediaId === undefined ? storedPost?.videoMediaId ?? null : body.videoMediaId,
         version: (storedPost?.version || 0) + 1, editable: true, frozenReason: null,
         createdAt: timestamp, updatedAt: timestamp,
         targets: body.integrationIds.map(integrationId => ({ integrationId, platform: accounts.find(account => account.id === integrationId).identifier,
@@ -447,14 +478,16 @@ try {
   await imageInput.setInputFiles({ name: '30mb.png', mimeType: 'image/png', buffer: maximumSizeImage });
   await page.locator('.post-media-thumbnail img').waitFor();
   const uploadedPreview = await page.locator('.post-media-thumbnail img').getAttribute('src');
-  assert.ok(Buffer.from(uploadedPreview.split(',')[1], 'base64').length <= 1024 * 1024);
+  assert.match(uploadedPreview, /^\/api\/media\/images\/[a-f0-9-]+\?size=thumb$/);
+  assert.ok(Buffer.from(imageUploads[0].dataUrl.split(',')[1], 'base64').length <= 1024 * 1024);
   await imageInput.setInputFiles({ name: 'oversized.png', mimeType: 'image/png', buffer: Buffer.alloc(30 * 1024 * 1024 + 1) });
   await page.getByRole('alert').filter({ hasText: 'This image exceeds 30 MB. Choose an image up to 30 MB.' }).waitFor();
-  assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), uploadedPreview, 'a rejected replacement preserves the current image');
+  assert.equal(await page.locator('.post-media-thumbnail img').first().getAttribute('src'), uploadedPreview, 'a rejected append preserves the current image');
   assert.equal(await imageInput.isEnabled(), true);
   await imageInput.setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: imageBuffer });
   await page.locator('.post-composer-media [role="alert"]').waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: 'Replace image', exact: true }).first().waitFor();
+  await page.getByRole('button', { name: 'Add images', exact: true }).first().waitFor();
+  assert.equal(await page.locator('.post-media-thumbnail img').count(), 2, 'another file appends to existing images');
   assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /30 MB/);
   await page.screenshot({ path: '/tmp/polaris-composer-dark.png', fullPage: true });
   await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
@@ -475,7 +508,8 @@ try {
   assert.equal(await addPlatform.isDisabled(), true);
   assert.equal(await push.isDisabled(), true);
   assert.equal(storedPost.title, '', 'composer does not require an internal title');
-  assert.ok(storedPost.imageUrl.startsWith('data:image/png;'));
+  assert.equal(storedPost.imageUrl, null);
+  assert.equal(storedPost.imageMediaIds.length, 2, 'manual saves persist image references, never inline image bytes');
 
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
   await page.screenshot({ path: '/tmp/polaris-composer-light.png', fullPage: true });
@@ -821,6 +855,85 @@ try {
   await page.locator('.post-editor-target.accepted').waitFor();
   console.log('PASS: original composer, image, copy/delete, review, autosave and async submission safeguards.');
 
+  // Registry images append in selection order; partial failures retry without re-uploading successes.
+  submitAsynchronously = false;
+  storedPost = { ...structuredClone(originalPost), content: 'Multiple ordered images', imageUrl: `data:image/png;base64,${imageBuffer.toString('base64')}`, imageMediaIds: undefined, videoMediaId: null, targets: [] };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  const multiFile = name => ({ name, mimeType: 'image/png', buffer: imageBuffer });
+  const multiImages = page.locator('.post-media-thumbnail img');
+  const multiIds = () => multiImages.evaluateAll(images => images.map(image => image.getAttribute('src').match(/images\/([^?]+)/)?.[1]));
+  const batchStart = imageUploads.length;
+  failImageNames.add('retry.png');
+  await imageInput.setInputFiles([multiFile('first.png'), multiFile('retry.png'), multiFile('third.png')]);
+  await page.getByRole('button', { name: 'Retry retry.png', exact: true }).waitFor();
+  assert.deepEqual(imageUploads.slice(batchStart).map(upload => upload.name), ['original-image', 'first.png', 'retry.png', 'third.png']);
+  assert.equal(await multiImages.count(), 3, 'legacy first image and successful new files are retained');
+  const partialOrder = await multiIds();
+  await page.getByRole('button', { name: 'Retry retry.png', exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.post-media-thumbnail img').length === 4);
+  await page.getByRole('button', { name: 'Retry retry.png', exact: true }).waitFor({ state: 'hidden' });
+  assert.equal(await multiImages.count(), 4);
+  const successfulOrder = await multiIds();
+  assert.deepEqual(successfulOrder.slice(0, 3), partialOrder, 'retry appends without disturbing successful images');
+  assert.equal(imageUploads.at(-1).requestId, imageUploads[batchStart + 2].requestId, 'failed file retries reuse its registry request id');
+  await page.getByRole('button', { name: 'Move image left 4', exact: true }).press('Enter');
+  assert.deepEqual(await multiIds(), [successfulOrder[0], successfulOrder[1], successfulOrder[3], successfulOrder[2]], 'native buttons support keyboard reordering');
+  await page.getByRole('button', { name: 'Remove image 2', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  const orderedSavedImages = [successfulOrder[0], successfulOrder[3], successfulOrder[2]];
+  assert.deepEqual(storedPost.imageMediaIds, orderedSavedImages);
+  assert.equal(storedPost.imageUrl, null);
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await multiImages.first().waitFor();
+  assert.deepEqual(await multiIds(), orderedSavedImages, 'reopen preserves the exact image order');
+  await imageInput.setInputFiles([multiFile('fourth.png'), multiFile('fifth.png')]);
+  await page.waitForFunction(() => document.querySelectorAll('.post-media-thumbnail img').length === 5);
+  await addPlatform.click();
+  await page.getByRole('checkbox', { name: /News desk/ }).check();
+  await page.getByRole('checkbox', { name: /Company page/ }).check();
+  await page.getByRole('checkbox', { name: /Company page/ }).press('Escape');
+  await page.locator('.post-editor-target').filter({ hasText: 'News desk' }).getByText('X supports up to 4 images.', { exact: true }).waitFor();
+  assert.equal(await page.locator('.post-editor-target').filter({ hasText: 'Company page' }).locator('.post-editor-target-warning').count(), 0, 'X limit does not block other selected accounts');
+  assert.equal(await push.isEnabled(), true);
+  const beforeMixed = await multiIds();
+  await imageInput.setInputFiles([multiFile('mixed.png'), { name: 'mixed.mp4', mimeType: 'video/mp4', buffer: videoBuffer }]);
+  await page.getByRole('alert').filter({ hasText: 'Choose images together or one MP4 video.' }).waitFor();
+  assert.deepEqual(await multiIds(), beforeMixed, 'mixed image/video batch is refused without changing media');
+  await imageInput.setInputFiles(Array.from({ length: 6 }, (_, index) => multiFile(`over-${index}.png`)));
+  await page.getByRole('alert').filter({ hasText: 'Attach up to 10 images.' }).waitFor();
+  assert.deepEqual(await multiIds(), beforeMixed);
+  while (await multiImages.count()) await page.getByRole('button', { name: 'Remove image 1', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.deepEqual(storedPost.imageMediaIds, [], 'removing the last image persists explicit empty selection');
+  assert.equal(storedPost.imageUrl, null, 'empty selection never restores the legacy first image');
+
+  // Cancelled and stale image responses cannot replace old media or unlock a newer batch.
+  storedPost = { ...structuredClone(originalPost), imageUrl: `data:image/png;base64,${imageBuffer.toString('base64')}`, imageMediaIds: undefined, videoMediaId: null, targets: [] };
+  await page.goto(`${origin}/?postId=${storedPost.id}`);
+  await text.waitFor();
+  const preservedLegacy = storedPost.imageUrl;
+  const legacyUploadStarted = new Promise(resolveStarted => { holdImageUpload = resolveStarted; });
+  await imageInput.setInputFiles(multiFile('cancelled.png'));
+  await legacyUploadStarted;
+  assert.equal(await page.getByTestId('outer-navigation').isDisabled(), true);
+  await page.getByRole('button', { name: 'Cancel upload', exact: true }).click();
+  const releaseOldImage = releaseImageUpload;
+  assert.equal(await multiImages.first().getAttribute('src'), preservedLegacy);
+  const currentImageStarted = new Promise(resolveStarted => { holdImageUpload = resolveStarted; });
+  await imageInput.setInputFiles(multiFile('newer.png'));
+  await currentImageStarted;
+  releaseOldImage();
+  await page.waitForTimeout(100);
+  assert.equal(await imageInput.isDisabled(), true, 'late cancelled image result cannot unlock the current batch');
+  assert.equal(await multiImages.first().getAttribute('src'), preservedLegacy);
+  releaseImageUpload();
+  await page.waitForFunction(() => document.querySelectorAll('.post-media-thumbnail img').length === 2);
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.imageMediaIds.length, 2);
+  assert.deepEqual(errors, []);
+  console.log('PASS: ordered multi-select, legacy promotion, append/reorder/remove, failed retry receipt, persistence, explicit empty, account-specific X limit, mixed/max rejection and image cancellation fencing.');
+
   // MP4 stays an independent raw upload; only a validated local id becomes draft state.
   submitAsynchronously = false;
   storedPost = { ...structuredClone(originalPost), content: 'A video draft', imageUrl: `data:image/png;base64,${imageBuffer.toString('base64')}`,
@@ -932,9 +1045,14 @@ try {
   await page.waitForFunction(expected => document.querySelector('.post-media-thumbnail video')?.getAttribute('src') === `/api/media/uploads/${expected}`
     && document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'), secondVideoId);
   assert.equal(storedPost.videoMediaId, secondVideoId, 'the newer id still dirties and autosaves after the old save completes');
+  assert.deepEqual(storedPost.imageMediaIds, [], 'video storage returns explicit empty images');
   await page.goto(`${origin}/?postId=${storedPost.id}`);
   await videoPreview.waitFor();
-  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${secondVideoId}`, 'reopening uses the durable id');
+  assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${secondVideoId}`, 'reopening uses the durable id even with explicit empty image refs');
+  await text.fill('Video text edited after reopening');
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.videoMediaId, secondVideoId, 'saving reopened video omits empty image refs instead of clearing the video');
+  assert.equal(Object.hasOwn(requests.filter(request => request.method === 'PATCH').at(-1).body, 'imageMediaIds'), false);
   const copiedVideoLoaded = page.waitForResponse(response => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/posts/22222222-2222-4222-8222-222222222222');
   await page.getByRole('button', { name: 'Copy as new draft', exact: true }).click();
@@ -956,7 +1074,8 @@ try {
   await page.locator('.post-media-thumbnail img').waitFor();
   await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
   assert.equal(storedPost.videoMediaId, null, 'image replacement clears video reference');
-  assert.ok(storedPost.imageUrl.startsWith('data:image/'));
+  assert.equal(storedPost.imageUrl, null);
+  assert.equal(storedPost.imageMediaIds.length, 1);
   const instagramUploadCompleted = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/media/uploads');
   await videoInput.setInputFiles(videoFile);
   await instagramUploadCompleted;

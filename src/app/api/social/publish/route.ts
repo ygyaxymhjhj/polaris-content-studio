@@ -5,6 +5,7 @@ import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
 import { readBoundedJson } from "@/lib/request-body";
 import { MAX_IMAGE_DATA_URL_LENGTH } from "@/lib/image-upload";
+import { areImageMediaIds } from "@/lib/image-types";
 import { enqueueAssetSubmission } from "@/lib/draft-submissions";
 import { wakeDraftSubmissionWorker } from "@/lib/draft-submission-scheduler";
 
@@ -16,13 +17,16 @@ const schema = z.object({
   content: z.string().trim().min(1).max(20000),
   imageUrl: z.string().max(MAX_IMAGE_DATA_URL_LENGTH).optional(),
   videoMediaId: z.string().uuid().optional(),
+  imageMediaIds: z.custom<string[]>(areImageMediaIds).optional(),
   projectId: z.string().uuid().optional(),
   platform: z.string().max(32).optional(),
   accountName: z.string().max(255).optional(),
   requestId: z.string().uuid(),
   expectedAuditId: z.string().uuid().optional(),
   publishAt: z.string().refine(value => !value || Number.isFinite(Date.parse(value))).optional()
-}).strict().refine(value => !value.imageUrl || !value.videoMediaId);
+}).strict().refine(value => value.imageMediaIds?.length
+  ? !value.imageUrl && !value.videoMediaId
+  : value.imageMediaIds !== undefined || !value.imageUrl || !value.videoMediaId);
 const failure = (error: string, status: number, code: string) => NextResponse.json({ error, code }, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function POST(request: NextRequest) {
@@ -34,7 +38,7 @@ export async function POST(request: NextRequest) {
   if (!body.ok) return failure("Invalid submission request body.", 400, "INVALID");
   const parsed = schema.safeParse(body.value);
   if (!parsed.success) return failure("Invalid submission request body.", 400, "INVALID");
-  if (parsed.data.imageUrl && !/^(data:image\/(jpeg|png|webp);base64,|https?:\/\/)/i.test(parsed.data.imageUrl)) {
+  if (parsed.data.imageMediaIds === undefined && parsed.data.imageUrl && !/^(data:image\/(jpeg|png|webp);base64,|https?:\/\/)/i.test(parsed.data.imageUrl)) {
     return failure("Invalid post image.", 400, "INVALID");
   }
   try {

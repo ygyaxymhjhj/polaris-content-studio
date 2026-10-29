@@ -23,7 +23,7 @@ const environmentNames = ["POSTIZ_API_URL", "POSTIZ_API_KEY", "POSTIZ_JWT_SECRET
 const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]));
 const previousFetch = globalThis.fetch;
 const platformTypes = loadModule("src/lib/types.ts");
-const postiz = loadModule("src/lib/postiz.ts", { "./types": platformTypes, "./post-types": loadModule("src/lib/post-types.ts") });
+const postiz = loadModule("src/lib/postiz.ts", { "./types": platformTypes, "./post-types": loadModule("src/lib/post-types.ts"), "./image-types": loadModule("src/lib/image-types.ts") });
 const capturedRequests = [];
 const savedAttempts = [];
 let upstreamBody = JSON.stringify("https://twitter.com/i/oauth2/authorize?state=synthetic-provider-state");

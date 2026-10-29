@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { LocaleContext, translate } from "@/lib/i18n";
 import AssetImageEditor from "@/components/AssetImageEditor";
+import { imageSelectionError } from "@/lib/image-types";
 import PostAccountPicker from "@/components/PostAccountPicker";
 import { SOCIAL_PLATFORM_META as PLATFORM_META, type SocialPlatform as Platform, type SocialAccount } from "@/lib/types";
 import {
@@ -79,6 +80,7 @@ export default function PostEditorView({
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [image, setImage] = useState("");
+  const [imageMediaIds, setImageMediaIds] = useState<string[] | undefined>(undefined);
   const [videoMediaId, setVideoMediaId] = useState<string | null>(null);
   const [imageDirty, setImageDirty] = useState(false);
   const [imageName, setImageName] = useState("");
@@ -130,8 +132,8 @@ export default function PostEditorView({
   const versionRef = useRef(0);
   const savedPayload = useRef("");
   const saveFlight = useRef<Promise<ManualPostDetail | null> | null>(null);
-  const payloadRef = useRef({ title, content, image, videoMediaId, imageDirty, imageName, targetIds });
-  payloadRef.current = { title, content, image, videoMediaId, imageDirty, imageName, targetIds };
+  const payloadRef = useRef({ title, content, image, imageMediaIds, videoMediaId, imageDirty, imageName, targetIds });
+  payloadRef.current = { title, content, image, imageMediaIds, videoMediaId, imageDirty, imageName, targetIds };
 
   const applyDetail = useCallback((detail: ManualPostDetail, options: { resetFields: boolean }) => {
     setPost(detail);
@@ -140,13 +142,14 @@ export default function PostEditorView({
     if (options.resetFields) {
       setTitle(detail.title);
       setContent(detail.content);
-      setImage(detail.imageUrl ?? "");
-      setVideoMediaId(detail.videoMediaId ?? null);
+      setImage(detail.imageMediaIds === undefined ? detail.imageUrl ?? "" : "");
+      setImageMediaIds(detail.imageMediaIds);
+      setVideoMediaId(detail.imageMediaIds?.length ? null : detail.videoMediaId ?? null);
       setImageDirty(false);
       setImageName(detail.imageName ?? "");
       setTargetIds(detail.targets.map((target) => target.integrationId));
     }
-    savedPayload.current = JSON.stringify([detail.title.trim(), detail.content, false, detail.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    savedPayload.current = JSON.stringify([detail.title.trim(), detail.content, false, detail.imageMediaIds ?? null, detail.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
     setSavedRevision((revision) => revision + 1);
   }, []);
 
@@ -155,9 +158,9 @@ export default function PostEditorView({
     if (postId === "new") {
       updateDeletion({ phase: "idle" });
       setPost(null); postRef.current = null; versionRef.current = 0;
-      setTitle(""); setContent(""); setImage(""); setVideoMediaId(null); setImageDirty(false); setImageName("");
+      setTitle(""); setContent(""); setImage(""); setImageMediaIds(undefined); setVideoMediaId(null); setImageDirty(false); setImageName("");
       setTargetIds([]);
-      savedPayload.current = JSON.stringify(["", "", false, null, ""]);
+      savedPayload.current = JSON.stringify(["", "", false, null, null, ""]);
       setSavedRevision((revision) => revision + 1);
       setLoading(false); setLoadError(""); setConflict(false); setSaveError(""); setSubmitError(""); setFrozenNotice("");
       return;
@@ -189,8 +192,8 @@ export default function PostEditorView({
   }, [postId, applyDetail, updateDeletion]);
 
   const payloadKey = useMemo(
-    () => JSON.stringify([title.trim(), content, imageDirty, videoMediaId ?? null, [...targetIds].sort().join(",")]),
-    [title, content, imageDirty, videoMediaId, targetIds]
+    () => JSON.stringify([title.trim(), content, imageDirty ? image : false, imageMediaIds ?? null, videoMediaId ?? null, [...targetIds].sort().join(",")]),
+    [title, content, image, imageDirty, imageMediaIds, videoMediaId, targetIds]
   );
   // Save results live in a ref, so the re-render that setSavedRevision triggers is what makes this
   // comparison visible to the next render; savedRevision itself is not read here on purpose.
@@ -292,7 +295,8 @@ export default function PostEditorView({
       videoMediaId: payload.videoMediaId ?? null,
       integrationIds: payload.targetIds
     };
-    if (!payload.videoMediaId && payload.imageDirty && payload.image.startsWith("data:")) {
+    if (payload.imageMediaIds !== undefined && !payload.videoMediaId) body.imageMediaIds = payload.imageMediaIds;
+    if (payload.imageMediaIds === undefined && !payload.videoMediaId && payload.imageDirty && payload.image.startsWith("data:")) {
       body.imageDataUrl = payload.image;
       if (payload.imageName) body.imageName = payload.imageName;
     }
@@ -308,8 +312,8 @@ export default function PostEditorView({
     if (!response.ok || !data.post) throw new Error(data.error || "The post could not be saved.");
     const detail = data.post;
     setPost(detail); postRef.current = detail; versionRef.current = detail.version;
-    savedPayload.current = JSON.stringify([sentTitle, sentContent, false, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
-    if (sentImageIncluded && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
+    savedPayload.current = JSON.stringify([sentTitle, sentContent, false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    if (sentImageIncluded && payloadRef.current.imageMediaIds === undefined && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
       setImage(detail.imageUrl ?? "");
       setImageDirty(false);
     }
@@ -328,7 +332,8 @@ export default function PostEditorView({
       videoMediaId: payload.videoMediaId ?? null,
       integrationIds: payload.targetIds
     };
-    if (payload.imageDirty) {
+    if (payload.imageMediaIds !== undefined && !payload.videoMediaId) body.imageMediaIds = payload.imageMediaIds;
+    if (payload.imageMediaIds === undefined && payload.imageDirty) {
       body.imageDataUrl = !payload.videoMediaId && payload.image ? payload.image : null;
       if (payload.image && !payload.image.startsWith("/api/") && payload.imageName) body.imageName = payload.imageName;
     }
@@ -350,8 +355,8 @@ export default function PostEditorView({
     if (!response.ok || !data.post) throw new Error(data.error || "The post could not be saved.");
     const detail = data.post;
     setPost(detail); postRef.current = detail; versionRef.current = detail.version;
-    savedPayload.current = JSON.stringify([String(body.title), String(body.content), false, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
-    if (payload.imageDirty && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
+    savedPayload.current = JSON.stringify([String(body.title), String(body.content), false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    if (payload.imageDirty && payloadRef.current.imageMediaIds === undefined && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
       setImage(detail.imageUrl ?? "");
       setImageDirty(false);
     }
@@ -369,7 +374,7 @@ export default function PostEditorView({
     if (saveFlight.current) return saveFlight.current;
     const flight = (async (): Promise<ManualPostDetail | null> => {
       const payload = payloadRef.current;
-      const key = JSON.stringify([payload.title.trim(), payload.content, payload.imageDirty, payload.videoMediaId ?? null, [...payload.targetIds].sort().join(",")]);
+      const key = JSON.stringify([payload.title.trim(), payload.content, payload.imageDirty ? payload.image : false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null, [...payload.targetIds].sort().join(",")]);
       const current = postRef.current;
       if (current && !current.editable) return current;
       if (key === savedPayload.current) return current;
@@ -379,7 +384,7 @@ export default function PostEditorView({
       try {
         if (!current) {
           // An untouched page must never create a record.
-          if (!payload.title.trim() && !payload.content.trim() && !payload.image && !payload.videoMediaId) return null;
+          if (!payload.title.trim() && !payload.content.trim() && !payload.image && !payload.imageMediaIds?.length && !payload.videoMediaId) return null;
           return await createPost();
         }
         return await patchPost(current);
@@ -400,7 +405,7 @@ export default function PostEditorView({
     if (editorTransition || copying || deletionBlocked || !editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
     const timer = window.setTimeout(() => { void save(); }, 1200);
     return () => window.clearTimeout(timer);
-  }, [editorTransition, copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, videoMediaId, imageDirty, targetIds, postId]);
+  }, [editorTransition, copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, imageMediaIds, videoMediaId, imageDirty, targetIds, postId]);
 
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
@@ -429,7 +434,7 @@ export default function PostEditorView({
     // An older autosave may have been in flight when the push was clicked. Flush the latest
     // snapshot before submitting so selected accounts never receive an earlier edit.
     const latest = payloadRef.current;
-    const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+    const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty ? latest.image : false, latest.imageMediaIds ?? null, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
     if (saved && latestKey !== savedPayload.current) saved = await save();
     if (!saved) {
       setSubmitError(t("Save the post before submitting it."));
@@ -520,7 +525,7 @@ export default function PostEditorView({
       if (dirty) {
         if (!await save()) return;
         const latest = payloadRef.current;
-        const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+        const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty ? latest.image : false, latest.imageMediaIds ?? null, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
         if (latestKey !== savedPayload.current && !await save()) return;
       }
       if (!mediaBusyRef.current && editorMounted.current) onBack();
@@ -578,10 +583,15 @@ export default function PostEditorView({
   }));
 
   const trimmedContent = (editable ? content : post?.content ?? content).trim();
-  const hasMedia = Boolean(editable ? image || videoMediaId : post?.imageUrl || post?.videoMediaId);
+  const currentImageIds = editable ? imageMediaIds : post?.imageMediaIds;
+  const currentVideoId = editable ? videoMediaId : post?.videoMediaId;
+  const imageCount = currentImageIds === undefined ? Number(Boolean(editable ? image : post?.imageUrl)) : currentImageIds.length;
+  const hasMedia = Boolean(imageCount || currentVideoId);
 
   /** Per-account blockers; each one only ever gates its own account. */
   function targetBlocker(target: PostTarget): string {
+    const imageError = imageSelectionError(target.platform, imageCount, Boolean(currentVideoId));
+    if (imageError) return t(imageError);
     if (target.platform === "youtube") return t(youtubePostError(editable ? title : post?.title, editable ? content : post?.content ?? content, Boolean(editable ? videoMediaId : post?.videoMediaId)));
     if (!trimmedContent) return t("Add post text before submitting.");
     const rule = platformRuleFor(target.platform);
@@ -718,17 +728,27 @@ export default function PostEditorView({
             <AssetImageEditor
               variant="composer"
               value={image}
+              imageMediaIds={imageMediaIds}
+              onImagesChange={ids => {
+                setImageMediaIds(ids);
+                setImage("");
+                setVideoMediaId(null);
+                setImageDirty(false);
+                setImageName("");
+              }}
               videoMediaId={videoMediaId}
               title={t("Post image")}
               disabled={controlsLocked}
               allowUrlInput={false}
               onChange={nextImage => {
                 setImage(nextImage);
+                setImageMediaIds(undefined);
                 setVideoMediaId(null);
                 setImageDirty(true);
               }}
               onVideoChange={identifier => {
                 setVideoMediaId(identifier);
+                setImageMediaIds(undefined);
                 setImage("");
                 setImageDirty(true);
               }}

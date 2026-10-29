@@ -184,6 +184,7 @@ const submitAssetFunction = studioNodes.find(node => ts.isFunctionDeclaration(no
 const submitContext = {
   imageUploadingRef: { current: false }, acceptanceFlights: { current: new Set() }, channelsLoading: false, channelsError: '',
   socialAccounts: [{ id: 'account', identifier: 'x', name: 'News desk' }], getMatchingSocialAccounts, createClientId,
+  imageSelectionError: loadModule(resolve(repository, 'src/lib/image-types.ts')).imageSelectionError,
   currentProjectRef: { current: 'project' }, packSequence: { current: 0 }, submissionAttempts: { current: new Map() },
   config: { imageUrl: 'article-fallback' }, setAssets() {}, setSelectedAsset() {}, setPublishModalAsset() {}, setAcceptingAssetIds() {},
   t: text => text, notify() {}, readJson: response => response.json(),

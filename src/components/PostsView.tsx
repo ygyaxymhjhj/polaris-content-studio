@@ -309,10 +309,11 @@ export default function PostsView({
               <button type="button" className="posts-row-open" onClick={() => onOpenPost(post.id)} aria-label={`${t("Open post")}: ${post.title || post.excerpt.slice(0, 60)}`}>
                 <span className="posts-row-thumb">
                   {post.hasVideo ? <Video size={24} aria-label={t("Post video")} /> : post.hasImage ? (
-                    <img src={`/api/posts/${post.id}/image?size=thumb&v=${post.imageVersion}`} alt="" loading="lazy" />
+                    <img src={post.imageUrl || `/api/posts/${post.id}/image?size=thumb&v=${post.imageVersion}`} alt="" loading="lazy" />
                   ) : (
                     <ImageOff size={17} aria-hidden="true" />
                   )}
+                  {(post.imageCount ?? 0) > 1 && <span className="posts-platform-mark" aria-label={`${post.imageCount} ${t("images")}`}>{post.imageCount}</span>}
                 </span>
                 <span className="posts-row-body">
                   <span className="posts-row-title-line">

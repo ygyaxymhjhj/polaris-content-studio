@@ -3,6 +3,7 @@ import { openAsBlob } from "node:fs";
 import sharp from "sharp";
 import type { SocialAccount } from "./types";
 import { youtubePostError } from "./post-types";
+import { imageSelectionError } from "./image-types";
 import { DEFAULT_PLATFORMS, type SocialPlatform } from "./types";
 
 export interface PostizConfig {
@@ -163,6 +164,7 @@ export interface PostizPublishRequest {
   content: string;
   imageUrl?: string;
   uploadedMedia?: { id: string; path: string };
+  uploadedImages?: Array<{ id: string; path: string }>;
   platform?: string;
 }
 
@@ -257,9 +259,11 @@ const MAX_POSTIZ_IMAGE_PIXELS = 40_000_000;
 
 async function uploadMediaToPostiz(
   config: PostizConfig,
-  imageUrl: string
+  imageUrl: string,
+  signal?: AbortSignal
 ): Promise<{ id: string; path: string } | null> {
   try {
+    signal?.throwIfAborted();
     let buffer: Buffer;
     if (imageUrl.startsWith("data:")) {
       // Reject encoded size before the regex captures or Buffer.from allocates decoded bytes.
@@ -268,7 +272,7 @@ async function uploadMediaToPostiz(
       if (!match) return null;
       buffer = Buffer.from(match[1], "base64");
     } else {
-      const res = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
+      const res = await fetch(imageUrl, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) });
       if (!res.ok) return null;
       if (Number(res.headers.get("content-length")) > MAX_POSTIZ_IMAGE_BYTES) {
         await res.body?.cancel().catch(() => undefined);
@@ -308,6 +312,7 @@ async function uploadMediaToPostiz(
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(buffer)], { type: mimeType }), filename);
 
+    signal?.throwIfAborted();
     const base = getPostizApiBaseUrl(config.apiUrl);
     const uploadRes = await fetch(`${base}/public/v1/upload`, {
       method: "POST",
@@ -316,7 +321,7 @@ async function uploadMediaToPostiz(
       },
       body: form,
       redirect: "error",
-      signal: AbortSignal.timeout(30000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000)
     });
 
     if (!uploadRes.ok) {
@@ -333,6 +338,11 @@ async function uploadMediaToPostiz(
     console.error("[postiz] image validation or upload failed");
     return null;
   }
+}
+
+export async function uploadImageToPostiz(imageUrl: string, signal?: AbortSignal): Promise<{ id: string; path: string } | null> {
+  const config = getPostizConfig();
+  return config ? uploadMediaToPostiz(config, imageUrl, signal) : null;
 }
 
 export interface PostizPostDetails {
@@ -506,7 +516,7 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
     return { success: false, error: "Postiz is not configured. Please set POSTIZ_API_URL and POSTIZ_API_KEY in environment." };
   }
 
-  if (req.uploadedMedia || req.platform?.toLowerCase() === "youtube") return createStrictDraft(req);
+  if (req.uploadedMedia || req.uploadedImages !== undefined || req.platform?.toLowerCase() === "youtube") return createStrictDraft(req);
   let images: Array<{ id: string; path: string }> = [];
   if (req.imageUrl) {
     const uploaded = await uploadMediaToPostiz(config, req.imageUrl);
@@ -624,6 +634,11 @@ export async function createStrictDraft(req: PostizPublishRequest): Promise<Stri
     return { success: false, error: "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY." };
   }
 
+  if (req.uploadedImages !== undefined && (!Array.isArray(req.uploadedImages) || req.imageUrl !== undefined)) {
+    return { success: false, error: "Choose uploaded images or an inline image, not both. No draft was created." };
+  }
+  const mediaError = imageSelectionError(req.platform || "x", req.uploadedImages?.length ?? Number(Boolean(req.imageUrl)), Boolean(req.uploadedMedia));
+  if (mediaError) return { success: false, error: mediaError };
   if (req.uploadedMedia && req.imageUrl) {
     return { success: false, error: "Choose either an image or an uploaded video, not both. No draft was created." };
   }
@@ -638,6 +653,16 @@ export async function createStrictDraft(req: PostizPublishRequest): Promise<Stri
       images = [{ id: req.uploadedMedia.id, path: getTrustedPostizMediaUrl(req.uploadedMedia.path) }];
     } catch {
       return { success: false, error: "The uploaded video reference is invalid. Upload it again. No draft was created." };
+    }
+  }
+  if (req.uploadedImages?.length) {
+    try {
+      images = req.uploadedImages.map(image => {
+        if (!image.id.trim() || image.id.length > 191) throw new Error();
+        return { id: image.id, path: getTrustedPostizMediaUrl(image.path) };
+      });
+    } catch {
+      return { success: false, error: "The uploaded image references are invalid. Upload them again. No draft was created." };
     }
   }
   if (req.imageUrl) {

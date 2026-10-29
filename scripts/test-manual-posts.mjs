@@ -16,7 +16,7 @@ function loadModule(relativePath, dependencies = {}) {
   });
   const compiledModule = { exports: {} };
   new Function("require", "module", "exports", outputText)(
-    dependency => dependencies[dependency] ?? nativeRequire(dependency),
+    dependency => dependencies[dependency] ?? (["./image-types", "@/lib/image-types"].includes(dependency) ? loadModule("../src/lib/image-types.ts") : nativeRequire(dependency)),
     compiledModule,
     compiledModule.exports
   );
@@ -225,4 +225,59 @@ test("boards outside the caller's accounts are refused, and a valid post stores 
   assert.equal(createdPosts[0].ownerUserId, memberUser.id);
   assert.deepEqual(createdPosts[0].input.targets, [{ integrationId, platform: "x", accountName: "Owned Account" }]);
   assert.equal(createdPosts[0].input.image, null);
+});
+
+
+test("registered image arrays preserve order without downloading or uploading again", async () => {
+  const uploadedImages = [
+    { id: "second", path: "https://uploads.postiz.com/second.png" },
+    { id: "first", path: "https://uploads.postiz.com/first.png" }
+  ];
+  const result = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Album", platform: "instagram", uploadedImages });
+  assert.equal(result.success, true);
+  assert.equal(calls.requests.length, 1);
+  assert.ok(calls.requests[0].url.endsWith("/posts"));
+  assert.deepEqual(JSON.parse(calls.requests[0].options.body).posts[0].value[0].image, uploadedImages);
+  calls.requests.length = 0;
+  assert.equal((await postiz.publishToPostiz({ integrationId: "channel-one", content: "Album", platform: "facebook", uploadedImages })).success, true);
+  assert.equal(calls.requests.length, 1);
+});
+
+test("strict image arrays refuse limits, mixed sources and untrusted media before creating a draft", async () => {
+  const uploadedImages = Array.from({ length: 11 }, (_, index) => ({ id: `image-${index}`, path: `https://uploads.postiz.com/${index}.png` }));
+  for (const input of [
+    { platform: "x", uploadedImages: uploadedImages.slice(0, 5) },
+    { platform: "facebook", uploadedImages },
+    { platform: "youtube", uploadedImages: uploadedImages.slice(0, 1) },
+    { uploadedImages: [], imageUrl: tinyPngDataUrl },
+    { uploadedImages: [], imageUrl: "" },
+    { uploadedImages: uploadedImages.slice(0, 1), uploadedMedia: { id: "video", path: "https://uploads.postiz.com/video.mp4" } },
+    { uploadedImages: [{ id: "unsafe", path: "https://foreign.test/image.png" }] },
+    { uploadedImages: [{ id: "", path: "https://uploads.postiz.com/image.png" }] }
+  ]) {
+    const result = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Album", ...input });
+    assert.equal(result.success, false);
+    assert.equal(result.uncertain, undefined);
+    assert.equal(calls.requests.length, 0);
+  }
+  assert.equal((await postiz.createStrictDraft({ integrationId: "channel-one", content: "Album", platform: "facebook", uploadedImages: uploadedImages.slice(0, 10) })).success, true);
+  assert.equal(JSON.parse(calls.requests[0].options.body).posts[0].value[0].image.length, 10);
+});
+
+test("manual create accepts image-only references and rejects invalid arrays or mixed media", async () => {
+  const imageId = "22222222-2222-4222-8222-222222222222";
+  assert.equal((await route.POST(createRequest({ imageMediaIds: [imageId] }))).status, 201);
+  assert.deepEqual(createdPosts[0].input.imageMediaIds, [imageId]);
+  createdPosts.length = 0;
+  for (const imageMediaIds of [null, "invalid", ["bad"], [imageId, imageId], Array.from({ length: 11 }, (_, index) => `${String(index).padStart(8, "0")}-2222-4222-8222-222222222222`)]) {
+    assert.equal((await route.POST(createRequest({ title: "Title", imageMediaIds }))).status, 400);
+  }
+  for (const body of [{ imageMediaIds: [imageId], imageDataUrl: tinyPngDataUrl }, { imageMediaIds: [imageId], videoMediaId: postId }]) {
+    assert.equal((await route.POST(createRequest(body))).status, 400);
+  }
+  assert.equal(createdPosts.length, 0);
+  assert.equal((await route.POST(createRequest({ imageMediaIds: [], imageDataUrl: tinyPngDataUrl }))).status, 400, "an explicitly empty image selection cannot make an empty draft nonempty");
+  assert.equal((await route.POST(createRequest({ title: "Title", imageMediaIds: [], imageDataUrl: tinyPngDataUrl }))).status, 201);
+  assert.equal(createdPosts[0].input.image, null);
+  assert.deepEqual(createdPosts[0].input.imageMediaIds, []);
 });

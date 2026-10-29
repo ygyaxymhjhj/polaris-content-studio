@@ -13,7 +13,7 @@ function loadModule(path, dependencies = {}) {
     compilerOptions: { module: typescript.ModuleKind.CommonJS, target: typescript.ScriptTarget.ES2022, esModuleInterop: true }
   });
   const compiled = { exports: {} };
-  new Function("require", "module", "exports", outputText)(name => dependencies[name] ?? nativeRequire(name), compiled, compiled.exports);
+  new Function("require", "module", "exports", outputText)(name => dependencies[name] ?? (["./image-types", "@/lib/image-types"].includes(name) ? loadModule("../src/lib/image-types.ts") : nativeRequire(name)), compiled, compiled.exports);
   return compiled.exports;
 }
 
@@ -66,9 +66,11 @@ function createHarness() {
     CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, disabled INTEGER, display_name TEXT);
     CREATE TABLE projects (id TEXT PRIMARY KEY, owner_hash TEXT, name TEXT, snapshot TEXT, version INTEGER DEFAULT 1, updated_at TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY, owner_user_id TEXT, title TEXT, content TEXT, image_data TEXT,
-      image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER, created_at TEXT, updated_at TEXT, video_media_id TEXT);
+      image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER, created_at TEXT, updated_at TEXT, video_media_id TEXT, image_media_ids TEXT);
     CREATE TABLE video_uploads (id TEXT PRIMARY KEY, owner_user_id TEXT, request_id TEXT, checksum TEXT,
       postiz_media_id TEXT, postiz_path TEXT, filename TEXT, byte_size INTEGER, width INTEGER, height INTEGER, duration_seconds REAL);
+    CREATE TABLE image_uploads (id TEXT PRIMARY KEY, owner_user_id TEXT, request_id TEXT, checksum TEXT,
+      postiz_media_id TEXT, postiz_path TEXT, filename TEXT, byte_size INTEGER, width INTEGER, height INTEGER, thumbnail_data TEXT);
     CREATE TABLE post_targets (id TEXT, post_id TEXT, integration_id TEXT, platform TEXT, account_name TEXT,
       status TEXT, snapshot_version INTEGER, attempt_id TEXT, attempt_started_at TEXT, postiz_post_id TEXT,
       audit_id TEXT, warning TEXT, error TEXT, submitted_at TEXT, created_at TEXT, updated_at TEXT, UNIQUE(post_id, integration_id));
@@ -82,7 +84,7 @@ function createHarness() {
       audit_id TEXT, postiz_post_id TEXT, warning TEXT, error TEXT, created_at TEXT, updated_at TEXT, finished_at TEXT);
     INSERT INTO users VALUES ('owner','member',0,'Owner');
     INSERT INTO projects (id, owner_hash) VALUES ('${postId}','hash-owner');
-    INSERT INTO posts VALUES ('${postId}','owner','Title','Frozen text','data:image/png;base64,AAAA',NULL,NULL,NULL,NULL,4,'2020-01-01','2020-01-01',NULL);
+    INSERT INTO posts VALUES ('${postId}','owner','Title','Frozen text','data:image/png;base64,AAAA',NULL,NULL,NULL,NULL,4,'2020-01-01','2020-01-01',NULL,NULL);
     INSERT INTO post_targets VALUES ('target','${postId}','account','x','Account','not_started',0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2020-01-01','2020-01-01');
   `);
   const harness = { sql, drafts: [], audits: [], accountOwner: "owner", liveDisabled: false, liveAccountMissing: false,
@@ -101,6 +103,7 @@ function createHarness() {
       .replace(/LEFT\(p.content, 400\)/g, "substr(p.content, 1, 400)")
       .replace(/GROUP_CONCAT\(DISTINCT t.platform ORDER BY t.platform\)/g, "GROUP_CONCAT(DISTINCT t.platform)")
       .replace(/CURRENT_TIMESTAMP\(3\)/g, "CURRENT_TIMESTAMP")
+      .replace(/JSON_LENGTH\(/g, "json_array_length(")
       .replace(/ON DUPLICATE KEY UPDATE platform=VALUES\(platform\), account_name=VALUES\(account_name\), updated_at=VALUES\(updated_at\)/g,
         "ON CONFLICT(post_id, integration_id) DO UPDATE SET platform=excluded.platform, account_name=excluded.account_name, updated_at=excluded.updated_at");
     if (portable.startsWith("UPDATE post_targets t JOIN posts")) {
@@ -128,12 +131,15 @@ function createHarness() {
   const videoUploads = loadModule("../src/lib/video-uploads.ts", {
     "@/lib/project-db": { database: () => pool }, "./video-types": loadModule("../src/lib/video-types.ts")
   });
+  const imageUploads = loadModule("../src/lib/image-uploads.ts", { "@/lib/project-db": { database: () => pool } });
   const storage = loadModule("../src/lib/posts.ts", {
-    "@/lib/project-db": { database: () => pool }, "./post-types": postTypes, "@/lib/video-uploads": videoUploads
+    "@/lib/project-db": { database: () => pool }, "./post-types": postTypes, "@/lib/video-uploads": videoUploads,
+    "@/lib/image-uploads": imageUploads
   });
   const dependencies = {
     "@/lib/project-db": { database: () => pool }, "@/lib/posts": storage,
     "@/lib/video-uploads": videoUploads,
+    "@/lib/image-uploads": imageUploads,
     "@/lib/post-types": postTypes,
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
     "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: harness.accountProvider || "x", accountName: "Account" }) },
@@ -159,7 +165,7 @@ function createHarness() {
   };
   const submission = loadModule("../src/lib/post-submission.ts", dependencies);
   const queue = loadModule("../src/lib/draft-submissions.ts", { ...dependencies, "@/lib/post-submission": submission });
-  return Object.assign(harness, { queue, storage, pool, videoUploads,
+  return Object.assign(harness, { queue, storage, pool, videoUploads, imageUploads,
     enqueueAsset: (overrides = {}) => queue.enqueueAssetSubmission({ userId: "owner", isAdmin: false, assetId: "asset-one", integrationId: "account", content: "Frozen text", requestId, ...overrides }),
     enqueueManual: (overrides = {}) => queue.enqueueManualSubmission({ userId: "owner", isAdmin: false, postId, integrationId: "account", expectedVersion: 4, ...overrides }),
     tasks: () => sql.prepare("SELECT * FROM draft_submissions ORDER BY created_at, id").all(),
@@ -690,7 +696,8 @@ test("video project PUT rejects upstream fields, validates owned references, res
     "next/server": { NextResponse },
     "@/lib/auth": { currentUser: async () => ({ user: { id: "owner", role: "admin" }, ownerHash: "hash-owner" }) },
     "@/lib/project-db": { database: () => harness.pool }, "@/lib/project-schema": schemas,
-    "@/lib/same-origin": { isSameOrigin: () => true }, "@/lib/video-uploads": harness.videoUploads
+    "@/lib/same-origin": { isSameOrigin: () => true }, "@/lib/video-uploads": harness.videoUploads,
+    "@/lib/image-uploads": harness.imageUploads
   });
   const put = (snapshot, version = 0) => route.PUT(new NextRequest("https://studio.test/api/projects", {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: taskId, version, snapshot })
@@ -749,4 +756,213 @@ test("video manual POST and PATCH accept nullable UUID references and reject mix
   assert.equal((await kept.json()).post.videoMediaId, videoId);
   const removed = await updateRoute.PATCH(request("PATCH", { version: 2, videoMediaId: null }), contextParameters);
   assert.equal((await removed.json()).post.videoMediaId, null);
+});
+
+
+function seedImages(harness, count = 2, ownerUserId = "owner") {
+  return Array.from({ length: count }, () => {
+    const id = randomUUID();
+    harness.sql.prepare("INSERT INTO image_uploads VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .run(id, ownerUserId, randomUUID(), "checksum", `upstream-${id}`, `https://uploads.postiz.com/${id}.png`, "photo.png", 100, 20, 10, image.dataUrl);
+    return id;
+  });
+}
+
+test("ordered image references survive save, list, copy and unlink without deleting uploads", async context => {
+  const harness = videoHarness(context);
+  const ids = seedImages(harness).reverse();
+  const created = await harness.storage.createManualPost("owner", { title: "Images", content: "Caption", image: null, imageMediaIds: ids, targets: [] });
+  assert.deepEqual(created.imageMediaIds, ids);
+  assert.equal(created.imageUrl, `/api/media/images/${ids[0]}`);
+  const listed = await harness.storage.listManualPosts("owner", { status: "all", search: "", platform: "", integrationId: "", updatedSince: 0, page: 1, perPage: 20 });
+  assert.equal(listed.items.find(post => post.id === created.id).hasImage, true);
+  assert.equal(listed.items.find(post => post.id === created.id).imageCount, 2);
+  assert.equal(listed.items.find(post => post.id === created.id).imageUrl, `/api/media/images/${ids[0]}?size=thumb`);
+  const copy = await harness.storage.duplicateManualPost("owner", created.id);
+  assert.deepEqual(copy.imageMediaIds, ids);
+  assert.deepEqual(copy.targets, []);
+  assert.equal((await harness.storage.deleteManualPost("owner", created.id)).kind, "ok");
+  assert.equal(harness.sql.prepare("SELECT COUNT(*) AS count FROM image_uploads").get().count, 2);
+  assert.ok(harness.statements.filter(entry => entry.statement.includes("FROM image_uploads")).every(entry => entry.transactionOpen));
+  harness.sql.exec("UPDATE image_uploads SET owner_user_id='other'");
+  await assert.rejects(harness.storage.duplicateManualPost("owner", copy.id), harness.storage.PostMediaValidationError);
+});
+
+test("image references validate shape and ownership atomically, including administrator enqueue", async context => {
+  const harness = videoHarness(context);
+  const ids = seedImages(harness);
+  const foreign = seedImages(harness, 1, "other");
+  for (const invalid of [foreign, [randomUUID()], [ids[0], ids[0].toUpperCase()], ["bad"], Array.from({ length: 11 }, () => randomUUID()), null]) {
+    await assert.rejects(harness.storage.createManualPost("owner", { title: "Images", content: "Caption", image: null, imageMediaIds: invalid, targets: [] }), harness.storage.PostMediaValidationError);
+    await assert.rejects(harness.storage.updateManualPost("owner", postId, 4, { imageMediaIds: invalid }), harness.storage.PostMediaValidationError);
+    assert.equal((await harness.enqueueAsset({ imageMediaIds: invalid, isAdmin: true })).kind, "validation");
+  }
+  for (const mixed of [{ imageMediaIds: ids, imageUrl: image.dataUrl }, { imageMediaIds: ids, videoMediaId: videoId }]) {
+    assert.equal((await harness.enqueueAsset(mixed)).kind, "validation");
+  }
+  await assert.rejects(harness.storage.createManualPost("owner", { title: "Images", content: "Caption", image, imageMediaIds: ids, targets: [] }), harness.storage.PostMediaValidationError);
+  await assert.rejects(harness.storage.updateManualPost("owner", postId, 4, { imageMediaIds: ids, videoMediaId: videoId }), harness.storage.PostMediaValidationError);
+  assert.equal(harness.tasks().length, 0);
+  assert.equal(harness.sql.prepare("SELECT version FROM posts WHERE id=?").get(postId).version, 4);
+});
+
+test("explicit empty image references suppress legacy media and replacements clear the previous source", async context => {
+  const harness = videoHarness(context);
+  assert.equal("imageMediaIds" in await harness.storage.getManualPost("owner", postId), false);
+  let result = await harness.storage.updateManualPost("owner", postId, 4, { imageMediaIds: [], image: { kind: "set", image } });
+  assert.deepEqual(result.post.imageMediaIds, []);
+  assert.equal(result.post.imageUrl, null);
+  for (const column of ["image_data", "image_thumb", "image_name", "image_width", "image_height"]) {
+    assert.equal(harness.sql.prepare("SELECT * FROM posts WHERE id=?").get(postId)[column], null);
+  }
+  const ids = seedImages(harness);
+  result = await harness.storage.updateManualPost("owner", postId, result.post.version, { imageMediaIds: ids });
+  result = await harness.storage.updateManualPost("owner", postId, result.post.version, { videoMediaId: videoId });
+  assert.deepEqual(result.post.imageMediaIds, []);
+  assert.equal(result.post.videoMediaId, videoId);
+  result = await harness.storage.updateManualPost("owner", postId, result.post.version, { imageMediaIds: ids });
+  assert.equal(result.post.videoMediaId, null);
+  assert.deepEqual(result.post.imageMediaIds, ids);
+  const accepted = await harness.enqueueAsset({ imageMediaIds: [], imageUrl: image.dataUrl });
+  assert.equal(accepted.kind, "queued");
+  assert.equal(JSON.parse(harness.tasks()[0].snapshot).imageUrl, null);
+  // An old image left in a stored snapshot still cannot override the explicit selection.
+  const frozen = JSON.parse(harness.tasks()[0].snapshot);
+  harness.sql.prepare("UPDATE draft_submissions SET snapshot=?").run(JSON.stringify({ ...frozen, imageUrl: image.dataUrl }));
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.drafts[0].imageUrl, undefined);
+  assert.deepEqual(harness.drafts[0].uploadedImages, []);
+});
+
+test("manual image claim checks ownership and provider limits before freezing then uses ordered frozen IDs", async context => {
+  const harness = videoHarness(context);
+  const ids = seedImages(harness, 5);
+  harness.sql.prepare("UPDATE posts SET image_data=NULL, image_media_ids=?").run(JSON.stringify(ids));
+  assert.equal((await harness.enqueueManual()).kind, "validation", "X refuses five images");
+  assert.equal(harness.target().status, "not_started");
+  harness.accountProvider = "facebook";
+  harness.liveIdentifier = "facebook";
+  harness.sql.prepare("UPDATE image_uploads SET owner_user_id='other' WHERE id=?").run(ids[0]);
+  assert.equal((await harness.enqueueManual()).kind, "validation");
+  assert.equal(harness.tasks().length, 0);
+  harness.sql.prepare("UPDATE image_uploads SET owner_user_id='owner'").run();
+  assert.equal((await harness.enqueueManual()).kind, "queued");
+  const frozen = JSON.parse(harness.tasks()[0].snapshot);
+  assert.deepEqual(frozen.imageMediaIds, ids);
+  assert.equal(frozen.imageUrl, null);
+  assert.doesNotMatch(harness.tasks()[0].snapshot, /postizPath|postizMediaId|https:/);
+  assert.equal((await harness.storage.updateManualPost("owner", postId, 4, { imageMediaIds: ids.slice().reverse() })).kind, "frozen");
+  harness.sql.prepare("UPDATE posts SET image_media_ids='[]'").run();
+  await harness.queue.processDraftSubmissions();
+  assert.deepEqual(harness.drafts[0].uploadedImages, ids.map(id => ({ id: `upstream-${id}`, path: `https://uploads.postiz.com/${id}.png` })));
+});
+
+test("asset image fingerprints preserve ordering and legacy jobs keep their existing digest", async context => {
+  const harness = videoHarness(context);
+  const ids = seedImages(harness);
+  const first = await harness.enqueueAsset({ imageMediaIds: ids });
+  const digest = harness.tasks()[0].fingerprint;
+  assert.equal((await harness.enqueueAsset({ imageMediaIds: ids.slice().reverse(), requestId: randomUUID() })).kind, "in_flight");
+  await harness.queue.processDraftSubmissions();
+  assert.equal((await harness.enqueueAsset({ imageMediaIds: ids, requestId: randomUUID() })).task.id, first.task.id);
+  assert.equal((await harness.enqueueAsset({ imageMediaIds: ids.map(id => id.toUpperCase()), requestId: randomUUID() })).task.id, first.task.id);
+  assert.equal(harness.tasks().length, 1, "UUID case must not bypass completed-success deduplication");
+  const reordered = await harness.enqueueAsset({ imageMediaIds: ids.slice().reverse().map(id => id.toUpperCase()), requestId: randomUUID() });
+  assert.notEqual(reordered.task.id, first.task.id);
+  const reorderedTask = harness.tasks().find(task => task.id === reordered.task.id);
+  assert.notEqual(reorderedTask.fingerprint, digest);
+  assert.deepEqual(JSON.parse(reorderedTask.snapshot).imageMediaIds, ids.slice().reverse(), "frozen UUID references use canonical lowercase");
+});
+
+for (const mutation of ["owner", "missing", "provider", "mixed", "video"]) {
+  test(`image worker validates frozen sources and live limits before create: ${mutation}`, async context => {
+    const harness = videoHarness(context);
+    const ids = seedImages(harness, 5);
+    harness.accountProvider = "facebook";
+    assert.equal((await harness.enqueueAsset({ imageMediaIds: ids })).kind, "queued");
+    if (mutation === "owner") harness.sql.exec("UPDATE image_uploads SET owner_user_id='other'");
+    if (mutation === "missing") harness.sql.exec("DELETE FROM image_uploads");
+    if (mutation === "mixed" || mutation === "video") {
+      const frozen = JSON.parse(harness.tasks()[0].snapshot);
+      harness.sql.prepare("UPDATE draft_submissions SET snapshot=?").run(JSON.stringify({ ...frozen,
+        ...(mutation === "mixed" ? { imageUrl: image.dataUrl } : { videoMediaId: videoId }) }));
+    }
+    await harness.queue.processDraftSubmissions();
+    assert.equal(harness.tasks()[0].state, "failed");
+    assert.equal(harness.drafts.length, 0);
+    assert.equal(harness.audits.length, 0);
+  });
+}
+
+
+test("image PATCH and asset submit routes validate arrays and preserve explicit empty selections", async context => {
+  const harness = videoHarness(context);
+  const ids = seedImages(harness);
+  const dependencies = {
+    "next/server": { NextResponse, after: () => {} },
+    "@/lib/auth": { currentUser: async () => ({ user: { id: "owner", role: "admin" } }) },
+    "@/lib/project-db": { databaseConfigured: () => true }, "@/lib/same-origin": { isSameOrigin: () => true },
+    "@/lib/posts": harness.storage, "@/lib/post-types": loadModule("../src/lib/post-types.ts"),
+    "@/lib/post-media": { validatePostImage: async () => ({ ok: true, image }) },
+    "@/lib/social-accounts": {}, "@/lib/request-body": loadModule("../src/lib/request-body.ts"),
+    "@/lib/image-upload": loadModule("../src/lib/image-upload.ts"),
+    "@/lib/draft-submissions": harness.queue,
+    "@/lib/draft-submission-scheduler": { wakeDraftSubmissionWorker: async () => {} }
+  };
+  const patchRoute = loadModule("../src/app/api/posts/[postId]/route.ts", dependencies);
+  const assetRoute = loadModule("../src/app/api/social/publish/route.ts", dependencies);
+  const request = (method, body) => new NextRequest("https://studio.test/api/posts", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  for (const imageMediaIds of [null, ["bad"], [ids[0], ids[0]], Array.from({ length: 11 }, () => randomUUID())]) {
+    assert.equal((await patchRoute.PATCH(request("PATCH", { version: 4, imageMediaIds }), { params: Promise.resolve({ postId }) })).status, 400);
+    assert.equal((await assetRoute.POST(request("POST", { assetId: "asset-one", integrationId: "account", content: "Caption", requestId, imageMediaIds }))).status, 400);
+  }
+  const saved = await patchRoute.PATCH(request("PATCH", { version: 4, imageMediaIds: ids }), { params: Promise.resolve({ postId }) });
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json()).post.imageMediaIds, ids);
+  const removed = await patchRoute.PATCH(request("PATCH", { version: 5, imageMediaIds: [], imageDataUrl: image.dataUrl }), { params: Promise.resolve({ postId }) });
+  assert.equal(removed.status, 200);
+  assert.equal((await removed.json()).post.imageUrl, null);
+  for (const mixed of [{ imageUrl: image.dataUrl }, { videoMediaId: videoId }]) {
+    assert.equal((await assetRoute.POST(request("POST", { assetId: "asset-one", integrationId: "account", content: "Caption", requestId, imageMediaIds: ids, ...mixed }))).status, 400);
+  }
+  const accepted = await assetRoute.POST(request("POST", { assetId: "asset-one", integrationId: "account", content: "Caption", requestId, imageMediaIds: [], imageUrl: image.dataUrl }));
+  assert.equal(accepted.status, 202);
+  assert.deepEqual(JSON.parse(harness.tasks()[0].snapshot).imageMediaIds, []);
+  assert.equal(JSON.parse(harness.tasks()[0].snapshot).imageUrl, null);
+});
+
+
+for (const kind of ["text", "video"]) {
+  test(`explicit empty image arrays deduplicate completed legacy ${kind} submissions`, async context => {
+    const harness = videoHarness(context);
+    const media = kind === "video" ? { videoMediaId: videoId } : {};
+    const first = await harness.enqueueAsset(media);
+    const legacyFingerprint = harness.tasks()[0].fingerprint;
+    await harness.queue.processDraftSubmissions();
+    assert.equal(harness.tasks()[0].state, "succeeded");
+    const replay = await harness.enqueueAsset({ ...media, imageMediaIds: [], requestId: randomUUID() });
+    assert.equal(replay.task.id, first.task.id);
+    assert.equal(harness.tasks().length, 1);
+    assert.equal(harness.tasks()[0].fingerprint, legacyFingerprint);
+    await harness.queue.processDraftSubmissions();
+    assert.equal(harness.drafts.length, 1);
+  });
+}
+
+test("manual image snapshots and fingerprints canonicalize UUID case but retain explicit empty arrays", async context => {
+  const harness = videoHarness(context);
+  const ids = seedImages(harness);
+  harness.sql.prepare("UPDATE posts SET image_data=NULL, image_media_ids=?").run(JSON.stringify(ids.map(id => id.toUpperCase())));
+  assert.equal((await harness.enqueueManual()).kind, "queued");
+  const frozen = JSON.parse(harness.tasks()[0].snapshot);
+  assert.deepEqual(frozen.imageMediaIds, ids);
+  const expectedFingerprint = createHash("sha256").update(JSON.stringify([postId, "account", 4, undefined, { imageMediaIds: ids }])).digest("hex");
+  assert.equal(harness.tasks()[0].fingerprint, expectedFingerprint);
+  const emptyHarness = videoHarness(context);
+  emptyHarness.sql.prepare("UPDATE posts SET image_media_ids='[]'").run();
+  assert.equal((await emptyHarness.enqueueManual()).kind, "queued");
+  assert.deepEqual(JSON.parse(emptyHarness.tasks()[0].snapshot).imageMediaIds, []);
+  assert.equal(JSON.parse(emptyHarness.tasks()[0].snapshot).imageUrl, null);
+  const legacyFingerprint = createHash("sha256").update(JSON.stringify([postId, "account", 4, undefined])).digest("hex");
+  assert.equal(emptyHarness.tasks()[0].fingerprint, legacyFingerprint);
 });

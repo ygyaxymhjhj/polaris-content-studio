@@ -8,6 +8,8 @@ import { databaseEpoch, getManualPost } from "@/lib/posts";
 import { createStrictDraft, fetchPostizIntegrations, fetchPostizPostDetails } from "@/lib/postiz";
 import { recordSocialSubmission } from "@/lib/social-notifications";
 import { getVideoUpload } from "@/lib/video-uploads";
+import { getImageUploads } from "@/lib/image-uploads";
+import { areImageMediaIds, imageSelectionError } from "./image-types";
 import type { DraftSubmissionState, DraftSubmissionTask } from "./draft-submission-types";
 
 const utc = (date: Date) => date.toISOString().slice(0, 23).replace("T", " ");
@@ -20,6 +22,7 @@ type Snapshot = {
   title?: string;
   content: string;
   imageUrl: string | null;
+  imageMediaIds?: string[];
   videoMediaId?: string;
   platform: string;
   accountName: string;
@@ -109,13 +112,16 @@ export async function enqueueManualSubmission(options: {
   const claim = await claimPostTarget({
     ...options, platform: account?.provider || "unknown", accountName: account?.accountName || options.integrationId, rejectedBinding,
     enqueue: async (connection, frozen) => {
+      const imageMediaIds = frozen.imageMediaIds?.map(id => id.toLowerCase());
       await insertTask(connection, {
         id: taskId, ownerUserId: options.userId, kind: "manual", sourceId: options.postId,
         integrationId: options.integrationId, attemptId: frozen.attemptId,
         requestKey: digest(["manual", frozen.attemptId]), fingerprint: digest([options.postId, options.integrationId, options.expectedVersion, options.expectedAuditId,
-          ...(frozen.videoMediaId ? [{ videoMediaId: frozen.videoMediaId }] : [])]),
+          ...(frozen.videoMediaId ? [{ videoMediaId: frozen.videoMediaId }] : []),
+          ...(imageMediaIds?.length ? [{ imageMediaIds }] : [])]),
         activeKey: digest(["manual", options.userId, options.postId, options.integrationId]),
         snapshot: { title: frozen.title, content: frozen.content, imageUrl: frozen.imageDataUrl,
+          ...(imageMediaIds !== undefined ? { imageMediaIds } : {}),
           ...(frozen.videoMediaId ? { videoMediaId: frozen.videoMediaId } : {}), platform: account?.provider || "unknown",
           accountName: account?.accountName || options.integrationId, version: options.expectedVersion, rejectedBinding }
       });
@@ -132,15 +138,21 @@ export async function enqueueManualSubmission(options: {
 
 export async function enqueueAssetSubmission(input: {
   userId: string; isAdmin: boolean; projectId?: string; assetId: string; integrationId: string;
-  content: string; imageUrl?: string; videoMediaId?: string; platform?: string; requestId: string; expectedAuditId?: string;
+  content: string; imageUrl?: string; imageMediaIds?: string[]; videoMediaId?: string; platform?: string; requestId: string; expectedAuditId?: string;
 }): Promise<EnqueueOutcome> {
-  if (input.imageUrl && input.videoMediaId) return { kind: "validation", message: "Attach either one image or one video, not both." };
+  if (input.imageMediaIds !== undefined && !areImageMediaIds(input.imageMediaIds)) return { kind: "validation", message: "The image attachments are invalid." };
+  const imageMediaIds = input.imageMediaIds?.map(id => id.toLowerCase());
+  if (imageMediaIds?.length && input.imageUrl) return { kind: "validation", message: "Choose uploaded images or an inline image, not both." };
+  const imageUrl = imageMediaIds === undefined ? input.imageUrl || null : null;
   const account = await getSocialAccount(input.integrationId);
   if (!input.isAdmin && account?.ownerUserId !== input.userId) return { kind: "forbidden", message: "This social account is not assigned to you." };
+  const mediaError = imageSelectionError(account?.provider || input.platform || "unknown", imageMediaIds?.length ?? Number(Boolean(imageUrl)), Boolean(input.videoMediaId));
+  if (mediaError) return { kind: "validation", message: mediaError };
   const scope = ["asset", input.userId, input.projectId || null, input.assetId, input.integrationId];
   // Keep the legacy image/text digest unchanged so successful pre-video snapshots still deduplicate.
-  const fingerprint = digest([...scope, input.content, input.imageUrl || null, input.expectedAuditId || null,
-    ...(input.videoMediaId ? [{ videoMediaId: input.videoMediaId }] : [])]);
+  const fingerprint = digest([...scope, input.content, imageUrl, input.expectedAuditId || null,
+    ...(input.videoMediaId ? [{ videoMediaId: input.videoMediaId }] : []),
+    ...(imageMediaIds?.length ? [{ imageMediaIds }] : [])]);
   const requestKey = digest([input.userId, input.requestId]);
   const activeKey = digest(scope);
   const connection = await database().getConnection();
@@ -151,6 +163,10 @@ export async function enqueueAssetSubmission(input: {
     if (input.projectId) {
       const [projects] = await connection.execute<RowDataPacket[]>("SELECT id FROM projects WHERE id=? AND owner_hash=? FOR SHARE", [input.projectId, ownerHashFor(input.userId)]);
       if (!projects.length) { await connection.rollback(); return { kind: "forbidden", message: "This project does not belong to you." }; }
+    }
+    if (imageMediaIds !== undefined) {
+      try { await getImageUploads(input.userId, imageMediaIds, connection); }
+      catch { await connection.rollback(); return { kind: "validation", message: "The image attachments are unavailable in this account." }; }
     }
     if (input.videoMediaId !== undefined && !await getVideoUpload(input.userId, input.videoMediaId, connection)) {
       await connection.rollback();
@@ -184,7 +200,8 @@ export async function enqueueAssetSubmission(input: {
     await insertTask(connection, {
       id: taskId, ownerUserId: input.userId, kind: "asset", sourceId: input.assetId, projectId: input.projectId,
       integrationId: input.integrationId, requestKey, fingerprint, activeKey,
-      snapshot: { content: input.content, imageUrl: input.imageUrl || null,
+      snapshot: { content: input.content, imageUrl,
+        ...(imageMediaIds !== undefined ? { imageMediaIds } : {}),
         ...(input.videoMediaId ? { videoMediaId: input.videoMediaId } : {}), platform: account?.provider || input.platform || "unknown",
         accountName: account?.accountName || input.integrationId, rejectedBinding }
     });
@@ -286,12 +303,18 @@ async function executeTask(task: TaskRow): Promise<void> {
       const [projects] = await database().execute<RowDataPacket[]>("SELECT id FROM projects WHERE id=? AND owner_hash=?", [task.project_id, ownerHashFor(task.owner_user_id)]);
       if (!projects.length) throw new Error("The source project is no longer available. No draft was created.");
     }
-    if (snapshot.videoMediaId && snapshot.imageUrl) throw new Error("The frozen snapshot contains both image and video. No draft was created.");
+    if (snapshot.imageMediaIds !== undefined && !areImageMediaIds(snapshot.imageMediaIds)) throw new Error("The frozen image references are invalid. No draft was created.");
+    if (snapshot.imageMediaIds?.length && snapshot.imageUrl) throw new Error("The frozen snapshot contains mixed image sources. No draft was created.");
+    const imageUrl = snapshot.imageMediaIds === undefined ? snapshot.imageUrl || undefined : undefined;
+    if (snapshot.videoMediaId && (imageUrl || snapshot.imageMediaIds?.length)) throw new Error("The frozen snapshot contains both image and video. No draft was created.");
+    const images = snapshot.imageMediaIds !== undefined ? await getImageUploads(task.owner_user_id, snapshot.imageMediaIds) : undefined;
     const video = snapshot.videoMediaId ? await getVideoUpload(task.owner_user_id, snapshot.videoMediaId) : null;
     if (snapshot.videoMediaId && !video) throw new Error("The video attachment is unavailable in this account. No draft was created.");
     const live = await fetchPostizIntegrations();
     const liveAccount = live.accounts.find(candidate => candidate.id === task.integration_id);
     if (!live.configured || live.error || !liveAccount || liveAccount.disabled) throw new Error("The target account could not be verified. No draft was created.");
+    const mediaError = imageSelectionError(liveAccount.identifier || snapshot.platform, images?.length ?? Number(Boolean(imageUrl)), Boolean(video));
+    if (mediaError) throw new Error(`${mediaError} No draft was created.`);
     if (!await verifyRejected(snapshot)) throw new Error("The publishing engine no longer confirms this draft as rejected. No retry was submitted.");
     if (snapshot.rejectedBinding) {
       const [bindings] = await database().execute<RowDataPacket[]>(
@@ -322,7 +345,8 @@ async function executeTask(task: TaskRow): Promise<void> {
     if (!lease.length) return;
     createStarted = true;
     const result = await createStrictDraft({ integrationId: task.integration_id, title: snapshot.title, content: snapshot.content,
-      imageUrl: snapshot.imageUrl || undefined,
+      imageUrl,
+      ...(images !== undefined ? { uploadedImages: images.map(image => ({ id: image.postizMediaId, path: image.postizPath })) } : {}),
       ...(video ? { uploadedMedia: { id: video.postizMediaId, path: video.postizPath } } : {}),
       platform: liveAccount.identifier || snapshot.platform });
     if (result.success) {

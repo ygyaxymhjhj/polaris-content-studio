@@ -14,6 +14,8 @@ import {
 } from "./post-types";
 import type { ValidatedPostImage } from "./post-media";
 import { getVideoUpload } from "@/lib/video-uploads";
+import { getImageUploads } from "@/lib/image-uploads";
+import { areImageMediaIds, getImagePreviewUrl } from "./image-types";
 
 /**
  * Storage for manual posts. Every query is scoped by owner_user_id: unlike AI projects there is no
@@ -38,6 +40,7 @@ interface PostRow extends RowDataPacket {
   title: string;
   content: string;
   image_data: string | null;
+  image_media_ids: string[] | string | null;
   image_thumb: string | null;
   image_name: string | null;
   image_width: number | null;
@@ -66,6 +69,7 @@ interface ListedPostRow extends RowDataPacket {
   title: string;
   excerpt: string;
   has_image: number;
+  image_media_ids: string[] | string | null;
   has_video: number;
   target_count: number;
   accepted_count: number;
@@ -106,7 +110,8 @@ const POST_STATUS_CTE = `
     SELECT
       p.id, p.title, p.created_at, p.updated_at,
       LEFT(p.content, 400) AS excerpt,
-      (p.image_thumb IS NOT NULL) AS has_image,
+      p.image_media_ids,
+      (CASE WHEN p.image_media_ids IS NULL THEN p.image_thumb IS NOT NULL ELSE JSON_LENGTH(p.image_media_ids) > 0 END) AS has_image,
       (p.video_media_id IS NOT NULL) AS has_video,
       (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id) AS target_count,
       (SELECT COUNT(*) FROM target_rows t WHERE t.post_id = p.id AND t.effective_status = 'accepted') AS accepted_count,
@@ -138,11 +143,15 @@ function toListItem(row: ListedPostRow): ManualPostListItem {
   // Editing and deleting follow the same rule: nothing may have reached Postiz, and nothing may
   // still be in flight or unconfirmed, or the frozen copy would stop matching the database.
   const editable = listItemEditable(row);
+  const imageMediaIds = readPostImageMediaIds(row.image_media_ids);
   return {
     id: String(row.id),
     title: String(row.title || ""),
     excerpt: String(row.excerpt || "").replace(/\s+/g, " ").trim(),
     hasImage: Number(row.has_image) === 1,
+    imageCount: imageMediaIds?.length ?? Number(row.has_image),
+    imageUrl: imageMediaIds !== undefined ? imageMediaIds[0] ? getImagePreviewUrl(imageMediaIds[0], "thumb") : null
+      : Number(row.has_image) === 1 ? `/api/posts/${row.id}/image?size=thumb&v=${databaseEpoch(row.updated_at)}` : null,
     hasVideo: Number(row.has_video) === 1,
     imageVersion: databaseEpoch(row.updated_at),
     status: row.status,
@@ -183,6 +192,7 @@ function toTarget(row: TargetRow): PostTarget {
 
 export function toPostDetail(row: PostRow, targets: PostTarget[]): ManualPostDetail {
   const imageEpoch = databaseEpoch(row.updated_at);
+  const imageMediaIds = readPostImageMediaIds(row.image_media_ids);
   const editable = isTargetSetEditable(targets);
   const frozenReason = targets.some((target) => target.status === "accepted")
     ? "accepted" as const
@@ -197,7 +207,9 @@ export function toPostDetail(row: PostRow, targets: PostTarget[]): ManualPostDet
     id: String(row.id),
     title: String(row.title || ""),
     content: String(row.content || ""),
-    imageUrl: row.image_data ? `/api/posts/${row.id}/image?v=${imageEpoch}` : null,
+    imageUrl: imageMediaIds !== undefined ? imageMediaIds[0] ? getImagePreviewUrl(imageMediaIds[0]) : null
+      : row.image_data ? `/api/posts/${row.id}/image?v=${imageEpoch}` : null,
+    ...(imageMediaIds !== undefined ? { imageMediaIds } : {}),
     videoMediaId: row.video_media_id ?? null,
     imageName: row.image_name ? String(row.image_name) : null,
     imageWidth: row.image_width == null ? null : Number(row.image_width),
@@ -231,7 +243,7 @@ export async function sweepStaleSubmissions(ownerUserId: string): Promise<number
 
 export async function loadPostRow(ownerUserId: string, postId: string): Promise<PostRow | null> {
   const [rows] = await database().execute<PostRow[]>(
-    "SELECT id, title, content, image_data, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=?",
+    "SELECT id, title, content, image_data, image_media_ids, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=?",
     [postId, ownerUserId]
   );
   return rows.length ? rows[0] : null;
@@ -315,7 +327,7 @@ export async function listManualPosts(ownerUserId: string, filters: PostListFilt
   const [conditions, ...values] = filterArguments(filters);
   const [rows] = await database().execute<ListedPostRow[]>(
     `${POST_STATUS_CTE}
-     SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.has_video, r.target_count,
+     SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.image_media_ids, r.has_video, r.target_count,
             r.accepted_count, r.rejected_count, r.submitting_count, r.unsettled_count, r.unknown_count, r.platforms, r.status
        FROM post_status r
       WHERE ${conditions ? `(${conditions}) AND ` : ""}(? = 'all' OR r.status = ?)
@@ -334,14 +346,28 @@ export interface CreatePostInput {
   title: string;
   content: string;
   image: ValidatedPostImage | null;
+  imageMediaIds?: string[];
   videoMediaId?: string | null;
   targets: PostAccountSnapshot[];
 }
 
 export class PostMediaValidationError extends Error {}
 
-async function validatePostMedia(ownerUserId: string, hasImage: boolean, videoMediaId: string | null | undefined, connection: Pick<PoolConnection, "execute">): Promise<void> {
-  if (hasImage && videoMediaId) throw new PostMediaValidationError("Attach either one image or one video, not both.");
+export function readPostImageMediaIds(value: unknown): string[] | undefined {
+  if (value == null) return undefined;
+  let ids: unknown;
+  try { ids = typeof value === "string" ? JSON.parse(value) : value; }
+  catch { throw new PostMediaValidationError("The image attachments are invalid."); }
+  if (!areImageMediaIds(ids)) throw new PostMediaValidationError("The image attachments are invalid.");
+  return ids;
+}
+
+async function validatePostMedia(ownerUserId: string, hasImage: boolean, videoMediaId: string | null | undefined, connection: Pick<PoolConnection, "execute">, imageMediaIds?: string[]): Promise<void> {
+  if ((hasImage || imageMediaIds?.length) && videoMediaId) throw new PostMediaValidationError("Attach either images or one video, not both.");
+  if (imageMediaIds !== undefined) {
+    try { await getImageUploads(ownerUserId, imageMediaIds, connection); }
+    catch { throw new PostMediaValidationError("The image attachments are unavailable in this account."); }
+  }
   if (videoMediaId != null && !await getVideoUpload(ownerUserId, videoMediaId, connection)) {
     throw new PostMediaValidationError("The video attachment is unavailable in this account.");
   }
@@ -353,15 +379,20 @@ export async function createManualPost(ownerUserId: string, input: CreatePostInp
   const connection = await database().getConnection();
   try {
     await connection.beginTransaction();
-    await validatePostMedia(ownerUserId, Boolean(input.image), input.videoMediaId, connection);
+    if (input.imageMediaIds !== undefined && !areImageMediaIds(input.imageMediaIds)) throw new PostMediaValidationError("The image attachments are invalid.");
+    if (input.imageMediaIds === undefined && input.image && input.videoMediaId) throw new PostMediaValidationError("Attach either images or one video, not both.");
+    const imageMediaIds = input.imageMediaIds === undefined ? input.videoMediaId ? [] : undefined : readPostImageMediaIds(input.imageMediaIds);
+    if (imageMediaIds?.length && input.image) throw new PostMediaValidationError("Choose uploaded images or an inline image, not both.");
+    const image = imageMediaIds === undefined ? input.image : null;
+    await validatePostMedia(ownerUserId, Boolean(image), input.videoMediaId, connection, imageMediaIds);
     await connection.execute(
-      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, image_media_ids, video_media_id, version, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [
         id, ownerUserId, input.title, input.content,
-        input.image?.dataUrl ?? null, input.image?.thumbnailDataUrl ?? null,
-        input.image?.filename ?? null, input.image?.width ?? null, input.image?.height ?? null,
-        input.videoMediaId ?? null,
+        image?.dataUrl ?? null, image?.thumbnailDataUrl ?? null,
+        image?.filename ?? null, image?.width ?? null, image?.height ?? null,
+        imageMediaIds === undefined ? null : JSON.stringify(imageMediaIds), input.videoMediaId ?? null,
         now, now
       ]
     );
@@ -394,6 +425,7 @@ export type UpdatePostPatch = {
   title?: string;
   content?: string;
   image?: { kind: "keep" } | { kind: "set"; image: ValidatedPostImage } | { kind: "remove" };
+  imageMediaIds?: string[];
   /** Omitted keeps the reference, null removes only the video, an ID replaces all media. */
   videoMediaId?: string | null;
   targets?: PostAccountSnapshot[];
@@ -410,7 +442,7 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
   try {
     await connection.beginTransaction();
     const [rows] = await connection.execute<PostRow[]>(
-      "SELECT id, image_data, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
+      "SELECT id, image_data, image_media_ids, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
       [postId, ownerUserId]
     );
     if (!rows.length) {
@@ -427,20 +459,27 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
       return { kind: "frozen" };
     }
 
-    if (patch.image?.kind === "set" && patch.videoMediaId) {
-      throw new PostMediaValidationError("Attach either one image or one video, not both.");
+    if (patch.imageMediaIds !== undefined && !areImageMediaIds(patch.imageMediaIds)) throw new PostMediaValidationError("The image attachments are invalid.");
+    const suppliedIds = patch.imageMediaIds;
+    if (suppliedIds?.length && patch.image?.kind === "set") {
+      throw new PostMediaValidationError("Choose uploaded images or an inline image, not both.");
+    }
+    if ((patch.image?.kind === "set" && suppliedIds === undefined || suppliedIds?.length) && patch.videoMediaId) {
+      throw new PostMediaValidationError("Attach either images or one video, not both.");
     }
     const setsVideo = patch.videoMediaId != null;
-    const setsImage = patch.image?.kind === "set";
-    const videoMediaId = setsImage ? null : patch.videoMediaId === undefined ? rows[0].video_media_id : patch.videoMediaId;
-    const hasImage = setsImage || (!setsVideo && patch.image?.kind !== "remove" && Boolean(rows[0].image_data));
-    await validatePostMedia(ownerUserId, hasImage, videoMediaId, connection);
+    const setsImage = suppliedIds === undefined && patch.image?.kind === "set";
+    const imageMediaIds = setsVideo ? [] : suppliedIds ?? (setsImage ? undefined
+      : patch.image?.kind === "remove" && rows[0].image_media_ids != null ? [] : readPostImageMediaIds(rows[0].image_media_ids));
+    const videoMediaId = setsImage || suppliedIds?.length ? null : patch.videoMediaId === undefined ? rows[0].video_media_id : patch.videoMediaId;
+    const hasImage = imageMediaIds === undefined && (setsImage || (!setsVideo && patch.image?.kind !== "remove" && Boolean(rows[0].image_data)));
+    await validatePostMedia(ownerUserId, hasImage, videoMediaId, connection, imageMediaIds);
 
     const assignments: string[] = [];
     const values: SqlValue[] = [];
     if (patch.title !== undefined) { assignments.push("title=?"); values.push(patch.title); }
     if (patch.content !== undefined) { assignments.push("content=?"); values.push(patch.content); }
-    if (patch.image) {
+    if (patch.image && suppliedIds === undefined) {
       if (patch.image.kind === "set") {
         assignments.push("image_data=?", "image_thumb=?", "image_name=?", "image_width=?", "image_height=?");
         values.push(patch.image.image.dataUrl, patch.image.image.thumbnailDataUrl, patch.image.image.filename, patch.image.image.width, patch.image.image.height);
@@ -448,10 +487,16 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
         assignments.push("image_data=NULL", "image_thumb=NULL", "image_name=NULL", "image_width=NULL", "image_height=NULL");
       }
     }
-    if (setsVideo) {
+    if (setsVideo || suppliedIds !== undefined) {
       assignments.push("image_data=NULL", "image_thumb=NULL", "image_name=NULL", "image_width=NULL", "image_height=NULL");
     }
-    if (setsImage || patch.videoMediaId === null) {
+    if (setsVideo || suppliedIds !== undefined || patch.image?.kind === "remove" && imageMediaIds !== undefined) {
+      assignments.push("image_media_ids=?");
+      values.push(JSON.stringify(imageMediaIds));
+    } else if (setsImage) {
+      assignments.push("image_media_ids=NULL");
+    }
+    if (setsImage || suppliedIds?.length || patch.videoMediaId === null) {
       assignments.push("video_media_id=NULL");
     } else if (patch.videoMediaId != null) {
       assignments.push("video_media_id=?");
@@ -517,21 +562,35 @@ export async function deleteManualPost(ownerUserId: string, postId: string): Pro
 export async function duplicateManualPost(ownerUserId: string, postId: string): Promise<ManualPostDetail | null> {
   const row = await loadPostRow(ownerUserId, postId);
   if (!row) return null;
-  await validatePostMedia(ownerUserId, Boolean(row.image_data), row.video_media_id, database());
+  const imageMediaIds = readPostImageMediaIds(row.image_media_ids);
+  if (imageMediaIds?.length && row.image_data) throw new PostMediaValidationError("The post contains mixed image sources.");
   const id = randomUUID();
   const now = utc(new Date());
-  await database().execute(
-    `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
-    [id, ownerUserId, row.title, row.content, row.image_data, row.image_thumb, row.image_name, row.image_width, row.image_height, row.video_media_id ?? null, now, now]
-  );
+  const connection = await database().getConnection();
+  try {
+    await connection.beginTransaction();
+    await validatePostMedia(ownerUserId, imageMediaIds === undefined && Boolean(row.image_data), row.video_media_id, connection, imageMediaIds);
+    await connection.execute(
+      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, image_media_ids, video_media_id, version, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      [id, ownerUserId, row.title, row.content,
+        imageMediaIds === undefined ? row.image_data : null, imageMediaIds === undefined ? row.image_thumb : null,
+        imageMediaIds === undefined ? row.image_name : null, imageMediaIds === undefined ? row.image_width : null,
+        imageMediaIds === undefined ? row.image_height : null,
+        imageMediaIds === undefined ? null : JSON.stringify(imageMediaIds), row.video_media_id ?? null, now, now]
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally { connection.release(); }
   return getManualPost(ownerUserId, id);
 }
 
 export async function getPostImage(ownerUserId: string, postId: string, size: "full" | "thumb"): Promise<{ dataUrl: string } | null> {
   const column = size === "thumb" ? "image_thumb" : "image_data";
   const [rows] = await database().execute<(RowDataPacket & { image: string | null })[]>(
-    `SELECT ${column} AS image FROM posts WHERE id=? AND owner_user_id=?`,
+    `SELECT ${column} AS image FROM posts WHERE id=? AND owner_user_id=? AND image_media_ids IS NULL`,
     [postId, ownerUserId]
   );
   if (!rows.length || !rows[0].image) return null;

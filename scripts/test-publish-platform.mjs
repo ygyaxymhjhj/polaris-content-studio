@@ -66,6 +66,7 @@ const virtualSource = `
   import { LocaleContext, translate } from '@/lib/i18n';
   import { PLATFORM_META } from '@/lib/types';
   import { createClientId } from '@/lib/client-id';
+  import { imageSelectionError } from '@/lib/image-types';
   import { mergeDraftTask } from '@/lib/draft-submission-client';
   import { isDraftSubmissionTask } from '@/lib/draft-submission-types';
   import ConnectAccountsDialog from '@/components/ConnectAccountsDialog';

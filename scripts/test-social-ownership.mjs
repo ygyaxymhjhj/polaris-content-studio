@@ -249,6 +249,9 @@ try {
     "@/lib/social-accounts": socialAccountsModule, "@/lib/post-submission": {},
     "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
     "@/lib/postiz": {}, "@/lib/social-notifications": {},
+    "@/lib/image-types": loadModule("src/lib/image-types.ts"),
+    "./image-types": loadModule("src/lib/image-types.ts"),
+    "@/lib/image-uploads": { getImageUploads: async () => [] },
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } }
   });
   const publishRoute = loadModule("src/app/api/social/publish/route.ts", {
@@ -256,6 +259,8 @@ try {
     "@/lib/auth": authMock, "@/lib/project-db": projectDbModule, "@/lib/same-origin": sameOriginModule,
     "@/lib/request-body": loadModule("src/lib/request-body.ts"),
     "@/lib/image-upload": loadModule("src/lib/image-upload.ts"),
+    "@/lib/image-types": loadModule("src/lib/image-types.ts"),
+    "./image-types": loadModule("src/lib/image-types.ts"),
     "@/lib/draft-submissions": draftQueue, "@/lib/draft-submission-scheduler": { wakeDraftSubmissionWorker: async () => {} }
   });
   const publishRequest = (integrationId) => new NextRequest("https://studio.example.test/api/social/publish", {

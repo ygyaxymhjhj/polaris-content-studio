@@ -5,6 +5,7 @@ import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
 import { deleteManualPost, getManualPost, PostMediaValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
+import { areImageMediaIds } from "@/lib/image-types";
 import { listAccountOwners } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
 import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
@@ -25,9 +26,12 @@ const updateSchema = z.object({
   /** Omitted keeps the stored image, null removes it, a data URL replaces it. */
   imageDataUrl: z.string().max(3_000_000).nullable().optional(),
   videoMediaId: z.string().uuid().nullable().optional(),
+  imageMediaIds: z.custom<string[]>(areImageMediaIds).optional(),
   imageName: z.string().max(POST_TITLE_MAX_LENGTH).optional(),
   integrationIds: z.array(z.string().regex(integrationIdPattern)).max(MAX_POST_TARGETS).optional()
-}).strict().refine(value => !value.imageDataUrl || !value.videoMediaId);
+}).strict().refine(value => value.imageMediaIds?.length
+  ? !value.imageDataUrl && !value.videoMediaId
+  : value.imageMediaIds !== undefined || !value.imageDataUrl || !value.videoMediaId);
 
 async function readPostId(context: { params: Promise<{ postId: string }> }): Promise<string | null> {
   const { postId } = await context.params;
@@ -71,7 +75,9 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ p
   if (parsed.data.title !== undefined) patch.title = parsed.data.title.trim();
   if (parsed.data.content !== undefined) patch.content = parsed.data.content;
   if (parsed.data.videoMediaId !== undefined) patch.videoMediaId = parsed.data.videoMediaId;
-  if (parsed.data.imageDataUrl === null) {
+  if (parsed.data.imageMediaIds !== undefined) {
+    patch.imageMediaIds = parsed.data.imageMediaIds;
+  } else if (parsed.data.imageDataUrl === null) {
     patch.image = { kind: "remove" };
   } else if (typeof parsed.data.imageDataUrl === "string") {
     const validated = await validatePostImage(parsed.data.imageDataUrl, parsed.data.imageName);

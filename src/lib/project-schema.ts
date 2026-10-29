@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ContentAsset, Platform, ProjectConfig, RewriteMessage, SourceAnalysis } from "./types";
 import type { ImportedSource } from "./source-config";
 import { MAX_IMAGE_DATA_URL_LENGTH } from "./image-upload";
+import { areImageMediaIds } from "./image-types";
 
 const str = z.string().max(150000);
 const imageUrl = z.string().max(MAX_IMAGE_DATA_URL_LENGTH);
@@ -14,7 +15,7 @@ const before = z.object({ title: str, content: str, cta: str.optional(), meta: m
 const asset = z.object({
   id: str, platform, assetType: str, generationMode: z.enum(["ai", "local"]).optional(), variant: str.optional(),
   title: str, hook: str.optional(), content: str, cta: str.optional(), deepLink: str.optional(),
-  imageUrl: imageUrl.optional(), videoMediaId: z.string().uuid().optional(),
+  imageUrl: imageUrl.optional(), imageMediaIds: z.custom<string[]>(areImageMediaIds).optional(), videoMediaId: z.string().uuid().optional(),
   publishStatus: z.enum(["unpublished", "publishing", "pending_unknown", "drafted", "queued", "published", "failed"]).optional(),
   reviewStatus: z.enum(["unknown", "pending", "rejected"]).optional(), rejectedDetectedAt: str.optional(),
   submission: z.object({ auditId: str.nullable(), postId: str.nullable(), submittedAt: str }).optional(),
@@ -22,7 +23,7 @@ const asset = z.object({
   publishedUrl: str.optional(), publishedAt: str.optional(), publishError: str.optional(), targetAccountId: str.optional(),
   factIds: strings, riskFlags: strings,
   meta: metadata.optional(), updatedAt: str, revisions: z.array(z.object({ at: str, instruction: str, before })).max(40).optional()
-}).refine(value => !value.imageUrl || !value.videoMediaId, { message: "Attach either one image or one video, not both.", path: ["videoMediaId"] });
+}).refine(value => !value.videoMediaId || !(value.imageMediaIds === undefined ? value.imageUrl : value.imageMediaIds.length), { message: "Attach either images or one MP4 video, not both.", path: ["videoMediaId"] });
 export const projectSchema = z.object({
   schemaVersion: z.literal(1), config, sourceText: str, sourceName: str, sourcePending: z.boolean(),
   importedSource: z.object({ text: str, title: str.optional(), sourceUrl: str.optional(), canonical: str.optional(), imageUrl: imageUrl.optional() }).nullable(),
@@ -62,7 +63,7 @@ export function parseSnapshot(value: unknown): ProjectSnapshot {
 export interface SavedProject { id: string; name: string; version: number; updatedAt: string; assetCount: number; }
 // Reject upstream media fields on writes without tightening historical snapshot reads.
 const saveAsset = asset.safeExtend({
-  uploadedMedia: z.never().optional(), postizMediaId: z.never().optional(), postizPath: z.never().optional()
+  uploadedMedia: z.never().optional(), uploadedImages: z.never().optional(), postizMediaId: z.never().optional(), postizPath: z.never().optional()
 });
 export const saveProjectSchema = z.object({
   id: z.uuid(), version: z.number().int().min(0).max(2147483646),

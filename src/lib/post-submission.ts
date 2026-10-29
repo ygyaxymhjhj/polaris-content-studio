@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { database } from "@/lib/project-db";
-import { POST_TARGET_REVIEW_JOINS, POST_TARGET_STATUS_SQL } from "@/lib/posts";
+import { POST_TARGET_REVIEW_JOINS, POST_TARGET_STATUS_SQL, readPostImageMediaIds } from "@/lib/posts";
+import { getImageUploads } from "@/lib/image-uploads";
+import { imageSelectionError } from "./image-types";
 import { youtubePostError, type ManualPostDetail, type PostTargetStatus } from "@/lib/post-types";
 import { getVideoUpload } from "@/lib/video-uploads";
 
@@ -27,6 +29,7 @@ interface ClaimPostRow extends RowDataPacket {
   title: string;
   content: string;
   image_data: string | null;
+  image_media_ids: string[] | string | null;
   video_media_id: string | null;
   version: number;
 }
@@ -67,14 +70,14 @@ export async function claimPostTarget(options: {
   accountName: string;
   expectedAuditId?: string;
   rejectedBinding: ClaimTargetRow | null;
-  enqueue: (connection: PoolConnection, snapshot: { title: string; content: string; imageDataUrl: string | null; videoMediaId: string | null; attemptId: string }) => Promise<void>;
+  enqueue: (connection: PoolConnection, snapshot: { title: string; content: string; imageDataUrl: string | null; imageMediaIds?: string[]; videoMediaId: string | null; attemptId: string }) => Promise<void>;
 }): Promise<ClaimResult> {
   const { userId, postId, integrationId, expectedVersion, platform, accountName, expectedAuditId, rejectedBinding } = options;
   const connection = await database().getConnection();
   try {
     await connection.beginTransaction();
     const [posts] = await connection.execute<ClaimPostRow[]>(
-      "SELECT title, content, image_data, video_media_id, version FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
+      "SELECT title, content, image_data, image_media_ids, video_media_id, version FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
       [postId, userId]
     );
     if (!posts.length) {
@@ -124,9 +127,19 @@ export async function claimPostTarget(options: {
       return { kind: "in_flight" };
     }
 
-    if (post.video_media_id && post.image_data) {
+    let imageMediaIds: string[] | undefined;
+    try {
+      imageMediaIds = readPostImageMediaIds(post.image_media_ids);
+      if (imageMediaIds !== undefined) await getImageUploads(userId, imageMediaIds, connection);
+    } catch {
       await connection.rollback();
-      return { kind: "validation", message: "Attach either one image or one video, not both." };
+      return { kind: "validation", message: "The image attachments are unavailable in this account." };
+    }
+    const mediaError = imageMediaIds?.length && post.image_data ? "The post contains mixed image sources."
+      : imageSelectionError(platform, imageMediaIds === undefined ? Number(Boolean(post.image_data)) : imageMediaIds.length, Boolean(post.video_media_id));
+    if (mediaError) {
+      await connection.rollback();
+      return { kind: "validation", message: mediaError };
     }
     if (post.video_media_id && !await getVideoUpload(userId, post.video_media_id, connection)) {
       await connection.rollback();
@@ -142,7 +155,8 @@ export async function claimPostTarget(options: {
         WHERE post_id=? AND integration_id=?`,
       [attemptId, now, Number(post.version), platform, accountName, now, postId, integrationId]
     );
-    await options.enqueue(connection, { title, content, imageDataUrl: post.image_data ?? null, videoMediaId: post.video_media_id ?? null, attemptId });
+    await options.enqueue(connection, { title, content, imageDataUrl: imageMediaIds === undefined ? post.image_data ?? null : null,
+      ...(imageMediaIds !== undefined ? { imageMediaIds } : {}), videoMediaId: post.video_media_id ?? null, attemptId });
     await connection.commit();
     return { kind: "claimed" };
   } catch (error) {

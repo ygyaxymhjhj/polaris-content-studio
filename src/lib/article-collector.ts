@@ -28,7 +28,8 @@ export function publicUrl(raw: string) {
 export interface PublicPage { url: string; status: number; headers: Record<string, string>; body: Buffer }
 
 /** Resolve once, reject private answers, and pin that answer to the actual connection. */
-export async function requestPublicPage(raw: string, redirects = 0, maxBytes = LIMIT): Promise<PublicPage> {
+export async function requestPublicPage(raw: string, redirects = 0, maxBytes = LIMIT, signal?: AbortSignal): Promise<PublicPage> {
+  signal?.throwIfAborted();
   if (redirects > 4) throw new CollectionError("TOO_MANY_REDIRECTS", "Too many redirects");
   const url = publicUrl(raw);
   const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -39,7 +40,7 @@ export async function requestPublicPage(raw: string, redirects = 0, maxBytes = L
     const transport = url.protocol === "https:" ? https : http;
     const timer = setTimeout(() => req.destroy(new CollectionError("SOURCE_TIMEOUT", "The source website timed out", 504)), 15000);
     const req = transport.request(url, {
-      agent: false,
+      agent: false, signal,
       headers: { "User-Agent": "Mozilla/5.0 (compatible; PolarisContentStudio/1.0; +https://example.com/bot)", Accept: "text/html,application/xhtml+xml,*/*;q=0.5", "Accept-Encoding": "identity" },
       lookup: (_hostname, options, callback) => {
         if (options.all) callback(null, [selected]);
@@ -70,7 +71,7 @@ export async function requestPublicPage(raw: string, redirects = 0, maxBytes = L
     req.on("error", error => { clearTimeout(timer); reject(error); });
     req.end();
   });
-  if ([301, 302, 303, 307, 308].includes(page.status) && page.headers.location) return requestPublicPage(new URL(page.headers.location, page.url).href, redirects + 1, maxBytes);
+  if ([301, 302, 303, 307, 308].includes(page.status) && page.headers.location) return requestPublicPage(new URL(page.headers.location, page.url).href, redirects + 1, maxBytes, signal);
   return page;
 }
 function checkResponse(page: PublicPage) {

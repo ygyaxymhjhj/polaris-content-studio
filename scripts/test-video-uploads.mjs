@@ -34,7 +34,7 @@ function loadModule(relativePath, dependencies = {}) {
   });
   const compiled = { exports: {} };
   new Function("require", "module", "exports", outputText)(
-    dependency => dependencies[dependency] ?? nativeRequire(dependency), compiled, compiled.exports
+    dependency => dependencies[dependency] ?? (["./image-types", "@/lib/image-types"].includes(dependency) ? loadModule("../src/lib/image-types.ts") : nativeRequire(dependency)), compiled, compiled.exports
   );
   return compiled.exports;
 }

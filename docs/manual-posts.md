@@ -1,6 +1,6 @@
 # Manual posts (Overview and Posts)
 
-Overview and Posts let a signed-in member write a post by hand, attach one image or one MP4, and hand it to
+Overview and Posts let a signed-in member write a post by hand, attach up to ten images or one MP4, and hand it to
 Postiz as a **draft**. Polaris never publishes and never schedules: promoting the draft stays a
 human decision inside Postiz. The AI workspace, its projects and their export flow are unchanged.
 
@@ -13,7 +13,7 @@ human decision inside Postiz. The AI workspace, its projects and their export fl
 - **Posts** (`/?view=posts`) is the list: status tabs with live counts, search over the title and
   body, platform/account/edited-within filters, and paging. A row opens the editor; the row actions
   copy the post as a new draft or delete a purely local one with a visible text button.
-- **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and one media attachment share a
+- **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and an ordered media collection share a
   compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
   usernames and multi-selection, without avatars or search/filter controls. There is no internal-title field, character counter, profile group,
   simulated feed, publish-now option or scheduler. The right-hand summary lists chosen accounts,
@@ -98,9 +98,13 @@ engine, so a simultaneous administrator change can still race with creation of t
 - **Accounts follow the existing ownership model.** Members only see and submit to their own
   accounts; administrators can use any account but cannot read another member's post. Members have
   no Postiz back office entry, so editing an accepted draft is an administrator hand-off.
-- **Images.** One JPG/PNG/WebP original up to 30 MiB (shown as 30 MB in the UI). The browser optimizes
-  it to at most 1 MiB and a 2048 px longest edge before sending it; server validation and request
-  limits are unchanged. Remote image URLs are not accepted for manual posts.
+- **Images.** Select or drop up to ten JPG/PNG/WebP images, append more, remove individual images,
+  or move them left/right. X permits four; YouTube requires one MP4 instead. Each original may be
+  up to 30 MiB; the browser prepares at most 1 MiB/2048 px before uploading it individually.
+  The server decodes and validates each image, uploads it once to Postiz and records an owner-bound
+  local ID. Saving and submission use ordered IDs, not repeated base64 bodies. Failed files can be
+  retried independently; cancellation and late responses cannot replace another editor session.
+  Legacy inline images remain readable and are imported on first append. Images and MP4 are exclusive.
 - **Video references.** POST/PATCH accept `videoMediaId` as an omitted field, `null` or an uploaded
   local UUID. On PATCH, omission keeps the stored attachment; `null` removes only the video. Setting
   a video clears all image columns, and setting an image clears the video reference. Nonempty image
@@ -121,8 +125,14 @@ Verified against the official documentation:
 
 - The browser calls Polaris's authenticated per-account submission route. API credentials remain
   on the server; the existing account ownership and version checks apply before handing off.
-- `createStrictDraft` uploads the image with `POST /public/v1/upload`, `Authorization: <api-key>`
-  and a multipart `file` field. An upload failure blocks creation instead of dropping the image.
+- New images upload individually through authenticated `POST /api/media/images`, using bounded JSON
+  `{ requestId, dataUrl, name? }`. Responses expose only `{ image: { id, name, bytes, width, height } }`.
+  IDs are checked against the current owner on save, enqueue and execution; administrators cannot
+  borrow another user's images. `GET /api/media/images/:id?size=thumb` serves private thumbnails;
+  full previews redirect only to trusted registered media, and `?download=1` supports same-origin ZIP export.
+- `createStrictDraft` reuses ordered server-resolved Postiz references in the `image` array. The old
+  single-inline-image path still uploads using `POST /public/v1/upload` for historical snapshots.
+  A missing or invalid image fails the complete target instead of silently dropping an attachment.
 - It then calls `POST /public/v1/posts` with `type: "draft"`, a required ISO `date`,
   `shortLink: false`, `tags: []` and one entry in `posts` containing `integration: { id }`,
   `value: [{ content, image: [{ id, path }] }]` and provider-specific `settings.__type`.
@@ -142,8 +152,14 @@ Verified against the official documentation:
 
 - Storage, permissions and the claim/result protocol are documented in `docs/mysql-storage.md`
   (section "Manual posts").
-- Schema changes ship in `deploy/mysql/init.sql` and
-  `deploy/mysql/migrations/2026-10-15-manual-posts.sql`; the LAN deploy script replays both.
+- Apply `deploy/mysql/migrations/2026-10-29-image-uploads.sql` before running this version on an
+  existing database; the LAN deploy script replays migrations. New databases use `deploy/mysql/init.sql`.
+  It adds immutable `image_uploads` (SELECT/INSERT only) and nullable `posts.image_media_ids`.
+  NULL means legacy single-image storage; [] explicitly clears it. No historical images are backfilled.
+  Removing a reference or deleting a post never deletes potentially shared upstream media.
+  An upstream upload followed by a failed database insert can leave an orphan; cross-service atomic
+  upload and automatic remote cleanup are not claimed.
+- `node scripts/test-image-uploads.mjs` checks isolated uploads, replay, ownership, previews and migration parity.
 - `node scripts/test-manual-posts.mjs` covers the hand-off rules without a database.
 - `node scripts/test-manual-post-reviews.mjs` exercises current-audit rejection projection and retry
   safety using actual SQL expressions through an in-memory SQLite adapter. It does not validate

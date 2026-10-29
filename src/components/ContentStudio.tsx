@@ -62,6 +62,7 @@ import type { ReviewStatus, SubmissionStatusSnapshot } from "@/lib/types";
 import { alignSourceConfig, ImportedSource } from "@/lib/source-config";
 import SocialPreview from "@/components/SocialPreview";
 import AssetImageEditor from "@/components/AssetImageEditor";
+import { getImagePreviewUrl, imageSelectionError } from "@/lib/image-types";
 import {
   ContentAsset,
   DEFAULT_PLATFORMS,
@@ -565,7 +566,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
   // read in the real editor instead of a nested scroll box.
   const previewCandidate = previewIndex !== null ? candidates[previewIndex] || null : null;
   const viewAsset = previewCandidate && selectedAsset ? {
-    ...previewCandidate.asset, imageUrl: selectedAsset.imageUrl, videoMediaId: selectedAsset.videoMediaId
+    ...previewCandidate.asset, imageUrl: selectedAsset.imageUrl, imageMediaIds: selectedAsset.imageMediaIds, videoMediaId: selectedAsset.videoMediaId
   } : selectedAsset;
   const viewRiskFlags = previewCandidate ? [...new Set([...previewCandidate.asset.riskFlags, ...previewCandidate.issues])] : selectedAsset?.riskFlags ?? [];
 
@@ -1023,6 +1024,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       cta: draft.cta,
       deepLink: draft.deepLink,
       imageUrl: draft.imageUrl,
+      imageMediaIds: draft.imageMediaIds,
       videoMediaId: draft.videoMediaId,
       ...getAssetStatusFields(asset),
       factIds: draft.factIds,
@@ -1055,6 +1057,12 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       if (announceResult) notify(t("Select an available account for this platform."));
       return { success: false, warning: false };
     }
+    const imageCount = asset.imageMediaIds === undefined ? Number(Boolean(!asset.videoMediaId && (asset.imageUrl ?? config.imageUrl))) : asset.imageMediaIds.length;
+    const mediaError = imageSelectionError(asset.platform, imageCount, Boolean(asset.videoMediaId));
+    if (mediaError) {
+      if (announceResult) notify(t(mediaError));
+      return { success: false, warning: false };
+    }
     const projectId = currentProjectRef.current;
     if (!projectId) {
       if (announceResult) notify(t("Save the project before submitting a draft."));
@@ -1082,7 +1090,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
           assetId: asset.id,
           integrationId: accountId,
           content: asset.content,
-          ...(asset.videoMediaId ? { videoMediaId: asset.videoMediaId } : { imageUrl: asset.imageUrl ?? config.imageUrl }),
+          ...(asset.videoMediaId ? { videoMediaId: asset.videoMediaId } : asset.imageMediaIds !== undefined ? { imageMediaIds: asset.imageMediaIds } : { imageUrl: asset.imageUrl ?? config.imageUrl }),
           projectId: projectId || undefined,
           platform: asset.platform,
           accountName: targetAccount.name,
@@ -1186,23 +1194,44 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
       return;
     }
     setLoading("export");
-    const zip = new JSZip();
-    zip.file("project.json", JSON.stringify({ config, exportedAt: new Date().toISOString() }, null, 2));
-    zip.file("source/fact-pack.json", JSON.stringify(analysis, null, 2));
-    assets.forEach((asset) => {
-      const folder = asset.platform.replace("_", "-");
-      zip.file(`${folder}/${asset.id}.md`, `# ${asset.title}\n\n${asset.content}\n\nCTA: ${asset.cta || "—"}\nFact IDs: ${asset.factIds.join(", ")}\n\n## ${t("Delivery notes")}\n\n${Object.entries(asset.meta || {}).map(([key, value]) => `### ${key}\n${typeof value === "string" ? value : JSON.stringify(value, null, 2)}`).join("\n\n")}`);
-      zip.file(`${folder}/${asset.id}.json`, JSON.stringify(asset, null, 2));
-    });
-    const blob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${config.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "content-pack"}.zip`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setLoading(null);
-    notify("Content pack exported.");
+    try {
+      const zip = new JSZip();
+      zip.file("project.json", JSON.stringify({ config, exportedAt: new Date().toISOString() }, null, 2));
+      zip.file("source/fact-pack.json", JSON.stringify(analysis, null, 2));
+      for (const asset of assets) {
+        const folder = asset.platform.replace("_", "-");
+        const imageUrls = asset.imageMediaIds?.map(id => getImagePreviewUrl(id));
+        zip.file(`${folder}/${asset.id}.md`, `# ${asset.title}\n\n${asset.content}\n\nCTA: ${asset.cta || "—"}\nFact IDs: ${asset.factIds.join(", ")}\n\n## ${t("Delivery notes")}\n\n${Object.entries(asset.meta || {}).map(([key, value]) => `### ${key}\n${typeof value === "string" ? value : JSON.stringify(value, null, 2)}`).join("\n\n")}`);
+        zip.file(`${folder}/${asset.id}.json`, JSON.stringify({ ...asset, ...(imageUrls ? { imageUrls } : {}) }, null, 2));
+        if (asset.imageMediaIds !== undefined) {
+          const images = [];
+          for (const [index, id] of asset.imageMediaIds.entries()) {
+            const url = getImagePreviewUrl(id);
+            const response = await fetch(`${url}?download=1`);
+            if (!response.ok) throw new Error("Could not export an image attachment. Please try again.");
+            const image = await response.blob();
+            const extension = ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" } as Record<string, string>)[image.type];
+            if (!extension) throw new Error("Could not export an image attachment. Please try again.");
+            const file = `${folder}/${asset.id}-images/${index + 1}-${id}.${extension}`;
+            zip.file(file, image);
+            images.push({ id, url, file });
+          }
+          zip.file(`${folder}/${asset.id}-images.json`, JSON.stringify(images, null, 2));
+        }
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${config.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "content-pack"}.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      notify("Content pack exported.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not export an image attachment. Please try again.");
+    } finally {
+      setLoading(null);
+    }
   }
 
   function goTo(viewName: View) {
@@ -1468,13 +1497,15 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
                 
                 <AssetImageEditor
                   key={`${assetEditorSession}-${selectedAsset.id}-${previewIndex ?? "draft"}`}
-                  value={viewAsset.videoMediaId ? "" : viewAsset.imageUrl ?? config.imageUrl ?? ""}
+                  value={viewAsset.videoMediaId || viewAsset.imageMediaIds !== undefined ? "" : viewAsset.imageUrl ?? config.imageUrl ?? ""}
+                  imageMediaIds={viewAsset.imageMediaIds}
+                  onImagesChange={imageMediaIds => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, imageMediaIds, imageUrl: "", videoMediaId: undefined } : asset)}
                   videoMediaId={viewAsset.videoMediaId}
                   originalImageUrl={config.imageUrl}
                   title={viewAsset.title}
                   disabled={!!previewCandidate || rewriting}
-                  onChange={imageUrl => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, imageUrl, videoMediaId: undefined } : asset)}
-                  onVideoChange={videoMediaId => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, videoMediaId: videoMediaId ?? undefined, imageUrl: "" } : asset)}
+                  onChange={imageUrl => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, imageUrl, imageMediaIds: undefined, videoMediaId: undefined } : asset)}
+                  onVideoChange={videoMediaId => setSelectedAsset(asset => asset?.id === selectedAsset.id ? { ...asset, videoMediaId: videoMediaId ?? undefined, imageMediaIds: undefined, imageUrl: "" } : asset)}
                   onBusyChange={handleAssetMediaBusy}
                 />
 
@@ -1886,7 +1917,7 @@ function FactsView({ analysis, sourceText, updateFact, onGenerate, loading }: { 
 function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPublish, onGenerate, onExport, loading, usedFallback, pendingPlatforms, targetCount, config }: { assets: ContentAsset[]; filteredAssets: ContentAsset[]; filter: Platform | "all"; setFilter: (value: Platform | "all") => void; onOpen: (asset: ContentAsset, mode?: "edit" | "preview") => void; onPublish: (asset: ContentAsset) => void; onGenerate: () => void; onExport: () => void; loading: string | null; usedFallback: boolean; pendingPlatforms: Platform[]; targetCount: number; config: ProjectConfig }) {
   const t = useTranslation();
   const counts = assets.reduce<Record<string, number>>((result, asset) => { result[asset.platform] = (result[asset.platform] || 0) + 1; return result; }, {});
-  const cardImage = (asset: ContentAsset) => asset.videoMediaId ? "" : asset.imageUrl ?? config.imageUrl;
+  const cardImage = (asset: ContentAsset) => asset.imageMediaIds !== undefined ? asset.imageMediaIds[0] ? getImagePreviewUrl(asset.imageMediaIds[0], "thumb") : "" : asset.videoMediaId ? "" : asset.imageUrl ?? config.imageUrl;
 
   const pendingForView = pendingPlatforms.filter((platform) => filter === "all" || platform === filter);
   const generating = pendingPlatforms.length > 0;
@@ -1899,7 +1930,7 @@ function AssetsView({ assets, filteredAssets, filter, setFilter, onOpen, onPubli
       {(filteredAssets.length || pendingForView.length) ? <div className="assets-grid">{filteredAssets.map((asset) => {
         const meta = PLATFORM_META[asset.platform];
         const img = cardImage(asset);
-        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{asset.videoMediaId ? <button type="button" className="asset-card-media asset-card-video" onClick={() => onOpen(asset, "preview")} aria-label={t("Post video")}><Video size={30} aria-hidden="true" /><span>MP4</span></button> : img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} /></div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "var(--text-strong)", background: "var(--surface-muted)", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
+        return <article className="asset-card" key={asset.id}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": meta.accent } as React.CSSProperties}>{platformIcon(asset.platform)} {t(meta.label)}</span><PublishBadge asset={asset} /></div><div className="asset-card-title-row"><h3>{asset.title}</h3></div>{asset.videoMediaId && !asset.imageMediaIds?.length ? <button type="button" className="asset-card-media asset-card-video" onClick={() => onOpen(asset, "preview")} aria-label={t("Post video")}><Video size={30} aria-hidden="true" /><span>MP4</span></button> : img && <div className="asset-card-media" onClick={() => onOpen(asset, "preview")} title={t("Click to preview the real social layout")}><img src={img} alt={asset.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLElement).style.display = "none"; }} />{(asset.imageMediaIds?.length ?? 0) > 1 && <span className="asset-image-count">{asset.imageMediaIds?.length} {t("images")}</span>}</div>}<p className="asset-preview">{asset.content}</p><div className="asset-card-footer"><span className="source-link"><ShieldCheck size={13} /> {asset.factIds.length} {t("source refs")}</span><div className="card-actions" style={{ gap: 6 }}><button className="small-button" onClick={() => onOpen(asset, "preview")}>{t("Preview")}</button><button className="small-button" onClick={() => onOpen(asset, "edit")}>{t("Edit")}</button><button className="small-button" style={{ color: "var(--text-strong)", background: "var(--surface-muted)", fontWeight: 700 }} onClick={() => onPublish(asset)}><Send size={12} /> {t("Submit draft")}</button></div></div></article>;
       })}{pendingForView.map((platform) => <article className="asset-card skeleton" key={`pending-${platform}`}><div className="asset-card-top"><span className="platform-chip" style={{ "--chip-accent": PLATFORM_META[platform].accent } as React.CSSProperties}>{platformIcon(platform)} {t(PLATFORM_META[platform].label)}</span></div><div className="skeleton-line" /><div className="skeleton-line short" /><div className="skeleton-line" /><span className="asset-type-label">{t("Generating…")}</span></article>)}</div> : <div className="empty-state"><Layers3 size={28} /><h3>{t("No assets in this view")}</h3><p>{t("Choose another filter or generate the distribution pack again.")}</p></div>}
     </>
   );

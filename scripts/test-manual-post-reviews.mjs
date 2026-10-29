@@ -13,7 +13,7 @@ function loadModule(relativePath, dependencies = {}) {
   });
   const compiledModule = { exports: {} };
   new Function("require", "module", "exports", outputText)(
-    dependency => dependencies[dependency] ?? nativeRequire(dependency), compiledModule, compiledModule.exports
+    dependency => dependencies[dependency] ?? (["./image-types", "@/lib/image-types"].includes(dependency) ? loadModule("../src/lib/image-types.ts") : nativeRequire(dependency)), compiledModule, compiledModule.exports
   );
   return compiledModule.exports;
 }
@@ -30,7 +30,7 @@ function createHarness() {
     CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, disabled INTEGER, display_name TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY, owner_user_id TEXT, title TEXT, content TEXT, image_data TEXT,
       image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER,
-      created_at TEXT, updated_at TEXT, video_media_id TEXT);
+      created_at TEXT, updated_at TEXT, video_media_id TEXT, image_media_ids TEXT);
     CREATE TABLE post_targets (id TEXT, post_id TEXT, integration_id TEXT, platform TEXT, account_name TEXT,
       status TEXT, snapshot_version INTEGER, postiz_post_id TEXT, audit_id TEXT, warning TEXT, error TEXT,
       submitted_at TEXT, created_at TEXT, updated_at TEXT, attempt_id TEXT, attempt_started_at TEXT);
@@ -44,7 +44,7 @@ function createHarness() {
       audit_id TEXT, postiz_post_id TEXT, warning TEXT, error TEXT, created_at TEXT, updated_at TEXT, finished_at TEXT);
     INSERT INTO users VALUES ('owner', 'member', 0, 'Owner');
     INSERT INTO posts VALUES ('${postId}', 'owner', 'Frozen title', 'Frozen content', NULL, NULL, NULL, NULL,
-      NULL, 4, '${submittedAt}', '${submittedAt}', NULL);
+      NULL, 4, '${submittedAt}', '${submittedAt}', NULL, NULL);
     INSERT INTO post_targets VALUES ('target', '${postId}', 'account', 'x', 'Account', 'accepted', 4,
       'old-upstream', '${auditId}', NULL, NULL, '${submittedAt}', '${submittedAt}', '${submittedAt}', NULL, NULL);
     INSERT INTO social_publishes VALUES ('${auditId}', NULL, '${postId}', 'account', 'owner', 'old-upstream');
@@ -63,6 +63,7 @@ function createHarness() {
       .replace(/<=>/g, "IS")
       .replace("IF(?='unknown',active_key,NULL)", "CASE WHEN ?='unknown' THEN active_key ELSE NULL END")
       .replace(/LEFT\(p.content, 400\)/g, "substr(p.content, 1, 400)")
+      .replace(/JSON_LENGTH\(/g, "json_array_length(")
       .replace(/GROUP_CONCAT\(DISTINCT t.platform ORDER BY t.platform\)/g, "GROUP_CONCAT(DISTINCT t.platform)");
     if (portableSql.startsWith("UPDATE post_targets t JOIN posts")) {
       portableSql = portableSql.replace("UPDATE post_targets t JOIN posts p ON p.id = t.post_id", "UPDATE post_targets")
@@ -93,6 +94,7 @@ function createHarness() {
   } };
   const storage = loadModule("../src/lib/posts.ts", {
     "@/lib/project-db": { database: () => pool }, "./post-types": postTypes,
+    "@/lib/image-uploads": { getImageUploads: async ids => { throw new Error(`Legacy posts must not query image uploads: ${ids}`); } },
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image posts must not query video uploads"); } }
   });
   const upstream = loadModule("../src/lib/postiz.ts", { "./types": loadModule("../src/lib/types.ts"), "./post-types": loadModule("../src/lib/post-types.ts") });
@@ -111,6 +113,7 @@ function createHarness() {
   const dependencies = {
     "@/lib/project-db": { database: () => pool },
     "@/lib/posts": storage,
+    "@/lib/image-uploads": { getImageUploads: async () => { throw new Error("Legacy tasks must not query image uploads"); } },
     "@/lib/post-types": postTypes,
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } },
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
