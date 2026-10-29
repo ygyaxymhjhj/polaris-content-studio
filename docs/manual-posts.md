@@ -129,7 +129,8 @@ Verified against the official documentation:
   The `date` satisfies the API schema; `type: "draft"` prevents scheduling or publishing.
 - YouTube channels use the same account selection, MP4 upload and queue. Selecting YouTube reveals
   the existing post title field as a video title; submission requires an owned MP4, a 2–100-character
-  title without `<` or `>`, and a description of at most 5,000 characters (empty is allowed).
+  title without `<` or `>`, and a description of at most 5,000 UTF-8 bytes without `<` or `>`
+  (empty is allowed).
   The title is frozen with the content and video reference in the queued task. Settings use
   `__type: "youtube"`, the frozen `title`, and `type: "private"`; administrators review visibility
   in Postiz before publishing. No audience declaration is inferred. The existing 100 MiB MP4

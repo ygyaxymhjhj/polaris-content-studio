@@ -479,6 +479,27 @@ test("video manual persistence restores the reference, lists it and copies witho
   assert.equal(await harness.storage.duplicateManualPost("other", created.id), null);
 });
 
+test("LinkedIn post filtering includes personal profiles and company Pages with matching counts", async context => {
+  const harness = videoHarness(context);
+  const created = [];
+  for (const platform of ["linkedin", "linkedin-page", "x"]) {
+    created.push(await harness.storage.createManualPost("owner", {
+      title: platform, content: "Text", image: null,
+      targets: [{ integrationId: `account-${platform}`, platform, accountName: platform }]
+    }));
+  }
+  const filters = { status: "all", search: "", platform: "linkedin", integrationId: "", updatedSince: 0, page: 1, perPage: 20 };
+  const listed = await harness.storage.listManualPosts("owner", filters);
+  assert.deepEqual(listed.items.map(post => post.id).sort(), created.slice(0, 2).map(post => post.id).sort());
+  assert.equal(listed.total, 2);
+  assert.equal(listed.counts.all, 2);
+  const pageOnly = await harness.storage.listManualPosts("owner", { ...filters, platform: "linkedin-page" });
+  assert.deepEqual(pageOnly.items.map(post => post.id), [created[1].id]);
+  const xOnly = await harness.storage.listManualPosts("owner", { ...filters, platform: "x" });
+  assert.ok(xOnly.items.some(post => post.id === created[2].id));
+  assert.ok(xOnly.items.every(post => !created.slice(0, 2).some(linkedinPost => linkedinPost.id === post.id)));
+});
+
 test("video manual updates preserve omission, remove only explicit media and clear every old image column on replacement", async context => {
   const harness = videoHarness(context);
   let result = await harness.storage.updateManualPost("owner", postId, 4, { videoMediaId: videoId });
@@ -534,7 +555,8 @@ test("YouTube refuses missing video, invalid title and long description before f
   for (const [title, content, mediaId] of [
     ["Video title", "Description", null], ["", "Description", videoId], ["x", "Description", videoId],
     ["x".repeat(101), "Description", videoId], ["Invalid <title>", "Description", videoId],
-    ["Video title", "x".repeat(5001), videoId]
+    ["Video title", "x".repeat(5001), videoId], ["Video title", "中".repeat(2000), videoId],
+    ["Video title", "Use 1 < 2", videoId], ["Video title", "x".repeat(4999) + "\n\n", videoId]
   ]) {
     harness.sql.prepare("UPDATE posts SET title=?, content=?, video_media_id=?").run(title, content, mediaId);
     assert.equal((await harness.enqueueManual()).kind, "validation");
@@ -554,7 +576,8 @@ test("video worker reuses the frozen reference in a real draft-only payload with
   assert.equal((await harness.enqueueManual()).kind, "queued");
   const frozen = JSON.parse(harness.tasks()[0].snapshot);
   assert.equal(frozen.videoMediaId, videoId);
-  assert.equal(frozen.title, "Frozen YouTube title");  assert.equal(frozen.imageUrl, null);
+  assert.equal(frozen.title, "Frozen YouTube title");
+  assert.equal(frozen.imageUrl, null);
   assert.doesNotMatch(harness.tasks()[0].snapshot, /\.mp4|postizPath|postizMediaId|blob:|data:video/);
   assert.equal((await harness.storage.updateManualPost("owner", postId, 4, { videoMediaId: otherVideoId })).kind, "frozen");
   // Simulate a bypassed mutable row: execution must still use the committed queue reference.

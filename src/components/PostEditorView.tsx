@@ -146,7 +146,7 @@ export default function PostEditorView({
       setImageName(detail.imageName ?? "");
       setTargetIds(detail.targets.map((target) => target.integrationId));
     }
-    savedPayload.current = JSON.stringify([detail.title, detail.content, false, detail.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    savedPayload.current = JSON.stringify([detail.title.trim(), detail.content, false, detail.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
     setSavedRevision((revision) => revision + 1);
   }, []);
 
@@ -189,7 +189,7 @@ export default function PostEditorView({
   }, [postId, applyDetail, updateDeletion]);
 
   const payloadKey = useMemo(
-    () => JSON.stringify([title, content, imageDirty, videoMediaId ?? null, [...targetIds].sort().join(",")]),
+    () => JSON.stringify([title.trim(), content, imageDirty, videoMediaId ?? null, [...targetIds].sort().join(",")]),
     [title, content, imageDirty, videoMediaId, targetIds]
   );
   // Save results live in a ref, so the re-render that setSavedRevision triggers is what makes this
@@ -369,7 +369,7 @@ export default function PostEditorView({
     if (saveFlight.current) return saveFlight.current;
     const flight = (async (): Promise<ManualPostDetail | null> => {
       const payload = payloadRef.current;
-      const key = JSON.stringify([payload.title, payload.content, payload.imageDirty, payload.videoMediaId ?? null, [...payload.targetIds].sort().join(",")]);
+      const key = JSON.stringify([payload.title.trim(), payload.content, payload.imageDirty, payload.videoMediaId ?? null, [...payload.targetIds].sort().join(",")]);
       const current = postRef.current;
       if (current && !current.editable) return current;
       if (key === savedPayload.current) return current;
@@ -429,7 +429,7 @@ export default function PostEditorView({
     // An older autosave may have been in flight when the push was clicked. Flush the latest
     // snapshot before submitting so selected accounts never receive an earlier edit.
     const latest = payloadRef.current;
-    const latestKey = JSON.stringify([latest.title, latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+    const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
     if (saved && latestKey !== savedPayload.current) saved = await save();
     if (!saved) {
       setSubmitError(t("Save the post before submitting it."));
@@ -520,7 +520,7 @@ export default function PostEditorView({
       if (dirty) {
         if (!await save()) return;
         const latest = payloadRef.current;
-        const latestKey = JSON.stringify([latest.title, latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+        const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
         if (latestKey !== savedPayload.current && !await save()) return;
       }
       if (!mediaBusyRef.current && editorMounted.current) onBack();
@@ -582,7 +582,7 @@ export default function PostEditorView({
 
   /** Per-account blockers; each one only ever gates its own account. */
   function targetBlocker(target: PostTarget): string {
-    if (target.platform === "youtube") return t(youtubePostError(editable ? title : post?.title, trimmedContent, Boolean(editable ? videoMediaId : post?.videoMediaId)));
+    if (target.platform === "youtube") return t(youtubePostError(editable ? title : post?.title, editable ? content : post?.content ?? content, Boolean(editable ? videoMediaId : post?.videoMediaId)));
     if (!trimmedContent) return t("Add post text before submitting.");
     const rule = platformRuleFor(target.platform);
     if (rule?.requiresImage && !hasMedia) return t("This platform requires an image or MP4 video.");

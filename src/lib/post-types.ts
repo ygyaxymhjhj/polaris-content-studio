@@ -181,6 +181,7 @@ export function youtubePostError(title: string | undefined, content: string, has
   if (Array.from(videoTitle).length < 2 || Array.from(videoTitle).length > 100 || /[<>]/.test(videoTitle)) {
     return "YouTube requires a video title of 2–100 characters without < or >.";
   }
-  if (Array.from(content).length > 5000) return "YouTube descriptions cannot exceed 5,000 characters.";
+  if (/[<>]/.test(content)) return "YouTube descriptions cannot contain < or >.";
+  if (new TextEncoder().encode(content).byteLength > 5000) return "YouTube descriptions cannot exceed 5,000 UTF-8 bytes.";
   return "";
 }

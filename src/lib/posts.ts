@@ -278,8 +278,9 @@ function filterArguments(filters: PostListFilters): [string, ...SqlValue[]] {
     databaseFilters.push(search, search);
   }
   if (filters.platform) {
-    conditions.push("EXISTS (SELECT 1 FROM post_targets tp WHERE tp.post_id = r.id AND tp.platform = ?)");
-    databaseFilters.push(filters.platform);
+    const platforms = filters.platform === "linkedin" ? ["linkedin", "linkedin-page"] : [filters.platform];
+    conditions.push(`EXISTS (SELECT 1 FROM post_targets tp WHERE tp.post_id = r.id AND tp.platform IN (${platforms.map(() => "?").join(",")}))`);
+    databaseFilters.push(...platforms);
   }
   if (filters.integrationId) {
     conditions.push("EXISTS (SELECT 1 FROM post_targets ti WHERE ti.post_id = r.id AND ti.integration_id = ?)");

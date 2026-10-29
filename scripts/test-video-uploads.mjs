@@ -638,7 +638,10 @@ test("YouTube drafts require a video and valid title and reuse the media with pr
       { uploadedMedia: upstreamMedia }, { title: "x", uploadedMedia: upstreamMedia },
       { title: "Invalid <title>", uploadedMedia: upstreamMedia },
       { title: "x".repeat(101), uploadedMedia: upstreamMedia },
-      { title: "Title", content: "x".repeat(5001), uploadedMedia: upstreamMedia }
+      { title: "Title", content: "x".repeat(5001), uploadedMedia: upstreamMedia },
+      { title: "Title", content: "中".repeat(2000), uploadedMedia: upstreamMedia },
+      { title: "Title", content: "Use 1 < 2", uploadedMedia: upstreamMedia },
+      { title: "Title", content: "Use 2 > 1", uploadedMedia: upstreamMedia }
     ]) {
       const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", content: "", ...input });
       assert.equal(result.success, false);
@@ -648,12 +651,14 @@ test("YouTube drafts require a video and valid title and reuse the media with pr
     assert.equal((await postiz.publishToPostiz({ integrationId: "youtube-channel", platform: "youtube", content: "No video" })).success, false);
     assert.equal(calls.length, 0);
     const title = "😀".repeat(100);
-    const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", title, content: "", uploadedMedia: upstreamMedia });
+    const description = "中".repeat(1666) + "ab";
+    const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", title, content: description, uploadedMedia: upstreamMedia });
     assert.equal(result.success, true);
     assert.equal(calls.length, 1);
     const payload = JSON.parse(calls[0].options.body);
     assert.equal(payload.type, "draft");
     assert.deepEqual(payload.posts[0].settings, { __type: "youtube", title, type: "private" });
+    assert.equal(payload.posts[0].value[0].content, description);
     assert.deepEqual(payload.posts[0].value[0].image, [upstreamMedia]);
   } finally { globalThis.fetch = async () => { throw new Error("Unexpected network request"); }; }
 });
