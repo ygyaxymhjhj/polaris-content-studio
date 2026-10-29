@@ -17,6 +17,7 @@ const UNKNOWN_WARNING = "The submission result could not be confirmed. Check the
 const AUDIT_WARNING = "The draft was accepted, but local tracking could not be saved. Do not submit again.";
 
 type Snapshot = {
+  title?: string;
   content: string;
   imageUrl: string | null;
   videoMediaId?: string;
@@ -114,7 +115,7 @@ export async function enqueueManualSubmission(options: {
         requestKey: digest(["manual", frozen.attemptId]), fingerprint: digest([options.postId, options.integrationId, options.expectedVersion, options.expectedAuditId,
           ...(frozen.videoMediaId ? [{ videoMediaId: frozen.videoMediaId }] : [])]),
         activeKey: digest(["manual", options.userId, options.postId, options.integrationId]),
-        snapshot: { content: frozen.content, imageUrl: frozen.imageDataUrl,
+        snapshot: { title: frozen.title, content: frozen.content, imageUrl: frozen.imageDataUrl,
           ...(frozen.videoMediaId ? { videoMediaId: frozen.videoMediaId } : {}), platform: account?.provider || "unknown",
           accountName: account?.accountName || options.integrationId, version: options.expectedVersion, rejectedBinding }
       });
@@ -320,7 +321,7 @@ async function executeTask(task: TaskRow): Promise<void> {
     );
     if (!lease.length) return;
     createStarted = true;
-    const result = await createStrictDraft({ integrationId: task.integration_id, content: snapshot.content,
+    const result = await createStrictDraft({ integrationId: task.integration_id, title: snapshot.title, content: snapshot.content,
       imageUrl: snapshot.imageUrl || undefined,
       ...(video ? { uploadedMedia: { id: video.postizMediaId, path: video.postizPath } } : {}),
       platform: liveAccount.identifier || snapshot.platform });

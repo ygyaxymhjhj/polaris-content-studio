@@ -134,8 +134,9 @@ function createHarness() {
   const dependencies = {
     "@/lib/project-db": { database: () => pool }, "@/lib/posts": storage,
     "@/lib/video-uploads": videoUploads,
+    "@/lib/post-types": postTypes,
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
-    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: "x", accountName: "Account" }) },
+    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: harness.accountProvider || "x", accountName: "Account" }) },
     "@/lib/postiz": {
       fetchPostizIntegrations: async () => { assert.equal(transactionOpen, false); return { configured: true, accounts: harness.liveAccountMissing ? [] : [{ id: "account", identifier: harness.liveIdentifier, disabled: harness.liveDisabled }] }; },
       fetchPostizPostDetails: async () => {
@@ -190,7 +191,7 @@ test("manual success uses the frozen snapshot, binds its audit and never creates
   const harness = createHarness();
   assert.equal((await harness.enqueueManual()).kind, "queued");
   await harness.queue.processDraftSubmissions();
-  assert.deepEqual(harness.drafts, [{ integrationId: "account", content: "Frozen text", imageUrl: "data:image/png;base64,AAAA", platform: "x" }]);
+  assert.deepEqual(harness.drafts, [{ integrationId: "account", title: "Title", content: "Frozen text", imageUrl: "data:image/png;base64,AAAA", platform: "x" }]);
   assert.equal(harness.target().status, "accepted");
   assert.equal(harness.target().postiz_post_id, "upstream-one");
   assert.equal(harness.target().audit_id, "new-audit");
@@ -527,18 +528,37 @@ test("video manual claim verifies the locked reference before freezing or queue 
   assert.ok(harness.statements.filter(entry => entry.statement.includes("FROM video_uploads")).every(entry => entry.transactionOpen));
 });
 
+test("YouTube refuses missing video, invalid title and long description before freezing or queue insertion", async context => {
+  const harness = videoHarness(context);
+  harness.accountProvider = "youtube";
+  for (const [title, content, mediaId] of [
+    ["Video title", "Description", null], ["", "Description", videoId], ["x", "Description", videoId],
+    ["x".repeat(101), "Description", videoId], ["Invalid <title>", "Description", videoId],
+    ["Video title", "x".repeat(5001), videoId]
+  ]) {
+    harness.sql.prepare("UPDATE posts SET title=?, content=?, video_media_id=?").run(title, content, mediaId);
+    assert.equal((await harness.enqueueManual()).kind, "validation");
+    assert.equal(harness.target().status, "not_started");
+    assert.equal(harness.tasks().length, 0);
+  }
+  harness.accountProvider = "x";
+  harness.sql.prepare("UPDATE posts SET content='Text for X', video_media_id=NULL").run();
+  assert.equal((await harness.enqueueManual()).kind, "queued", "YouTube restrictions do not affect text channels");
+});
+
 test("video worker reuses the frozen reference in a real draft-only payload without any download or upload", async context => {
   const harness = videoHarness(context);
   seedVideo(harness, otherVideoId);
-  harness.sql.prepare("UPDATE posts SET image_data=NULL, video_media_id=?").run(videoId);
+  harness.accountProvider = "youtube";
+  harness.sql.prepare("UPDATE posts SET image_data=NULL, video_media_id=?, title='Frozen YouTube title', content=''").run(videoId);
   assert.equal((await harness.enqueueManual()).kind, "queued");
   const frozen = JSON.parse(harness.tasks()[0].snapshot);
   assert.equal(frozen.videoMediaId, videoId);
-  assert.equal(frozen.imageUrl, null);
+  assert.equal(frozen.title, "Frozen YouTube title");  assert.equal(frozen.imageUrl, null);
   assert.doesNotMatch(harness.tasks()[0].snapshot, /\.mp4|postizPath|postizMediaId|blob:|data:video/);
   assert.equal((await harness.storage.updateManualPost("owner", postId, 4, { videoMediaId: otherVideoId })).kind, "frozen");
   // Simulate a bypassed mutable row: execution must still use the committed queue reference.
-  harness.sql.prepare("UPDATE posts SET video_media_id=?").run(otherVideoId);
+  harness.sql.prepare("UPDATE posts SET video_media_id=?, title='Later mutable title'").run(otherVideoId);
   const originalFetch = globalThis.fetch;
   const originalUrl = process.env.POSTIZ_API_URL;
   const originalKey = process.env.POSTIZ_API_KEY;
@@ -558,12 +578,13 @@ test("video worker reuses the frozen reference in a real draft-only payload with
     requests.push(JSON.parse(options.body));
     return Response.json([{ postId: "new-video-draft" }]);
   };
-  harness.liveIdentifier = "instagram-standalone";
-  harness.createDraft = loadModule("../src/lib/postiz.ts", { "./types": loadModule("../src/lib/types.ts") }).createStrictDraft;
+  harness.liveIdentifier = "youtube";
+  harness.createDraft = loadModule("../src/lib/postiz.ts", { "./types": loadModule("../src/lib/types.ts"), "./post-types": loadModule("../src/lib/post-types.ts") }).createStrictDraft;
   await harness.queue.processDraftSubmissions();
   assert.equal(requests.length, 1);
   assert.equal(requests[0].type, "draft");
-  assert.equal(requests[0].posts[0].settings.__type, "instagram-standalone");
+  assert.deepEqual(requests[0].posts[0].settings, { __type: "youtube", title: "Frozen YouTube title", type: "private" });
+  assert.equal(requests[0].posts[0].value[0].content, "");
   assert.deepEqual(requests[0].posts[0].value[0].image, [{ id: `upstream-${videoId}`, path: `https://media.test/${videoId}.mp4` }]);
   assert.equal(harness.tasks()[0].state, "succeeded");
 });

@@ -1,4 +1,4 @@
-import type { Platform } from "./types";
+import type { SocialPlatform } from "./types";
 
 /**
  * Client-safe types for manual posts. Kept out of the storage layer so browser components can
@@ -121,8 +121,8 @@ export function platformLabel(platform: string): string {
   return platform || "unknown";
 }
 
-export function isSupportedPlatform(value: string): value is Platform {
-  return value === "facebook" || value === "threads" || value === "linkedin" || value === "x" || value === "instagram";
+export function isSupportedPlatform(value: string): value is SocialPlatform {
+  return value === "facebook" || value === "threads" || value === "linkedin" || value === "x" || value === "instagram" || value === "youtube";
 }
 
 export const POST_CONTENT_MAX_LENGTH = 20000;
@@ -158,18 +158,29 @@ export const POST_TARGET_STATUS_LABEL: Record<PostTargetStatus, string> = {
 };
 
 /**
- * Documented limits for the five supported channels. They only gate the account they belong to:
+ * Documented limits for the supported channels. They only gate the account they belong to:
  * a post that is too long for X can still be handed to Facebook, and Instagram alone requires an
  * image, so one failure never blocks the other accounts.
  */
-export const PLATFORM_POST_RULES: Record<Platform, { maxCharacters: number; requiresImage: boolean }> = {
+export const PLATFORM_POST_RULES: Record<SocialPlatform, { maxCharacters: number; requiresImage: boolean }> = {
   x: { maxCharacters: 280, requiresImage: false },
   threads: { maxCharacters: 500, requiresImage: false },
   instagram: { maxCharacters: 2200, requiresImage: true },
   linkedin: { maxCharacters: 3000, requiresImage: false },
-  facebook: { maxCharacters: 63206, requiresImage: false }
+  facebook: { maxCharacters: 63206, requiresImage: false },
+  youtube: { maxCharacters: 5000, requiresImage: false }
 };
 
 export function platformRuleFor(platform: string): { maxCharacters: number; requiresImage: boolean } | null {
   return isSupportedPlatform(platform) ? PLATFORM_POST_RULES[platform] : null;
+}
+
+export function youtubePostError(title: string | undefined, content: string, hasVideo: boolean): string {
+  if (!hasVideo) return "YouTube requires an MP4 video.";
+  const videoTitle = title?.trim() ?? "";
+  if (Array.from(videoTitle).length < 2 || Array.from(videoTitle).length > 100 || /[<>]/.test(videoTitle)) {
+    return "YouTube requires a video title of 2–100 characters without < or >.";
+  }
+  if (Array.from(content).length > 5000) return "YouTube descriptions cannot exceed 5,000 characters.";
+  return "";
 }

@@ -21,6 +21,7 @@ const accounts = [
   { id: 'channel-x', identifier: 'x', name: 'News desk' },
   { id: 'channel-linkedin', identifier: 'linkedin', name: 'Company page' },
   { id: 'channel-instagram', identifier: 'instagram', name: 'Photo desk' },
+  { id: 'channel-youtube', identifier: 'youtube', name: 'Video channel' },
   { id: 'channel-disabled', identifier: 'facebook', name: 'Disconnected', disabled: true }
 ];
 const virtualSources = new Map([
@@ -399,7 +400,7 @@ try {
   await addPlatform.click();
   const picker = page.getByRole('group', { name: 'Choose accounts', exact: true });
   assert.equal(await picker.locator('img, input[type="text"]').count(), 0, 'compact picker has no avatars or search field');
-  assert.equal(await page.getByRole('checkbox').count(), 4);
+  assert.equal(await page.getByRole('checkbox').count(), 5);
   const pickerBounds = await picker.boundingBox();
   assert.ok(pickerBounds.width <= 280 && pickerBounds.height <= 360, 'account picker stays compact');
   assert.equal(await page.getByRole('checkbox', { name: /News desk/ }).evaluate(element => document.activeElement === element), true);
@@ -996,9 +997,32 @@ try {
   assert.equal(storedPost.content, '');
   assert.equal(storedPost.imageUrl, null);
   assert.equal(await videoPreview.getAttribute('src'), `/api/media/uploads/${storedPost.videoMediaId}`, 'new-to-id upgrade keeps the successful attachment');
+  await addPlatform.click();
+  await page.getByRole('checkbox', { name: /Video channel/ }).check();
+  await page.getByRole('checkbox', { name: /Video channel/ }).press('Escape');
+  const youtubeTitle = page.getByRole('textbox', { name: 'YouTube video title', exact: true });
+  await youtubeTitle.waitFor();
+  assert.equal(await push.isEnabled(), false, 'YouTube requires a title even with a video');
+  await youtubeTitle.fill('Video <title>');
+  assert.equal(await push.isEnabled(), false, 'YouTube refuses invalid title characters');
+  await youtubeTitle.fill('YouTube test video');
+  assert.equal(await push.isEnabled(), true, 'YouTube allows a video and title without a description');
+  await text.fill('x'.repeat(5001));
+  assert.equal(await push.isEnabled(), false, 'YouTube enforces its description limit');
+  await text.fill('');
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.title, 'YouTube test video');
+  assert.equal(await push.isEnabled(), true);
   await page.getByRole('button', { name: 'Remove video', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
   assert.equal(storedPost.videoMediaId, null, 'removing the video saves an explicit null reference');
+  assert.equal(await push.isEnabled(), false, 'YouTube cannot submit a text-only draft');
+  await videoInput.setInputFiles({ name: 'youtube-image.png', mimeType: 'image/png', buffer: imageBuffer });
+  await page.locator('.post-media-thumbnail img').waitFor();
+  assert.equal(await push.isEnabled(), false, 'An image cannot satisfy the YouTube video requirement');
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  storedPost = undefined;
+  await page.goto(origin);
 
   // Back waits for the latest snapshot, and does not permit a new upload in that wait window.
   delayNextSave = true;

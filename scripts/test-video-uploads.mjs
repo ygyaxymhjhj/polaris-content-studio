@@ -41,7 +41,7 @@ function loadModule(relativePath, dependencies = {}) {
 
 const videoTypes = loadModule("../src/lib/video-types.ts");
 const validation = loadModule("../src/lib/video-validation.ts", { "./video-types": videoTypes });
-const postiz = loadModule("../src/lib/postiz.ts", { "./types": { DEFAULT_PLATFORMS: ["x", "instagram", "facebook", "threads", "linkedin"] } });
+const postiz = loadModule("../src/lib/postiz.ts", { "./types": { DEFAULT_PLATFORMS: ["x", "instagram", "facebook", "threads", "linkedin"] }, "./post-types": loadModule("../src/lib/post-types.ts") });
 const requestId = "11111111-1111-4111-8111-111111111111";
 const metadata = { width: 64, height: 64, durationSeconds: 1 };
 const upstreamMedia = { id: "postiz-media-one", path: "https://uploads.postiz.com/video.mp4" };
@@ -623,6 +623,38 @@ test("strict drafts reuse media directly, keep provider aliases, reject mixed me
     const refused = await postiz.createStrictDraft({ integrationId: "account-one", content: "Review", uploadedMedia: upstreamMedia });
     assert.equal(refused.uncertain, undefined);
     assertSafe(refused.error);
+  } finally { globalThis.fetch = async () => { throw new Error("Unexpected network request"); }; }
+});
+
+test("YouTube drafts require a video and valid title and reuse the media with private visibility", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return Response.json([{ postId: "youtube-draft" }]);
+  };
+  try {
+    for (const input of [
+      { title: "Video title" }, { title: "Video title", imageUrl: tinyPngDataUrl },
+      { uploadedMedia: upstreamMedia }, { title: "x", uploadedMedia: upstreamMedia },
+      { title: "Invalid <title>", uploadedMedia: upstreamMedia },
+      { title: "x".repeat(101), uploadedMedia: upstreamMedia },
+      { title: "Title", content: "x".repeat(5001), uploadedMedia: upstreamMedia }
+    ]) {
+      const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", content: "", ...input });
+      assert.equal(result.success, false);
+      assert.equal(result.uncertain, undefined);
+      assert.equal(calls.length, 0, "Invalid YouTube requests cannot upload images or create drafts");
+    }
+    assert.equal((await postiz.publishToPostiz({ integrationId: "youtube-channel", platform: "youtube", content: "No video" })).success, false);
+    assert.equal(calls.length, 0);
+    const title = "😀".repeat(100);
+    const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", title, content: "", uploadedMedia: upstreamMedia });
+    assert.equal(result.success, true);
+    assert.equal(calls.length, 1);
+    const payload = JSON.parse(calls[0].options.body);
+    assert.equal(payload.type, "draft");
+    assert.deepEqual(payload.posts[0].settings, { __type: "youtube", title, type: "private" });
+    assert.deepEqual(payload.posts[0].value[0].image, [upstreamMedia]);
   } finally { globalThis.fetch = async () => { throw new Error("Unexpected network request"); }; }
 });
 

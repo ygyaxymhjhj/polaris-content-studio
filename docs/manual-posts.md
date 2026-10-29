@@ -17,8 +17,9 @@ human decision inside Postiz. The AI workspace, its projects and their export fl
   compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
   usernames and multi-selection, without avatars or search/filter controls. There is no internal-title field, character counter, profile group,
   simulated feed, publish-now option or scheduler. The right-hand summary lists chosen accounts,
-  their results and the **Push drafts** action. Existing internal titles are preserved
-  but are not shown or sent to Postiz. The composer creates the record on the first effective edit; afterwards every
+  their results and the **Push drafts** action. Existing internal titles are preserved;
+  only a selected YouTube channel exposes the title as its video title and sends it to Postiz.
+  The composer creates the record on the first effective edit; afterwards every
   change is autosaved with a version check, so a second tab cannot overwrite it silently.
 - **Delete draft** is available in the editor after autosave starts or a local draft is loaded.
   Confirmation discards unsaved edits. Deletion waits for an existing create/update request and
@@ -126,6 +127,13 @@ Verified against the official documentation:
   `shortLink: false`, `tags: []` and one entry in `posts` containing `integration: { id }`,
   `value: [{ content, image: [{ id, path }] }]` and provider-specific `settings.__type`.
   The `date` satisfies the API schema; `type: "draft"` prevents scheduling or publishing.
+- YouTube channels use the same account selection, MP4 upload and queue. Selecting YouTube reveals
+  the existing post title field as a video title; submission requires an owned MP4, a 2–100-character
+  title without `<` or `>`, and a description of at most 5,000 characters (empty is allowed).
+  The title is frozen with the content and video reference in the queued task. Settings use
+  `__type: "youtube"`, the frozen `title`, and `type: "private"`; administrators review visibility
+  in Postiz before publishing. No audience declaration is inferred. The existing 100 MiB MP4
+  limit still applies, and Google OAuth credentials are configured only on Postiz.
 - The returned `postId` is stored per account. Non-rejected accepted accounts are not submitted again;
   transport-uncertain results require manual review rather than automatic retries.
 

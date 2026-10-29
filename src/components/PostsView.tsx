@@ -16,7 +16,7 @@ import {
   Video
 } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
-import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
+import { SOCIAL_PLATFORM_META as PLATFORM_META, type SocialPlatform as Platform, type SocialAccount } from "@/lib/types";
 import {
   POST_STATUS_LABEL,
   formatPostTimestamp,

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowUpRight, Check, ExternalLink, Loader2, X as CloseIcon } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { AUTHORIZATION_POPUP_STORAGE_KEY, CONNECTION_MESSAGES, parseConnectionOutcome } from "@/lib/social-connect-result";
-import { DEFAULT_PLATFORMS, PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
+import { SOCIAL_PLATFORMS, SOCIAL_PLATFORM_META, type SocialPlatform, type SocialAccount } from "@/lib/types";
 
 type Props = {
   open: boolean;
@@ -24,7 +24,7 @@ type Props = {
 
 export default function ConnectAccountsDialog({ open, onClose, configured, oauthConfigured, loading, uiUrl, accounts, error, onRefresh, canUsePostizUi = false, currentView = "workspace" }: Props) {
   const translate = useTranslation();
-  const [provider, setProvider] = useState<Platform>("x");
+  const [provider, setProvider] = useState<SocialPlatform>("x");
   const [creatingLink, setCreatingLink] = useState(false);
   const [authorizing, setAuthorizing] = useState(false);
   const [connectionError, setConnectionError] = useState("");
@@ -143,14 +143,15 @@ export default function ConnectAccountsDialog({ open, onClose, configured, oauth
           <fieldset className="connection-platforms" disabled={creatingLink || authorizing}>
             <legend>{translate("Select a platform")}</legend>
             <div className="provider-grid connection-provider-grid">
-              {DEFAULT_PLATFORMS.map((platform) => {
-                const metadata = PLATFORM_META[platform];
-                const count = accounts.filter(account => account.identifier.toLowerCase() === platform).length;
+              {SOCIAL_PLATFORMS.map((platform) => {
+                const metadata = SOCIAL_PLATFORM_META[platform];
+                const connectionProvider = platform === "linkedin" ? "linkedin-page" : platform;
+                const count = accounts.filter(account => account.identifier.toLowerCase() === connectionProvider).length;
                 return (
                   <label key={platform} className={`provider-tile connection-provider ${provider === platform ? "selected" : ""}`}>
                     <input type="radio" name="connection-platform" value={platform} checked={provider === platform} onChange={() => { setProvider(platform); setConnectionError(""); }} />
                     <span className="connection-provider-mark">{metadata.short}</span>
-                    <strong>{metadata.label}</strong>
+                    <strong>{platform === "linkedin" ? "LinkedIn Page" : metadata.label}</strong>
                     <small>{count ? `${count} ${translate("connected")}` : translate("Not connected")}</small>
                     {provider === platform && <Check size={13} className="connection-provider-check" aria-hidden="true" />}
                   </label>

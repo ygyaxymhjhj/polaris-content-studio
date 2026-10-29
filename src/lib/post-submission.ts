@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { database } from "@/lib/project-db";
 import { POST_TARGET_REVIEW_JOINS, POST_TARGET_STATUS_SQL } from "@/lib/posts";
-import type { ManualPostDetail, PostTargetStatus } from "@/lib/post-types";
+import { youtubePostError, type ManualPostDetail, type PostTargetStatus } from "@/lib/post-types";
 import { getVideoUpload } from "@/lib/video-uploads";
 
 const utc = (date: Date) => date.toISOString().slice(0, 23).replace("T", " ");
@@ -24,6 +24,7 @@ type ClaimResult =
   | Exclude<SubmitOutcome, { kind: "ok" }>;
 
 interface ClaimPostRow extends RowDataPacket {
+  title: string;
   content: string;
   image_data: string | null;
   video_media_id: string | null;
@@ -66,14 +67,14 @@ export async function claimPostTarget(options: {
   accountName: string;
   expectedAuditId?: string;
   rejectedBinding: ClaimTargetRow | null;
-  enqueue: (connection: PoolConnection, snapshot: { content: string; imageDataUrl: string | null; videoMediaId: string | null; attemptId: string }) => Promise<void>;
+  enqueue: (connection: PoolConnection, snapshot: { title: string; content: string; imageDataUrl: string | null; videoMediaId: string | null; attemptId: string }) => Promise<void>;
 }): Promise<ClaimResult> {
   const { userId, postId, integrationId, expectedVersion, platform, accountName, expectedAuditId, rejectedBinding } = options;
   const connection = await database().getConnection();
   try {
     await connection.beginTransaction();
     const [posts] = await connection.execute<ClaimPostRow[]>(
-      "SELECT content, image_data, video_media_id, version FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
+      "SELECT title, content, image_data, video_media_id, version FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
       [postId, userId]
     );
     if (!posts.length) {
@@ -86,9 +87,13 @@ export async function claimPostTarget(options: {
       return { kind: "conflict" };
     }
     const content = String(post.content || "");
-    if (!content.trim()) {
+    const title = String(post.title || "");
+    const validationError = platform === "youtube"
+      ? youtubePostError(title, content, Boolean(post.video_media_id))
+      : !content.trim() ? "Add post text before submitting to Postiz." : "";
+    if (validationError) {
       await connection.rollback();
-      return { kind: "validation", message: "Add post text before submitting to Postiz." };
+      return { kind: "validation", message: validationError };
     }
 
     const target = await readSubmissionTarget(connection, userId, postId, integrationId, true);
@@ -137,7 +142,7 @@ export async function claimPostTarget(options: {
         WHERE post_id=? AND integration_id=?`,
       [attemptId, now, Number(post.version), platform, accountName, now, postId, integrationId]
     );
-    await options.enqueue(connection, { content, imageDataUrl: post.image_data ?? null, videoMediaId: post.video_media_id ?? null, attemptId });
+    await options.enqueue(connection, { title, content, imageDataUrl: post.image_data ?? null, videoMediaId: post.video_media_id ?? null, attemptId });
     await connection.commit();
     return { kind: "claimed" };
   } catch (error) {

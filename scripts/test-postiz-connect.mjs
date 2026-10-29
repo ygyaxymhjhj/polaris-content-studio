@@ -23,8 +23,9 @@ const environmentNames = ["POSTIZ_API_URL", "POSTIZ_API_KEY", "POSTIZ_JWT_SECRET
 const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]));
 const previousFetch = globalThis.fetch;
 const platformTypes = loadModule("src/lib/types.ts");
-const postiz = loadModule("src/lib/postiz.ts", { "./types": platformTypes });
+const postiz = loadModule("src/lib/postiz.ts", { "./types": platformTypes, "./post-types": loadModule("src/lib/post-types.ts") });
 const capturedRequests = [];
+const savedAttempts = [];
 let upstreamBody = JSON.stringify("https://twitter.com/i/oauth2/authorize?state=synthetic-provider-state");
 let upstreamStatus = 200;
 let currentAccount = null;
@@ -36,7 +37,7 @@ const routes = loadModule("src/app/api/social/connect/route.ts", {
   // Ownership transactions are tested against the real library in test-social-connect-completion.
   // This JWT regression models a saved attempt but no newly confirmed integration on return.
   "@/lib/social-accounts": {
-    createConnectAttempt: async () => {},
+    createConnectAttempt: async entry => { savedAttempts.push(entry); },
     completeConnectAttempt: async () => ({ outcome: "unconfirmed", returnView: "workspace" })
   }
 });
@@ -109,6 +110,46 @@ try {
   assert.equal(new URL((await routes.GET(returnRequest(tokenPayload.redirectUrl, cookieHeader))).headers.get("location"), baseUrl).searchParams.get("connection"), "unauthenticated");
 
   currentAccount = { user: { id: "member-one", role: "member" } };
+  const linkedInResponse = await routes.POST(startRequest({ provider: "linkedin" }));
+  assert.equal(linkedInResponse.status, 200);
+  const linkedInToken = JSON.parse(capturedRequests.at(-1).options.body).params;
+  const linkedInPayload = JSON.parse(Buffer.from(linkedInToken.split(".")[1], "base64url"));
+  assert.equal(linkedInPayload.provider, "linkedin-page", "LinkedIn must authorize a company Page rather than a personal profile");
+  assert.equal(savedAttempts.at(-1).provider, "linkedin-page", "Callback ownership must match the provider requested from Postiz");
+  const youtubeResponse = await routes.POST(startRequest({ provider: "youtube", returnView: "accounts" }));
+  assert.equal(youtubeResponse.status, 200);
+  const youtubeToken = JSON.parse(capturedRequests.at(-1).options.body).params;
+  assert.equal(JSON.parse(Buffer.from(youtubeToken.split(".")[1], "base64url")).provider, "youtube");
+  assert.equal(savedAttempts.at(-1).provider, "youtube");
+  assert.equal(platformTypes.DEFAULT_PLATFORMS.includes("youtube"), false, "YouTube is a manual video channel, not an AI generation platform");
+  const originalUpstreamBody = upstreamBody;
+  for (const host of ["api.x.com", "api.twitter.com", "x.com", "twitter.com"]) {
+    for (const path of ["/oauth/authenticate", "/oauth/authorize"]) {
+      const originalUrl = `https://${host}${path}?oauth_token=synthetic-request-token&force_login=false`;
+      upstreamBody = JSON.stringify(originalUrl);
+      const response = await routes.POST(startRequest({ provider: "x" }));
+      assert.equal(response.status, 200);
+      const authorizationUrl = new URL((await response.json()).url);
+      assert.equal(authorizationUrl.searchParams.get("force_login"), "true", "Adding X accounts must allow signing in to a different account");
+      assert.equal(authorizationUrl.searchParams.getAll("force_login").length, 1);
+      authorizationUrl.searchParams.set("force_login", "false");
+      assert.equal(authorizationUrl.href, originalUrl, "Preserve the Postiz request token, endpoint and other parameters");
+    }
+  }
+  for (const [provider, originalUrl] of [
+    ["x", "https://api.x.com/oauth/authenticate?oauth_token=synthetic-request-token"],
+    ["x", "https://twitter.com/i/oauth2/authorize?state=synthetic&code_challenge=synthetic-challenge"],
+    ["facebook", "https://www.facebook.com/dialog/oauth?state=synthetic"],
+    ["x", "https://other.example.test/oauth/authenticate?oauth_token=synthetic"],
+    ["facebook", "https://api.x.com/oauth/authenticate?oauth_token=synthetic"]
+  ]) {
+    upstreamBody = JSON.stringify(originalUrl);
+    const actualUrl = await postiz.createPostizAuthorizationUrl(provider, `${baseUrl}/api/social/connect`);
+    const expectedUrl = new URL(originalUrl);
+    if (provider === "x" && expectedUrl.hostname === "api.x.com") expectedUrl.searchParams.set("force_login", "true");
+    assert.equal(actualUrl, expectedUrl.href);
+  }
+  upstreamBody = originalUpstreamBody;
   delete process.env.POSTIZ_JWT_SECRET;
   assert.equal((await routes.POST(startRequest({ provider: "x" }))).status, 503);
   process.env.POSTIZ_JWT_SECRET = "synthetic-postiz-jwt-secret-for-testing";
@@ -133,15 +174,25 @@ try {
   const dialogMarkup = renderToStaticMarkup(createElement(translations.LocaleContext.Provider, { value: "zh" }, createElement(Dialog, {
     open: true, configured: true, oauthConfigured: false, loading: false, uiUrl: "https://postiz.example.test", accounts: [], error: "", onClose() {}, async onRefresh() {}
   })));
-  assert.match(dialogMarkup, /POSTIZ_JWT_SECRET/);
+  assert.match(dialogMarkup, /请联系管理员检查配置/);
   assert.match(dialogMarkup, /role="dialog"/);
-  assert.equal((dialogMarkup.match(/type="radio"/g) || []).length, 5);
+  assert.ok(dialogMarkup.includes("<strong>LinkedIn Page</strong>"), "The picker must identify the company Page connection");
+  const linkedInDialogMarkup = renderToStaticMarkup(createElement(translations.LocaleContext.Provider, { value: "zh" }, createElement(Dialog, {
+    open: true, configured: true, oauthConfigured: true, loading: false, accounts: [
+      { id: "personal", name: "Personal profile", identifier: "linkedin" },
+      { id: "company", name: "Company page", identifier: "linkedin-page" }
+    ], error: "", onClose() {}, async onRefresh() {}
+  })));
+  assert.ok(linkedInDialogMarkup.includes(`<strong>LinkedIn Page</strong><small>1 ${translations.translate("zh", "connected")}</small>`), "The Page connection count must exclude personal profiles");
+  assert.equal((dialogMarkup.match(/type="radio"/g) || []).length, 6);
+  assert.ok(dialogMarkup.includes('value="youtube"'));
+  assert.ok(dialogMarkup.includes("<strong>YouTube</strong>"));
   assert.ok(!dialogMarkup.includes('type="password"'), "The connection UI must never collect social passwords");
-  assert.ok(!dialogMarkup.includes("改用 Postiz 连接"), "Members must not be offered the direct Postiz hand-off");
+  assert.ok(!dialogMarkup.includes("前往发布控制台连接"), "Members must not be offered the direct Postiz hand-off");
   const adminDialogMarkup = renderToStaticMarkup(createElement(translations.LocaleContext.Provider, { value: "zh" }, createElement(Dialog, {
     open: true, configured: true, oauthConfigured: false, loading: false, uiUrl: "https://postiz.example.test", accounts: [], error: "", onClose() {}, async onRefresh() {}, canUsePostizUi: true
   })));
-  assert.ok(adminDialogMarkup.includes("改用 Postiz 连接"), "Administrators keep the direct Postiz hand-off");
+  assert.ok(adminDialogMarkup.includes("前往发布控制台连接"), "Administrators keep the direct Postiz hand-off");
   const previousWindow = globalThis.window;
   try {
     for (const retryOutcome of ["error", "unconfirmed"]) {

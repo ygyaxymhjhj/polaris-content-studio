@@ -95,7 +95,7 @@ function createHarness() {
     "@/lib/project-db": { database: () => pool }, "./post-types": postTypes,
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image posts must not query video uploads"); } }
   });
-  const upstream = loadModule("../src/lib/postiz.ts", { "./types": loadModule("../src/lib/types.ts") });
+  const upstream = loadModule("../src/lib/postiz.ts", { "./types": loadModule("../src/lib/types.ts"), "./post-types": loadModule("../src/lib/post-types.ts") });
   const requests = [];
   const auditHistory = [];
   const harness = {
@@ -111,6 +111,7 @@ function createHarness() {
   const dependencies = {
     "@/lib/project-db": { database: () => pool },
     "@/lib/posts": storage,
+    "@/lib/post-types": postTypes,
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } },
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
     "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: "x", accountName: "Account" }) },

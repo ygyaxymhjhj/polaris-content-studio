@@ -103,8 +103,8 @@ function setup() {
   const startRequest = (body = { provider: "x", returnView: "assets" }, origin = browserOrigin) => new NextRequest("http://localhost:3000/api/social/connect", {
     method: "POST", headers: { Origin: origin, Host: "localhost:3000", "X-Forwarded-Host": "studio.example.test:8443", "Content-Type": "application/json" }, body: JSON.stringify(body)
   });
-  async function start() {
-    const response = await routes.POST(startRequest());
+  async function start(provider = "x") {
+    const response = await routes.POST(startRequest({ provider, returnView: "assets" }));
     assert.equal(response.status, 200);
     return { cookie: response.cookies.get(stateCookie).value, url: state.authorizationCalls.at(-1).redirectUrl };
   }
@@ -175,6 +175,45 @@ test("unique real provider id is owned and consumed atomically; double-question 
   assert.ok(context.database.state.events.some(event => event.includes("social_connect_attempts") && event.includes("FOR UPDATE")));
   assert.ok(context.database.state.events.includes("commit"));
   inspectCompletion(await context.callback(attempt.url, attempt.cookie), "invalid", "accounts");
+});
+
+test("a member can connect two different X accounts sequentially; repeating an existing account stays unconfirmed", async () => {
+  const context = setup();
+  for (const id of ["first-x-account", "second-x-account"]) {
+    const attempt = await context.start();
+    context.state.liveAccounts.push(account(id));
+    inspectCompletion(await context.callback(attempt.url, attempt.cookie), "returned");
+    assert.equal(context.database.state.accounts.get(id).owner_user_id, memberId);
+  }
+  const repeated = await context.start();
+  inspectCompletion(await context.callback(`${repeated.url}?added=x&msg=Channel+Updated`, repeated.cookie), "unconfirmed");
+  assert.equal(context.database.state.attempts.get(repeated.cookie).consumed_at, null);
+  assert.equal(context.database.state.accounts.size, 2);
+  assert.ok([...context.database.state.accounts.values()].every(account => account.owner_user_id === memberId));
+});
+
+test("LinkedIn authorizes and claims a company Page; a personal profile cannot complete the attempt", async () => {
+  const context = setup();
+  const attempt = await context.start("linkedin");
+  assert.equal(context.state.authorizationCalls.at(-1).provider, "linkedin-page");
+  assert.equal(context.database.state.attempts.get(attempt.cookie).provider, "linkedin-page");
+  context.state.liveAccounts.push(account("personal-profile", "linkedin"));
+  inspectCompletion(await context.callback(attempt.url, attempt.cookie), "unconfirmed");
+  assert.equal(context.database.state.accounts.size, 0);
+  context.state.liveAccounts.push(account("company-page", "linkedin-page"));
+  inspectCompletion(await context.callback(`${attempt.url}?added=linkedin-page`, attempt.cookie), "returned");
+  assert.equal(context.database.state.accounts.get("company-page").owner_user_id, memberId);
+  assert.equal(context.database.state.accounts.has("personal-profile"), false);
+});
+
+test("YouTube channel authorization claims the new channel only for its initiating member", async () => {
+  const context = setup();
+  const attempt = await context.start("youtube");
+  assert.equal(context.state.authorizationCalls.at(-1).provider, "youtube");
+  context.state.liveAccounts.push(account("youtube-channel-one", "youtube"));
+  inspectCompletion(await context.callback(`${attempt.url}?added=youtube`, attempt.cookie), "returned");
+  assert.equal(context.database.state.accounts.get("youtube-channel-one").owner_user_id, memberId);
+  assert.equal(context.database.state.accounts.get("youtube-channel-one").provider, "youtube");
 });
 
 test("already-owned unique candidate is confirmed only for the same member", async () => {

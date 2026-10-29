@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 const stateCookie = "polaris-postiz-connect";
 const returnViewSchema = z.enum(["workspace", "facts", "assets", "export", "accounts", "settings"]);
 const connectSchema = z.object({
-  provider: z.enum(["facebook", "threads", "linkedin", "x", "instagram"]),
+  provider: z.enum(["facebook", "threads", "linkedin", "x", "instagram", "youtube"]),
   returnView: returnViewSchema.optional()
 }).strict();
 const hashState = (userId: string, state: string) => createHash("sha256").update(`${userId}:${state}`).digest("hex");
@@ -65,6 +65,7 @@ export async function POST(request: NextRequest) {
   redirectUrl.searchParams.set("state", state);
 
   const returnView = body.data.returnView ?? "workspace";
+  const provider = body.data.provider === "linkedin" ? "linkedin-page" : body.data.provider;
 
   let snapshotIds: string[];
   try {
@@ -76,13 +77,13 @@ export async function POST(request: NextRequest) {
     return json({ error: "Could not read accounts before authorisation. Please try again." }, 502);
   }
   try {
-    await createConnectAttempt({ stateHash, userId: auth.user.id, provider: body.data.provider, snapshotIds, returnView });
+    await createConnectAttempt({ stateHash, userId: auth.user.id, provider, snapshotIds, returnView });
   } catch {
     return json({ error: "Could not save this connection attempt. Please try again." }, 503);
   }
 
   try {
-    const url = await createPostizAuthorizationUrl(body.data.provider, redirectUrl.href);
+    const url = await createPostizAuthorizationUrl(provider, redirectUrl.href);
     const response = json({ url });
     response.cookies.set(stateCookie, stateHash, cookieOptions(browserOrigin.protocol === "https:"));
     return response;

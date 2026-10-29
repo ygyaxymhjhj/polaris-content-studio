@@ -16,7 +16,8 @@
 各平台 OAuth、token 加密存储与自动刷新全部由自托管 Postiz 承担，Polaris 不自研 OAuth。
 
 - 独立入口：侧栏「社媒账号」展示账号列表、可用状态、刷新时间；「添加社媒账号」打开独立的平台选择界面。设置页和发布弹窗也保留入口。
-- 直连授权参考 `social-autopub` 的白标流程：登录成员选择平台 → `POST /api/social/connect` → 服务端用 HS256 JWT 调用 Postiz `/api/enterprise/url` → 新窗口打开平台官方授权页面 → Postiz 保存账号与令牌 → 返回 Polaris，刷新账号列表。支持 Facebook、Instagram、X、Threads、LinkedIn，前提是对应平台应用已在 Postiz 中正确配置。
+- 直连授权参考 `social-autopub` 的白标流程：登录成员选择平台 → `POST /api/social/connect` → 服务端用 HS256 JWT 调用 Postiz `/api/enterprise/url` → 新窗口打开平台官方授权页面 → Postiz 保存账号与令牌 → 返回 Polaris，刷新账号列表。支持 Facebook、Instagram、X、Threads、LinkedIn 公司主页、YouTube 频道，前提是对应平台应用已在 Postiz 中正确配置。LinkedIn 入口在服务端映射为 Postiz 的 `linkedin-page`（`linkedin` 是个人账号），授权记录保存相同 provider，回调只认领新增的公司主页；先由有主页管理权限的个人登录，再在 Postiz 中选择公司主页并完成连接。既有个人账号仍保持原类型和归属，不会自动转换为主页。LinkedIn 开发者应用需配置 `/integrations/social/linkedin-page` 回调及组织管理/发布权限。
+- YouTube 复用相同的 Postiz 授权、回调、归属与管理员分配机制。管理员需在 Postiz 配置 `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`，在 Google Cloud 启用 YouTube API，并将 `https://你的Postiz域名/integrations/social/youtube` 加入 OAuth 回调。成员授权 Google 后在 Postiz 选择频道，完成后返回 Polaris；频道用于手动视频贴文，不加入 AI 图文生成平台列表。
 - 必须配置服务端 `POSTIZ_JWT_SECRET`，其值与自托管 Postiz 实例的 `JWT_SECRET` 一致。API Key 和签名 JWT 不返回浏览器；签名有效期 10 分钟。该密钥具有敏感权限，不要提供给浏览器、普通用户或提交到 Git。
 - Polaris 的返回状态使用 10 分钟有效的 HttpOnly / SameSite=Lax Cookie，绑定当前登录用户；过期、缺失或换账号后的返回不会视为有效。授权发生在新窗口，原工作区与未保存草稿保持打开。独立轻量完成页负责通知原窗口，成功后尝试关闭授权窗口，不再依赖工作台加载。浏览器不允许关闭时提供返回入口；失败时显示具体结果并提供适用的重试入口。
 - 本地只登记**归属**（`social_accounts`），账号本体与 token 仍完全由 Postiz 管理；列表接口始终以 Postiz 实时数据为准，登记表只做归属装饰，绝不单独用登记表出数据。
@@ -51,7 +52,8 @@
 边界与已知限制：
 
 - 快照差集不是精确授权身份凭证。多个同平台新增候选时拒绝自动认领，但同平台并发或直接在 Postiz 新增账号仍可能干扰单候选判断。完全消除此问题需要 Postiz 提供可信且绑定本次授权的 integration ID。
-- Postiz 的 `added=x` 仅表示平台，`Channel Updated` 也不是归属成功凭证。历史未分配账号的重复授权不会产生新 ID，不能安全地自动认领；不通过扫描所有未分配账号来绕过这一限制。
+- 同一成员可以授权多个不同的 X 账号，没有每用户或每平台一个账号的限制。Postiz 的 X OAuth 1.0 默认会复用浏览器已登录的账号；Polaris 在返回的 X 官方 `/oauth/authenticate` 或 `/oauth/authorize` 链接上设置 `force_login=true`，让用户重新登录并确认要新增的账号，不修改 Postiz。
+- Postiz 的 `added=x` 仅表示平台，`Channel Updated` 也不是归属成功凭证。重复授权已有 X 账号只更新原记录，不产生新 ID，重试回调核验也不会使它变为新增账号；添加另一个账号需要重新发起授权并登录另一个 X 账号。历史未分配账号的重复授权不能安全地自动认领；不通过扫描所有未分配账号来绕过这一限制。
 - 直接在 Postiz UI 连接的账号：进「未分配」池，由管理员分配。
 - 授权超过 10 分钟才返回：Cookie 过期 → 不认领（与现有语义一致），账号落「未分配」。
 - 成员账号 token 失效后的重连由管理员在 Postiz 处理（后续可选做 refreshId 自助重连，不在本期）。

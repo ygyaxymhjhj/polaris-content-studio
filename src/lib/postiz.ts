@@ -2,7 +2,8 @@ import { createHmac } from "node:crypto";
 import { openAsBlob } from "node:fs";
 import sharp from "sharp";
 import type { SocialAccount } from "./types";
-import { DEFAULT_PLATFORMS, type Platform } from "./types";
+import { youtubePostError } from "./post-types";
+import { DEFAULT_PLATFORMS, type SocialPlatform } from "./types";
 
 export interface PostizConfig {
   apiUrl: string;
@@ -32,8 +33,8 @@ export class PostizConnectionError extends Error {
   }
 }
 
-export async function createPostizAuthorizationUrl(provider: Platform, redirectUrl: string): Promise<string> {
-  if (!DEFAULT_PLATFORMS.includes(provider)) {
+export async function createPostizAuthorizationUrl(provider: SocialPlatform | "linkedin-page", redirectUrl: string): Promise<string> {
+  if (provider !== "linkedin-page" && provider !== "youtube" && !DEFAULT_PLATFORMS.includes(provider)) {
     throw new PostizConnectionError("Select a supported platform.", 400);
   }
   const config = getPostizConfig();
@@ -78,6 +79,11 @@ export async function createPostizAuthorizationUrl(provider: Platform, redirectU
     const parsedUrl = new URL(authorizationUrl);
     if (parsedUrl.protocol !== "https:" || parsedUrl.username || parsedUrl.password) {
       throw new PostizConnectionError("Postiz returned an invalid authorisation link.");
+    }
+    if (provider === "x" && ["api.x.com", "api.twitter.com", "x.com", "twitter.com"].includes(parsedUrl.hostname)
+      && ["/oauth/authenticate", "/oauth/authorize"].includes(parsedUrl.pathname)) {
+      // Postiz reuses X's signed-in account by default; adding an account must allow a different login.
+      parsedUrl.searchParams.set("force_login", "true");
     }
     return parsedUrl.href;
   } catch (error) {
@@ -153,6 +159,7 @@ export async function fetchPostizIntegrations(): Promise<{ configured: boolean; 
 
 export interface PostizPublishRequest {
   integrationId: string;
+  title?: string;
   content: string;
   imageUrl?: string;
   uploadedMedia?: { id: string; path: string };
@@ -499,7 +506,7 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
     return { success: false, error: "Postiz is not configured. Please set POSTIZ_API_URL and POSTIZ_API_KEY in environment." };
   }
 
-  if (req.uploadedMedia) return createStrictDraft(req);
+  if (req.uploadedMedia || req.platform?.toLowerCase() === "youtube") return createStrictDraft(req);
   let images: Array<{ id: string; path: string }> = [];
   if (req.imageUrl) {
     const uploaded = await uploadMediaToPostiz(config, req.imageUrl);
@@ -526,7 +533,9 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
  */
 function draftPayload(req: PostizPublishRequest, images: Array<{ id: string; path: string }>) {
   const normalizedPlatform = (req.platform || "x").toLowerCase();
-  const settings = DEFAULT_POSTIZ_SETTINGS[normalizedPlatform] || { __type: normalizedPlatform };
+  const settings = normalizedPlatform === "youtube"
+    ? { __type: "youtube", title: req.title?.trim() || "", type: "private" }
+    : DEFAULT_POSTIZ_SETTINGS[normalizedPlatform] || { __type: normalizedPlatform };
 
   return {
     type: "draft",
@@ -617,6 +626,10 @@ export async function createStrictDraft(req: PostizPublishRequest): Promise<Stri
 
   if (req.uploadedMedia && req.imageUrl) {
     return { success: false, error: "Choose either an image or an uploaded video, not both. No draft was created." };
+  }
+  if (req.platform?.toLowerCase() === "youtube") {
+    const error = youtubePostError(req.title, req.content, Boolean(req.uploadedMedia));
+    if (error) return { success: false, error };
   }
   let images: Array<{ id: string; path: string }> = [];
   if (req.uploadedMedia) {

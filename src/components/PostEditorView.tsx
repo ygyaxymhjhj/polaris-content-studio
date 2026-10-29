@@ -17,13 +17,14 @@ import {
 import { LocaleContext, translate } from "@/lib/i18n";
 import AssetImageEditor from "@/components/AssetImageEditor";
 import PostAccountPicker from "@/components/PostAccountPicker";
-import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
+import { SOCIAL_PLATFORM_META as PLATFORM_META, type SocialPlatform as Platform, type SocialAccount } from "@/lib/types";
 import {
   POST_CONTENT_MAX_LENGTH,
   POST_TARGET_STATUS_LABEL,
   formatPostTimestamp,
   isTargetSetEditable,
   platformRuleFor,
+  youtubePostError,
   type ManualPostDetail,
   type PostTarget
 } from "@/lib/post-types";
@@ -581,6 +582,7 @@ export default function PostEditorView({
 
   /** Per-account blockers; each one only ever gates its own account. */
   function targetBlocker(target: PostTarget): string {
+    if (target.platform === "youtube") return t(youtubePostError(editable ? title : post?.title, trimmedContent, Boolean(editable ? videoMediaId : post?.videoMediaId)));
     if (!trimmedContent) return t("Add post text before submitting.");
     const rule = platformRuleFor(target.platform);
     if (rule?.requiresImage && !hasMedia) return t("This platform requires an image or MP4 video.");
@@ -694,6 +696,14 @@ export default function PostEditorView({
       <div className="post-editor-columns">
         <div className="post-editor-column">
           <div className="post-composer-surface">
+            {targets.some(target => target.platform === "youtube") && (
+              <label className="field-label" htmlFor="post-editor-video-title">
+                <span id="post-editor-video-title-label">{t("YouTube video title")}</span>
+                <input id="post-editor-video-title" value={title} maxLength={200} disabled={controlsLocked} aria-labelledby="post-editor-video-title-label" aria-describedby="post-editor-video-note"
+                  onChange={event => setTitle(event.target.value)} />
+                <small id="post-editor-video-note">{t("YouTube drafts use private visibility. Review the title and visibility in Postiz before publishing.")}</small>
+              </label>
+            )}
             <label className="post-composer-sr-only" htmlFor="post-editor-content">{t("Post text")}</label>
             <textarea
               id="post-editor-content"

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { ChevronDown, Loader2, Plus, X } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { MAX_POST_TARGETS } from "@/lib/post-types";
-import { PLATFORM_META, type Platform, type SocialAccount } from "@/lib/types";
+import { SOCIAL_PLATFORM_META as PLATFORM_META, type SocialPlatform as Platform, type SocialAccount } from "@/lib/types";
 
 export default function PostAccountPicker({ accounts, selectedIds, disabled, loading, onChange, onOpenAccounts }: {
   accounts: SocialAccount[];

@@ -37,7 +37,7 @@ globalThis.fetch = async (requestUrl, options) => {
   return respond(requestUrl, options);
 };
 const platformTypes = loadModule("../src/lib/types.ts");
-const postiz = loadModule("../src/lib/postiz.ts", { "./types": platformTypes });
+const postiz = loadModule("../src/lib/postiz.ts", { "./types": platformTypes, "./post-types": loadModule("../src/lib/post-types.ts") });
 const tinyPng = await sharp({ create: { width: 1, height: 1, channels: 3, background: "#3366cc" } }).png().toBuffer();
 const tinyPngDataUrl = `data:image/png;base64,${tinyPng.toString("base64")}`;
 

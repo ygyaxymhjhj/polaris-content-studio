@@ -5,6 +5,8 @@ export type Platform =
   | "x"
   | "instagram";
 
+export type SocialPlatform = Platform | "youtube";
+
 export type RiskLevel = "low" | "medium" | "high";
 /**
  * Postiz hand-off state. Polaris only creates drafts, so a new submission ends in "drafted".
@@ -173,3 +175,9 @@ export const DEFAULT_PLATFORMS: Platform[] = [
   "x",
   "instagram"
 ];
+
+export const SOCIAL_PLATFORMS: SocialPlatform[] = [...DEFAULT_PLATFORMS, "youtube"];
+export const SOCIAL_PLATFORM_META = {
+  ...PLATFORM_META,
+  youtube: { label: "YouTube", short: "YT", accent: "#ff5252", icon: "▶" }
+};

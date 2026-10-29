@@ -35,7 +35,7 @@ globalThis.fetch = async (requestUrl, requestOptions) => {
   return createResponse();
 };
 const platformTypes = loadModule("../src/lib/types.ts");
-const postiz = loadModule("../src/lib/postiz.ts", { "./types": platformTypes });
+const postiz = loadModule("../src/lib/postiz.ts", { "./types": platformTypes, "./post-types": loadModule("../src/lib/post-types.ts") });
 const customRange = {
   startDate: new Date("2026-01-01T00:00:00.000Z"),
   endDate: new Date("2026-10-14T12:05:00.000Z")
