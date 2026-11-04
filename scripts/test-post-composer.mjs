@@ -424,6 +424,7 @@ try {
   assert.equal(await page.locator('.post-composer-media .asset-image-help, .post-composer-media [role="alert"]').count(), 0, 'normal uploads need no persistent size hint or empty error placeholder');
   assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /30 MB/);
   assert.equal(await page.getByLabel('Internal title').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Post now', exact: true }).count(), 0, 'immediate publishing stays hidden');
   assert.equal(await page.locator('.post-editor-counter, select').count(), 0);
   assert.equal(await page.locator('.post-account-picker').count(), 0);
   assert.equal(await push.isDisabled(), true);
@@ -474,6 +475,8 @@ try {
   await page.getByRole('button', { name: 'Remove account: Company page', exact: true }).click();
   assert.equal(await page.locator('.post-editor-target').count(), 1, 'summary updates before autosave');
   await text.fill('Draft content that stays local until pushed.');
+  assert.equal((await page.locator('.post-composer-count').innerText()).trim(),
+    `${Array.from('Draft content that stays local until pushed.').length} characters`, 'the composer shows the current character count');
   const maximumSizeImage = Buffer.alloc(30 * 1024 * 1024);
   imageBuffer.copy(maximumSizeImage);
   const imageInput = page.getByLabel('Upload post media', { exact: true });

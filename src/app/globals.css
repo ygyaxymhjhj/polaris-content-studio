@@ -1135,6 +1135,8 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .post-composer-surface { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--surface-card); }
 .post-composer-textarea { display: block; width: 100%; min-height: 156px; border: 1px solid var(--border); border-radius: 7px; padding: 14px; resize: vertical; background: var(--surface-sunken); color: var(--text-strong); font: 14px/1.7 "DM Sans", sans-serif; }
 .post-composer-textarea::placeholder { color: var(--text-muted); }
+.post-composer-meta { display: flex; justify-content: flex-end; margin-top: 6px; }
+.post-composer-count { color: var(--text-faint); font: 10px "DM Mono", monospace; }
 .post-composer-media { margin-top: 10px; border-radius: 8px; }
 .post-schedule { display: grid; gap: 10px; }
 .post-schedule h2 { margin: 0; color: var(--text-strong); font: 600 13px/1.5 "DM Sans", sans-serif; }

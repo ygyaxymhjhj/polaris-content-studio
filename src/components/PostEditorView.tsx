@@ -627,6 +627,7 @@ export default function PostEditorView({
   }));
 
   const trimmedContent = (editable ? content : post?.content ?? content).trim();
+  const contentCharacters = Array.from(editable ? content : post?.content ?? content).length;
   const currentImageIds = editable ? imageMediaIds : post?.imageMediaIds;
   const currentVideoId = editable ? videoMediaId : post?.videoMediaId;
   const imageCount = currentImageIds === undefined ? Number(Boolean(editable ? image : post?.imageUrl)) : currentImageIds.length;
@@ -788,6 +789,9 @@ export default function PostEditorView({
               placeholder={t("Write the post exactly as it should appear.")}
               rows={7}
             />
+            <div className="post-composer-meta">
+              <span className="post-composer-count">{contentCharacters} {t("characters")}</span>
+            </div>
             <AssetImageEditor
               variant="composer"
               value={image}
@@ -829,7 +833,7 @@ export default function PostEditorView({
           <section className="post-schedule" aria-labelledby="post-schedule-title">
             <h2 id="post-schedule-title">{t("When to post?")}</h2>
             <div className="post-schedule-options" role="group" aria-labelledby="post-schedule-title">
-              {([["now", "Post now"], ["draft", "Save as draft"], ["schedule", "Schedule"]] as const).map(([mode, label]) => (
+              {([["draft", "Save as draft"], ["schedule", "Schedule"]] as const).map(([mode, label]) => (
                 <button key={mode} type="button" className={`post-schedule-option${publishMode === mode ? " active" : ""}`}
                   aria-pressed={publishMode === mode} disabled={controlsLocked} onClick={() => choosePublishMode(mode)}>
                   {t(label)}
