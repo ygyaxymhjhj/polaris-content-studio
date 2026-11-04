@@ -30,6 +30,7 @@ const route = loadModule("../src/app/api/social/publish/route.ts", {
   "@/lib/same-origin": { isSameOrigin: () => sameOrigin },
   "@/lib/request-body": loadModule("../src/lib/request-body.ts"),
   "@/lib/image-upload": loadModule("../src/lib/image-upload.ts"),
+  "@/lib/image-types": loadModule("../src/lib/image-types.ts"),
   "@/lib/draft-submissions": { enqueueAssetSubmission: async options => {
     calls.enqueues.push(options);
     if (enqueueFailure) throw new Error("Synthetic schema failure with private details");

@@ -4,7 +4,7 @@ import { database } from "@/lib/project-db";
 import { POST_TARGET_REVIEW_JOINS, POST_TARGET_STATUS_SQL, readPostImageMediaIds } from "@/lib/posts";
 import { getImageUploads } from "@/lib/image-uploads";
 import { imageSelectionError } from "./image-types";
-import { youtubePostError, type ManualPostDetail, type PostTargetStatus } from "@/lib/post-types";
+import { youtubePostError, parsePostTimestamp, publishScheduleError, type ManualPostDetail, type PostPublishMode, type PostTargetStatus } from "@/lib/post-types";
 import { getVideoUpload } from "@/lib/video-uploads";
 
 const utc = (date: Date) => date.toISOString().slice(0, 23).replace("T", " ");
@@ -31,6 +31,8 @@ interface ClaimPostRow extends RowDataPacket {
   image_data: string | null;
   image_media_ids: string[] | string | null;
   video_media_id: string | null;
+  publish_mode: PostPublishMode | null;
+  scheduled_at: string | null;
   version: number;
 }
 
@@ -70,14 +72,14 @@ export async function claimPostTarget(options: {
   accountName: string;
   expectedAuditId?: string;
   rejectedBinding: ClaimTargetRow | null;
-  enqueue: (connection: PoolConnection, snapshot: { title: string; content: string; imageDataUrl: string | null; imageMediaIds?: string[]; videoMediaId: string | null; attemptId: string }) => Promise<void>;
+  enqueue: (connection: PoolConnection, snapshot: { title: string; content: string; imageDataUrl: string | null; imageMediaIds?: string[]; videoMediaId: string | null; publishMode: PostPublishMode; scheduledAt: string | null; attemptId: string }) => Promise<void>;
 }): Promise<ClaimResult> {
   const { userId, postId, integrationId, expectedVersion, platform, accountName, expectedAuditId, rejectedBinding } = options;
   const connection = await database().getConnection();
   try {
     await connection.beginTransaction();
     const [posts] = await connection.execute<ClaimPostRow[]>(
-      "SELECT title, content, image_data, image_media_ids, video_media_id, version FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
+      "SELECT title, content, image_data, image_media_ids, video_media_id, publish_mode, scheduled_at, version FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
       [postId, userId]
     );
     if (!posts.length) {
@@ -91,9 +93,11 @@ export async function claimPostTarget(options: {
     }
     const content = String(post.content || "");
     const title = String(post.title || "");
-    const validationError = platform === "youtube"
+    const publishMode = post.publish_mode ?? "draft";
+    const scheduledAt = parsePostTimestamp(post.scheduled_at)?.toISOString() ?? null;
+    const validationError = (platform === "youtube"
       ? youtubePostError(title, content, Boolean(post.video_media_id))
-      : !content.trim() ? "Add post text before submitting to Postiz." : "";
+      : !content.trim() ? "Add post text before submitting to Postiz." : "") || publishScheduleError(publishMode, scheduledAt);
     if (validationError) {
       await connection.rollback();
       return { kind: "validation", message: validationError };
@@ -156,7 +160,8 @@ export async function claimPostTarget(options: {
       [attemptId, now, Number(post.version), platform, accountName, now, postId, integrationId]
     );
     await options.enqueue(connection, { title, content, imageDataUrl: imageMediaIds === undefined ? post.image_data ?? null : null,
-      ...(imageMediaIds !== undefined ? { imageMediaIds } : {}), videoMediaId: post.video_media_id ?? null, attemptId });
+      ...(imageMediaIds !== undefined ? { imageMediaIds } : {}), videoMediaId: post.video_media_id ?? null,
+      publishMode, scheduledAt, attemptId });
     await connection.commit();
     return { kind: "claimed" };
   } catch (error) {

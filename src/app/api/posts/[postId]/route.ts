@@ -3,12 +3,12 @@ import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
-import { deleteManualPost, getManualPost, PostMediaValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
+import { deleteManualPost, getManualPost, PostMediaValidationError, PostScheduleValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
 import { areImageMediaIds } from "@/lib/image-types";
 import { listAccountOwners } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
-import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
+import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_PUBLISH_MODES, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +28,8 @@ const updateSchema = z.object({
   videoMediaId: z.string().uuid().nullable().optional(),
   imageMediaIds: z.custom<string[]>(areImageMediaIds).optional(),
   imageName: z.string().max(POST_TITLE_MAX_LENGTH).optional(),
+  publishMode: z.enum(POST_PUBLISH_MODES).optional(),
+  scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
   integrationIds: z.array(z.string().regex(integrationIdPattern)).max(MAX_POST_TARGETS).optional()
 }).strict().refine(value => value.imageMediaIds?.length
   ? !value.imageDataUrl && !value.videoMediaId
@@ -75,6 +77,8 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ p
   if (parsed.data.title !== undefined) patch.title = parsed.data.title.trim();
   if (parsed.data.content !== undefined) patch.content = parsed.data.content;
   if (parsed.data.videoMediaId !== undefined) patch.videoMediaId = parsed.data.videoMediaId;
+  if (parsed.data.publishMode !== undefined) patch.publishMode = parsed.data.publishMode;
+  if (parsed.data.scheduledAt !== undefined) patch.scheduledAt = parsed.data.scheduledAt;
   if (parsed.data.imageMediaIds !== undefined) {
     patch.imageMediaIds = parsed.data.imageMediaIds;
   } else if (parsed.data.imageDataUrl === null) {
@@ -110,6 +114,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ p
     }
     return json({ post: result.post });
   } catch (error) {
+    if (error instanceof PostScheduleValidationError) return failure(error.message, 400, "INVALID_SCHEDULE");
     if (error instanceof PostMediaValidationError) return failure(error.message, 400, "INVALID_MEDIA");
     console.error("[posts] update failed", error);
     return failure("The post could not be saved. Keep this page open and try again.", 503, "STORAGE_UNAVAILABLE");

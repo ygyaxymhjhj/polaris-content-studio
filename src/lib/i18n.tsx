@@ -676,7 +676,23 @@ const manualPostMessages: Record<string, [string, string]> = {
   "The post could not be loaded.": ["贴文加载失败。", "Không tải được bài đăng."],
   "The post could not be reloaded.": ["贴文重新加载失败。", "Không tải lại được bài đăng."],
   "The submission failed.": ["推送失败。", "Gửi thất bại."],
-  "Add post text before submitting to Postiz.": ["推送到 Postiz 前请先填写正文。", "Nhập nội dung trước khi gửi sang Postiz."]
+  "Add post text before submitting to Postiz.": ["推送到 Postiz 前请先填写正文。", "Nhập nội dung trước khi gửi sang Postiz."],
+  "When to post?": ["发布时间", "Đăng khi nào?"],
+  "Post now": ["立即发布", "Đăng ngay"],
+  "Save as draft": ["保存为草稿", "Lưu thành bản nháp"],
+  "Schedule": ["定时发布", "Hẹn giờ"],
+  "Schedule posts": ["定时发布", "Hẹn giờ đăng"],
+  "Scheduled time": ["定时时间", "Thời gian hẹn"],
+  "Times use your device time zone": ["时间按本机时区显示", "Giờ theo múi giờ của thiết bị này"],
+  "Choose a date and time for this scheduled post.": ["请选择定时发布的时间。", "Chọn ngày và giờ cho bài đăng hẹn giờ này."],
+  "Choose a valid date and time for this scheduled post.": ["请选择有效的定时发布时间。", "Chọn ngày và giờ hợp lệ cho bài đăng hẹn giờ này."],
+  "The scheduled time must be in the future.": ["定时时间必须晚于当前时间。", "Thời gian hẹn phải ở tương lai."],
+  "Publish this post now? It will go live on every selected account and cannot be edited here.": ["立即发布这条贴文？它将在所有所选账号上线，且无法在此处修改。", "Đăng bài này ngay? Bài sẽ lên mọi tài khoản đã chọn và không thể sửa tại đây."],
+  "Send to": ["发布至", "Gửi đến"],
+  "Publishing…": ["正在发布…", "Đang đăng…"],
+  "Postiz post": ["Postiz 贴文", "Bài đăng Postiz"],
+  "This post was already submitted to Postiz and stays read-only. Copy it as a new draft to change the text.": ["该贴文已提交到 Postiz，本地保持只读。需要修改正文请复制为新草稿。", "Bài đăng đã được gửi sang Postiz và chỉ đọc. Sao chép thành bản nháp mới để sửa nội dung."],
+  "The publishing engine refused the post. Nothing was published.": ["发布服务拒绝了该贴文，未发布任何内容。", "Dịch vụ xuất bản từ chối bài đăng. Không có nội dung nào được đăng."]
 };
 for (const [key, value] of Object.entries(manualPostMessages)) {
   // The shared dictionary wins for anything already translated, so nothing existing is reworded.
@@ -840,7 +856,23 @@ const manualPostThaiMessages: Record<string, string> = {
   "The post could not be loaded.": "โหลดโพสต์ไม่สำเร็จ",
   "The post could not be reloaded.": "โหลดโพสต์ใหม่ไม่สำเร็จ",
   "The submission failed.": "การส่งล้มเหลว",
-  "Add post text before submitting to Postiz.": "กรอกเนื้อหาก่อนส่งไป Postiz"
+  "Add post text before submitting to Postiz.": "กรอกเนื้อหาก่อนส่งไป Postiz",
+  "When to post?": "เวลาโพสต์",
+  "Post now": "โพสต์ทันที",
+  "Save as draft": "บันทึกเป็นฉบับร่าง",
+  "Schedule": "ตั้งเวลา",
+  "Schedule posts": "ตั้งเวลาโพสต์",
+  "Scheduled time": "เวลาที่ตั้งไว้",
+  "Times use your device time zone": "เวลาใช้เขตเวลาของอุปกรณ์นี้",
+  "Choose a date and time for this scheduled post.": "เลือกวันที่และเวลาสำหรับโพสต์ที่ตั้งเวลา",
+  "Choose a valid date and time for this scheduled post.": "เลือกวันที่และเวลาที่ถูกต้องสำหรับโพสต์ที่ตั้งเวลา",
+  "The scheduled time must be in the future.": "เวลาที่ตั้งต้องอยู่ในอนาคต",
+  "Publish this post now? It will go live on every selected account and cannot be edited here.": "โพสต์ทันทีหรือไม่ โพสต์จะเผยแพร่บนทุกบัญชีที่เลือกและแก้ไขที่นี่ไม่ได้",
+  "Send to": "ส่งไปยัง",
+  "Publishing…": "กำลังเผยแพร่…",
+  "Postiz post": "โพสต์ Postiz",
+  "This post was already submitted to Postiz and stays read-only. Copy it as a new draft to change the text.": "โพสต์นี้ส่งไป Postiz แล้วและเป็นแบบอ่านอย่างเดียว คัดลอกเป็นฉบับร่างใหม่เพื่อแก้ไขข้อความ",
+  "The publishing engine refused the post. Nothing was published.": "บริการเผยแพร่ปฏิเสธโพสต์ ไม่มีเนื้อหาถูกเผยแพร่"
 };
 // Thai strings for the appearance switch, mirroring themeMessages.
 const themeThaiMessages: Record<string, string> = {
@@ -1469,6 +1501,7 @@ const publishingCopy: Record<string, Record<UiLanguage, string>> = {
   "Push drafts to Postiz": { en: "Push drafts", zh: "提交草稿", vi: "Gửi bản nháp", th: "ส่งฉบับร่าง" },
   "Postiz drafts": { en: "Draft inbox", zh: "草稿箱", vi: "Hộp thư bản nháp", th: "กล่องฉบับร่าง" },
   "Postiz draft": { en: "Draft ID", zh: "草稿编号", vi: "Mã bản nháp", th: "รหัสฉบับร่าง" },
+  "Postiz post": { en: "Post ID", zh: "贴文编号", vi: "Mã bài đăng", th: "รหัสโพสต์" },
   "Open Postiz": { en: "Open publishing console", zh: "打开发布控制台", vi: "Mở bảng điều khiển xuất bản", th: "เปิดคอนโซลการเผยแพร่" },
   "Open Postiz instead": { en: "Connect in publishing console", zh: "前往发布控制台连接", vi: "Kết nối trong bảng điều khiển xuất bản", th: "เชื่อมต่อในคอนโซลการเผยแพร่" },
   "Reconnect in Postiz": { en: "Reconnect in publishing console", zh: "前往发布控制台重新连接", vi: "Kết nối lại trong bảng điều khiển xuất bản", th: "เชื่อมต่อใหม่ในคอนโซลการเผยแพร่" },

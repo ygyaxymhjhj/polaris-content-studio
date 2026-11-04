@@ -4,7 +4,10 @@ AI content cards and manual posts now acknowledge a committed local job with **H
 means accepted for background processing, not accepted by the publishing engine, and never means
 published. Neither request waits for account-network checks, image upload, draft creation or group
 notification delivery. The legacy synchronous manual function remains covered for reuse, but the
-HTTP entry points use the durable queue.
+HTTP entry points use the durable queue. Manual jobs freeze the post's `publishMode` and scheduled
+time with the content; the worker revalidates a scheduled time and calls Postiz with `draft`,
+`schedule` or `now` accordingly. Draft remains the default and the only mode that enters the review
+notification flow.
 
 ## Install before starting new application code
 

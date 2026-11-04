@@ -66,7 +66,7 @@ function createHarness() {
     CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, disabled INTEGER, display_name TEXT);
     CREATE TABLE projects (id TEXT PRIMARY KEY, owner_hash TEXT, name TEXT, snapshot TEXT, version INTEGER DEFAULT 1, updated_at TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY, owner_user_id TEXT, title TEXT, content TEXT, image_data TEXT,
-      image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER, created_at TEXT, updated_at TEXT, video_media_id TEXT, image_media_ids TEXT);
+      image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER, created_at TEXT, updated_at TEXT, video_media_id TEXT, image_media_ids TEXT, publish_mode TEXT DEFAULT 'draft', scheduled_at TEXT);
     CREATE TABLE video_uploads (id TEXT PRIMARY KEY, owner_user_id TEXT, request_id TEXT, checksum TEXT,
       postiz_media_id TEXT, postiz_path TEXT, filename TEXT, byte_size INTEGER, width INTEGER, height INTEGER, duration_seconds REAL);
     CREATE TABLE image_uploads (id TEXT PRIMARY KEY, owner_user_id TEXT, request_id TEXT, checksum TEXT,
@@ -84,7 +84,7 @@ function createHarness() {
       audit_id TEXT, postiz_post_id TEXT, warning TEXT, error TEXT, created_at TEXT, updated_at TEXT, finished_at TEXT);
     INSERT INTO users VALUES ('owner','member',0,'Owner');
     INSERT INTO projects (id, owner_hash) VALUES ('${postId}','hash-owner');
-    INSERT INTO posts VALUES ('${postId}','owner','Title','Frozen text','data:image/png;base64,AAAA',NULL,NULL,NULL,NULL,4,'2020-01-01','2020-01-01',NULL,NULL);
+    INSERT INTO posts VALUES ('${postId}','owner','Title','Frozen text','data:image/png;base64,AAAA',NULL,NULL,NULL,NULL,4,'2020-01-01','2020-01-01',NULL,NULL,'draft',NULL);
     INSERT INTO post_targets VALUES ('target','${postId}','account','x','Account','not_started',0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2020-01-01','2020-01-01');
   `);
   const harness = { sql, drafts: [], audits: [], accountOwner: "owner", liveDisabled: false, liveAccountMissing: false,
@@ -197,7 +197,7 @@ test("manual success uses the frozen snapshot, binds its audit and never creates
   const harness = createHarness();
   assert.equal((await harness.enqueueManual()).kind, "queued");
   await harness.queue.processDraftSubmissions();
-  assert.deepEqual(harness.drafts, [{ integrationId: "account", title: "Title", content: "Frozen text", imageUrl: "data:image/png;base64,AAAA", platform: "x" }]);
+  assert.deepEqual(harness.drafts, [{ integrationId: "account", title: "Title", content: "Frozen text", imageUrl: "data:image/png;base64,AAAA", publishMode: "draft", platform: "x" }]);
   assert.equal(harness.target().status, "accepted");
   assert.equal(harness.target().postiz_post_id, "upstream-one");
   assert.equal(harness.target().audit_id, "new-audit");
@@ -209,6 +209,43 @@ test("manual success uses the frozen snapshot, binds its audit and never creates
   assert.equal(harness.tasks().length, 1);
   assert.equal(harness.drafts.length, 1);
   assert.equal(harness.audits.length, 1);
+  harness.sql.close();
+});
+
+test("manual schedule freezes its mode and time and hands them to the worker", async () => {
+  const harness = createHarness();
+  const future = new Date(Date.now() + 3_600_000);
+  const dbTime = future.toISOString().slice(0, 23).replace("T", " ");
+  harness.sql.exec(`UPDATE posts SET publish_mode='schedule', scheduled_at='${dbTime}'`);
+  assert.equal((await harness.enqueueManual()).kind, "queued");
+  const snapshot = JSON.parse(harness.tasks()[0].snapshot);
+  assert.equal(snapshot.publishMode, "schedule");
+  assert.equal(snapshot.scheduledAt, future.toISOString());
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.drafts[0].publishMode, "schedule");
+  assert.equal(harness.drafts[0].scheduledAt, future.toISOString());
+  assert.equal(harness.target().status, "accepted");
+  assert.equal(harness.audits[0].status, "queued");
+  assert.equal(harness.audits[0].scheduledAt, future.toISOString());
+  harness.sql.close();
+});
+
+test("a manual schedule is refused when its time is past at enqueue or when the worker runs", async () => {
+  const harness = createHarness();
+  harness.sql.exec("UPDATE posts SET publish_mode='schedule', scheduled_at='2020-01-01 00:00:00.000'");
+  assert.equal((await harness.enqueueManual()).kind, "validation");
+  assert.equal(harness.tasks().length, 0);
+
+  const future = new Date(Date.now() + 3_600_000);
+  harness.sql.exec(`UPDATE posts SET scheduled_at='${future.toISOString().slice(0, 23).replace("T", " ")}'`);
+  assert.equal((await harness.enqueueManual()).kind, "queued");
+  const snapshot = JSON.parse(harness.tasks()[0].snapshot);
+  snapshot.scheduledAt = new Date(Date.now() - 60_000).toISOString();
+  harness.sql.prepare("UPDATE draft_submissions SET snapshot=?").run(JSON.stringify(snapshot));
+  await harness.queue.processDraftSubmissions();
+  assert.equal(harness.drafts.length, 0, "a stale schedule never reaches Postiz");
+  assert.equal(harness.target().status, "failed");
+  assert.match(harness.target().error, /future/i);
   harness.sql.close();
 });
 

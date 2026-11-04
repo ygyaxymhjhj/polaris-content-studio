@@ -65,7 +65,7 @@ Restore is destructive to this app's database and is not part of normal deployme
 
 ## Manual posts (posts / post_targets)
 
-Manual posts are written by hand in Overview → Posts and never join an AI project snapshot, so they get their own two tables. `posts` holds the owner, an internal title, the body, one validated image (data URL plus a list thumbnail), and a version. `post_targets` holds one row per selected account with its platform/name snapshot, status, Postiz draft id and audit id.
+Manual posts are written by hand in Overview → Posts and never join an AI project snapshot, so they get their own two tables. `posts` holds the owner, an internal title, the body, one validated image (data URL plus a list thumbnail), the publish mode (`draft`/`schedule`/`now`), an optional UTC scheduled time, and a version. `post_targets` holds one row per selected account with its platform/name snapshot, status, Postiz draft id and audit id.
 
 `polaris_app` has SELECT/INSERT/UPDATE/DELETE on both tables. Posts are private to their owner: every query is scoped by `owner_user_id`, and an administrator does not bypass that. Deleting a post needs no extra cleanup because `post_targets` follows through the foreign key.
 
@@ -74,7 +74,7 @@ Manual posts are written by hand in Overview → Posts and never join an AI proj
 - A submission is claimed and inserted into `draft_submissions` in the same short transaction. HTTP 202 only acknowledges that commit. Background Postiz calls hold no database lock, and results are bound to the exact target attempt. Repeating a request for an accepted target returns the stored result rather than creating a second draft.
 - Queue-owned queued/running claims are excluded from the legacy two-minute stale sweep. Queued work resumes after restart; an expired running lease or create transport uncertainty becomes `pending_unknown` and is never automatically recreated.
 - Images are re-validated server-side with sharp (single-frame JPEG/PNG/WebP, ≤1.5 MiB, ≤2048 px on the longest edge, pixel-count guarded, remote URLs refused) and served only through `GET /api/posts/{id}/image` after an ownership check. A failed image upload aborts the hand-off instead of sending a text-only draft.
-- Schema: `deploy/mysql/init.sql` plus `deploy/mysql/migrations/2026-10-15-manual-posts.sql` (idempotent, includes the grants). Workflow and page behaviour: `docs/manual-posts.md`.
+- Schema: `deploy/mysql/init.sql` plus `deploy/mysql/migrations/2026-10-15-manual-posts.sql` (idempotent, includes the grants) and `deploy/mysql/migrations/2026-11-04-scheduled-publishing.sql` (adds `publish_mode` and `scheduled_at`; existing posts stay drafts). Workflow and page behaviour: `docs/manual-posts.md`.
 
 ## Tests
 

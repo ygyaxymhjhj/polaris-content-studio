@@ -24,6 +24,7 @@ const postId = "11111111-1111-4111-8111-111111111111";
 
 function createStorageHarness(expectedTargets) {
   const targetInserts = [];
+  const postInserts = [];
   let commits = 0;
   const execute = async (statement, parameters = []) => {
     if (statement.includes("INSERT INTO post_targets")) {
@@ -55,7 +56,8 @@ function createStorageHarness(expectedTargets) {
       id: postId, title: "", content: "Draft", version: 1,
       created_at: "2026-10-16 10:00:00.000", updated_at: "2026-10-16 10:00:00.000"
     }]];
-    if (/^(INSERT INTO posts|UPDATE posts|DELETE FROM post_targets)/.test(statement.trim())) return [{ affectedRows: 1 }];
+    if (statement.startsWith("INSERT INTO posts")) { postInserts.push({ statement, parameters }); return [{ affectedRows: 1 }]; }
+    if (/^(UPDATE posts|DELETE FROM post_targets)/.test(statement.trim())) return [{ affectedRows: 1 }];
     throw new Error(`Unexpected SQL: ${statement}`);
   };
   const connection = {
@@ -69,7 +71,7 @@ function createStorageHarness(expectedTargets) {
     "@/lib/image-uploads": { getImageUploads: async (_owner, ids) => { assert.deepEqual(ids, []); return []; } },
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy posts must not query video uploads"); } }
   });
-  return { storage, targetInserts, getCommits: () => commits };
+  return { storage, targetInserts, postInserts, getCommits: () => commits };
 }
 
 for (const targetCount of [0, 1, 3]) {
@@ -122,4 +124,26 @@ test("the list exposes deletion for local drafts and protects every frozen targe
     ["local", true, true], ["failed", true, true], ["accepted", false, false],
     ["rejected", false, false], ["submitting", false, false], ["unknown", false, false]
   ]);
+});
+
+test("createManualPost stores a schedule in UTC and refuses an unusable time", async () => {
+  const future = new Date(Date.now() + 3_600_000);
+  const harness = createStorageHarness([]);
+  await harness.storage.createManualPost("owner-one", {
+    title: "", content: "Scheduled", image: null, publishMode: "schedule", scheduledAt: future.toISOString(), targets: []
+  });
+  const insert = harness.postInserts[0];
+  const columns = insert.statement.match(/INSERT INTO posts\s*\(([^)]+)\)/)[1].split(",").map(column => column.trim());
+  const row = Object.fromEntries(columns.map((column, index) => [column, insert.parameters[index]]));
+  assert.equal(row.publish_mode, "schedule");
+  assert.equal(row.scheduled_at, future.toISOString().slice(0, 23).replace("T", " "));
+
+  await assert.rejects(
+    harness.storage.createManualPost("owner-one", { title: "", content: "Late", image: null, publishMode: "schedule",
+      scheduledAt: new Date(Date.now() - 60_000).toISOString(), targets: [] }),
+    harness.storage.PostScheduleValidationError);
+  await assert.rejects(
+    harness.storage.createManualPost("owner-one", { title: "", content: "Late", image: null, publishMode: "schedule", targets: [] }),
+    harness.storage.PostScheduleValidationError);
+  assert.equal(harness.postInserts.length, 1, "invalid schedules never reach the INSERT");
 });

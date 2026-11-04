@@ -249,6 +249,7 @@ try {
     "@/lib/social-accounts": socialAccountsModule, "@/lib/post-submission": {},
     "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
     "@/lib/postiz": {}, "@/lib/social-notifications": {},
+    "@/lib/post-types": loadModule("src/lib/post-types.ts"),
     "@/lib/image-types": loadModule("src/lib/image-types.ts"),
     "./image-types": loadModule("src/lib/image-types.ts"),
     "@/lib/image-uploads": { getImageUploads: async () => [] },

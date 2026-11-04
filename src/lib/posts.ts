@@ -4,10 +4,13 @@ import { database } from "@/lib/project-db";
 import {
   MAX_POST_TARGETS,
   isTargetSetEditable,
+  parsePostTimestamp,
+  publishScheduleError,
   type ManualPostDetail,
   type ManualPostListItem,
   type ManualPostStatus,
   type OverviewActivity,
+  type PostPublishMode,
   type PostTarget,
   type PostTargetStatus,
   type PostsCounts
@@ -46,6 +49,8 @@ interface PostRow extends RowDataPacket {
   image_width: number | null;
   image_height: number | null;
   video_media_id: string | null;
+  publish_mode: PostPublishMode;
+  scheduled_at: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -211,6 +216,8 @@ export function toPostDetail(row: PostRow, targets: PostTarget[]): ManualPostDet
       : row.image_data ? `/api/posts/${row.id}/image?v=${imageEpoch}` : null,
     ...(imageMediaIds !== undefined ? { imageMediaIds } : {}),
     videoMediaId: row.video_media_id ?? null,
+    publishMode: row.publish_mode ?? "draft",
+    scheduledAt: parsePostTimestamp(row.scheduled_at)?.toISOString() ?? null,
     imageName: row.image_name ? String(row.image_name) : null,
     imageWidth: row.image_width == null ? null : Number(row.image_width),
     imageHeight: row.image_height == null ? null : Number(row.image_height),
@@ -243,7 +250,7 @@ export async function sweepStaleSubmissions(ownerUserId: string): Promise<number
 
 export async function loadPostRow(ownerUserId: string, postId: string): Promise<PostRow | null> {
   const [rows] = await database().execute<PostRow[]>(
-    "SELECT id, title, content, image_data, image_media_ids, image_thumb, image_name, image_width, image_height, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=?",
+    "SELECT id, title, content, image_data, image_media_ids, image_thumb, image_name, image_width, image_height, video_media_id, publish_mode, scheduled_at, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=?",
     [postId, ownerUserId]
   );
   return rows.length ? rows[0] : null;
@@ -348,10 +355,27 @@ export interface CreatePostInput {
   image: ValidatedPostImage | null;
   imageMediaIds?: string[];
   videoMediaId?: string | null;
+  publishMode?: PostPublishMode;
+  scheduledAt?: string | null;
   targets: PostAccountSnapshot[];
 }
 
 export class PostMediaValidationError extends Error {}
+export class PostScheduleValidationError extends Error {}
+
+/** Normalizes one mode/time pair and rejects an unusable schedule before it reaches storage. */
+function normalizeSchedule(
+  mode: PostPublishMode | undefined,
+  scheduledAt: string | null | undefined,
+  fallbackMode: PostPublishMode = "draft",
+  fallbackScheduledAt: string | null = null
+): { publishMode: PostPublishMode; dbScheduledAt: string | null } {
+  const publishMode = mode ?? fallbackMode;
+  const raw = publishMode === "schedule" ? (scheduledAt !== undefined ? scheduledAt : fallbackScheduledAt) : null;
+  const error = publishScheduleError(publishMode, raw);
+  if (error) throw new PostScheduleValidationError(error);
+  return { publishMode, dbScheduledAt: raw ? utc(new Date(raw)) : null };
+}
 
 export function readPostImageMediaIds(value: unknown): string[] | undefined {
   if (value == null) return undefined;
@@ -385,14 +409,16 @@ export async function createManualPost(ownerUserId: string, input: CreatePostInp
     if (imageMediaIds?.length && input.image) throw new PostMediaValidationError("Choose uploaded images or an inline image, not both.");
     const image = imageMediaIds === undefined ? input.image : null;
     await validatePostMedia(ownerUserId, Boolean(image), input.videoMediaId, connection, imageMediaIds);
+    const schedule = normalizeSchedule(input.publishMode, input.scheduledAt);
     await connection.execute(
-      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, image_media_ids, video_media_id, version, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      `INSERT INTO posts (id, owner_user_id, title, content, image_data, image_thumb, image_name, image_width, image_height, image_media_ids, video_media_id, publish_mode, scheduled_at, version, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [
         id, ownerUserId, input.title, input.content,
         image?.dataUrl ?? null, image?.thumbnailDataUrl ?? null,
         image?.filename ?? null, image?.width ?? null, image?.height ?? null,
         imageMediaIds === undefined ? null : JSON.stringify(imageMediaIds), input.videoMediaId ?? null,
+        schedule.publishMode, schedule.dbScheduledAt,
         now, now
       ]
     );
@@ -428,6 +454,9 @@ export type UpdatePostPatch = {
   imageMediaIds?: string[];
   /** Omitted keeps the reference, null removes only the video, an ID replaces all media. */
   videoMediaId?: string | null;
+  publishMode?: PostPublishMode;
+  /** ISO UTC; omitted keeps the stored time, null clears it. */
+  scheduledAt?: string | null;
   targets?: PostAccountSnapshot[];
 };
 
@@ -442,7 +471,7 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
   try {
     await connection.beginTransaction();
     const [rows] = await connection.execute<PostRow[]>(
-      "SELECT id, image_data, image_media_ids, video_media_id, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
+      "SELECT id, image_data, image_media_ids, video_media_id, publish_mode, scheduled_at, version, created_at, updated_at FROM posts WHERE id=? AND owner_user_id=? FOR UPDATE",
       [postId, ownerUserId]
     );
     if (!rows.length) {
@@ -476,7 +505,7 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
     await validatePostMedia(ownerUserId, hasImage, videoMediaId, connection, imageMediaIds);
 
     const assignments: string[] = [];
-    const values: SqlValue[] = [];
+    const values: Array<string | number | null> = [];
     if (patch.title !== undefined) { assignments.push("title=?"); values.push(patch.title); }
     if (patch.content !== undefined) { assignments.push("content=?"); values.push(patch.content); }
     if (patch.image && suppliedIds === undefined) {
@@ -501,6 +530,12 @@ export async function updateManualPost(ownerUserId: string, postId: string, vers
     } else if (patch.videoMediaId != null) {
       assignments.push("video_media_id=?");
       values.push(patch.videoMediaId);
+    }
+    if (patch.publishMode !== undefined || patch.scheduledAt !== undefined) {
+      const storedScheduledAt = parsePostTimestamp(rows[0].scheduled_at)?.toISOString() ?? null;
+      const schedule = normalizeSchedule(patch.publishMode, patch.scheduledAt, rows[0].publish_mode ?? "draft", storedScheduledAt);
+      assignments.push("publish_mode=?", "scheduled_at=?");
+      values.push(schedule.publishMode, schedule.dbScheduledAt);
     }
     const now = utc(new Date());
     assignments.push("version=version+1", "updated_at=?");

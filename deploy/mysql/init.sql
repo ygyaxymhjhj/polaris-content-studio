@@ -229,6 +229,8 @@ CREATE TABLE IF NOT EXISTS posts (
   image_height INT UNSIGNED NULL,
   image_media_ids JSON NULL,
   video_media_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  publish_mode ENUM('draft','schedule','now') NOT NULL DEFAULT 'draft',
+  scheduled_at DATETIME(3) NULL,
   version INT UNSIGNED NOT NULL DEFAULT 1,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

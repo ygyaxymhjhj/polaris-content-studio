@@ -1136,6 +1136,18 @@ html[lang="vi"] .topbar .system-status { display: none; }
 .post-composer-textarea { display: block; width: 100%; min-height: 156px; border: 1px solid var(--border); border-radius: 7px; padding: 14px; resize: vertical; background: var(--surface-sunken); color: var(--text-strong); font: 14px/1.7 "DM Sans", sans-serif; }
 .post-composer-textarea::placeholder { color: var(--text-muted); }
 .post-composer-media { margin-top: 10px; border-radius: 8px; }
+.post-schedule { display: grid; gap: 10px; }
+.post-schedule h2 { margin: 0; color: var(--text-strong); font: 600 13px/1.5 "DM Sans", sans-serif; }
+.post-schedule-options { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-sunken); width: fit-content; }
+.post-schedule-option { border: 0; border-radius: 6px; padding: 8px 13px; background: transparent; color: var(--text-muted); font: 600 12px "DM Sans", sans-serif; cursor: pointer; }
+.post-schedule-option:hover:not(:disabled) { color: var(--text-strong); background: var(--surface-hover); }
+.post-schedule-option.active { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
+.post-schedule-option:disabled { opacity: .55; cursor: not-allowed; }
+.post-schedule-time { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.post-schedule-time label { color: var(--text-muted); font-size: 12px; }
+.post-schedule-time input { border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; background: var(--surface-sunken); color: var(--text-strong); font: 12px "DM Sans", sans-serif; color-scheme: light dark; }
+.post-schedule-time small { color: var(--text-faint); font-size: 11px; }
+.post-schedule-error { margin: 0; color: var(--danger-text); font-size: 11.5px; }
 .post-composer-media.is-dragging { outline: 2px dashed var(--accent-text); outline-offset: 3px; }
 .post-media-add.secondary-button { min-height: 36px; padding: 6px 10px; font-size: 12px; background: transparent; }
 .post-media-attachments { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }

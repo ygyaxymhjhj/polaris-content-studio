@@ -16,7 +16,10 @@ export type SocialSubmissionEntry = {
   publishedByName: string;
   contentPreview: string;
   postizPostId?: string;
-  status: "drafted" | "failed";
+  /** "queued" is a scheduled or now-publish hand-off; only "drafted" enters the review flow. */
+  status: "drafted" | "queued" | "failed";
+  /** ISO UTC publish time for a scheduled post. */
+  scheduledAt?: string;
   error?: string;
 };
 
@@ -144,6 +147,7 @@ export async function recordSocialSubmission(entry: SocialSubmissionEntry): Prom
     warning = CONFIG_READ_ERROR;
   }
   const submittedAt = new Date();
+  const scheduledAt = entry.scheduledAt && Number.isFinite(Date.parse(entry.scheduledAt)) ? formatUtc(new Date(entry.scheduledAt)) : null;
   const auditId = randomUUID();
   // Only preserve a genuine upstream id. A missing id is not an upstream submission failure.
   const postId = entry.postizPostId?.trim();
@@ -156,13 +160,13 @@ export async function recordSocialSubmission(entry: SocialSubmissionEntry): Prom
       await connection.execute(
         `INSERT INTO social_publishes
          (id, project_id, asset_id, platform, integration_id, account_name, published_by,
-          published_by_name, content_preview, postiz_post_id, status, error, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          published_by_name, content_preview, postiz_post_id, status, error, scheduled_at, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [auditId, entry.projectId || null, entry.assetId, entry.platform, entry.integrationId,
           entry.accountName, entry.publishedBy, entry.publishedByName, shortenText(entry.contentPreview, 200),
-          realPostId, entry.status, entry.status === "failed" ? "Postiz 投稿失败。" : null, formatUtc(submittedAt)]
+          realPostId, entry.status, entry.status === "failed" ? "Postiz 投稿失败。" : null, scheduledAt, formatUtc(submittedAt)]
       );
-      if (entry.status !== "drafted") return;
+      if (entry.status === "failed") return;
       if (realPostId) {
         // Serialize insertion with configuration disable/cleanup without decrypting or doing network I/O.
         const [currentConfigs] = await connection.execute<RowDataPacket[]>(
@@ -182,7 +186,7 @@ export async function recordSocialSubmission(entry: SocialSubmissionEntry): Prom
             rejectionEligible ? 1 : 0]
         );
       }
-      if (config?.enabled && config.notifyDrafts) {
+      if (entry.status === "drafted" && config?.enabled && config.notifyDrafts) {
         await insertNotification(connection, auditId, "draft_submitted", submittedAt, config.version,
           createPayload({ ...entry, postizPostId: realPostId ?? undefined }, submittedAt));
       }
