@@ -30,7 +30,7 @@ function createHarness() {
     CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, disabled INTEGER, display_name TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY, owner_user_id TEXT, title TEXT, content TEXT, image_data TEXT,
       image_thumb TEXT, image_name TEXT, image_width INTEGER, image_height INTEGER, version INTEGER,
-      created_at TEXT, updated_at TEXT, video_media_id TEXT, image_media_ids TEXT);
+      created_at TEXT, updated_at TEXT, video_media_id TEXT, image_media_ids TEXT, publish_mode TEXT DEFAULT 'draft', scheduled_at TEXT);
     CREATE TABLE post_targets (id TEXT, post_id TEXT, integration_id TEXT, platform TEXT, account_name TEXT,
       status TEXT, snapshot_version INTEGER, postiz_post_id TEXT, audit_id TEXT, warning TEXT, error TEXT,
       submitted_at TEXT, created_at TEXT, updated_at TEXT, attempt_id TEXT, attempt_started_at TEXT);
@@ -44,7 +44,7 @@ function createHarness() {
       audit_id TEXT, postiz_post_id TEXT, warning TEXT, error TEXT, created_at TEXT, updated_at TEXT, finished_at TEXT);
     INSERT INTO users VALUES ('owner', 'member', 0, 'Owner');
     INSERT INTO posts VALUES ('${postId}', 'owner', 'Frozen title', 'Frozen content', NULL, NULL, NULL, NULL,
-      NULL, 4, '${submittedAt}', '${submittedAt}', NULL, NULL);
+      NULL, 4, '${submittedAt}', '${submittedAt}', NULL, NULL, 'draft', NULL);
     INSERT INTO post_targets VALUES ('target', '${postId}', 'account', 'x', 'Account', 'accepted', 4,
       'old-upstream', '${auditId}', NULL, NULL, '${submittedAt}', '${submittedAt}', '${submittedAt}', NULL, NULL);
     INSERT INTO social_publishes VALUES ('${auditId}', NULL, '${postId}', 'account', 'owner', 'old-upstream');
@@ -156,7 +156,7 @@ function createHarness() {
       return Response.json({ posts: livePost ? [livePost] : [] });
     }
     assert.equal(options.method, "POST");
-    assert.equal(JSON.parse(options.body).type, "draft", "publication/scheduling is forbidden");
+    assert.equal(JSON.parse(options.body).type, "draft", "a frozen draft stays a draft");
     assert.equal(harness.getTarget().audit_id, null, "claim detaches the old audit before upstream creation");
     assert.equal(harness.getTarget().postiz_post_id, null);
     await harness.beforeDraftResponse?.();

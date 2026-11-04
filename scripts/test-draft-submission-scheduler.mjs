@@ -148,6 +148,9 @@ test("an AI enqueue reads its committed result without requesting a second poole
     "@/lib/post-submission": {},
     "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
     "@/lib/postiz": {}, "@/lib/social-notifications": {},
+    "@/lib/post-types": { publishScheduleError: () => "" },
+    "./image-types": { areImageMediaIds: () => true, imageSelectionError: () => "" },
+    "@/lib/image-uploads": { getImageUploads: async () => [] },
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } }
   };
   const compiledModule = { exports: {} };

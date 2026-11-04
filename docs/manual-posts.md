@@ -1,8 +1,9 @@
 # Manual posts (Overview and Posts)
 
-Overview and Posts let a signed-in member write a post by hand, attach up to ten images or one MP4, and hand it to
-Postiz as a **draft**. Polaris never publishes and never schedules: promoting the draft stays a
-human decision inside Postiz. The AI workspace, its projects and their export flow are unchanged.
+Overview and Posts let a signed-in member write a post by hand, attach up to ten images or one MP4, and choose
+**When to post?**: save it in Postiz as a draft, schedule it for a future time, or publish it now. Draft remains
+the default; scheduling and immediate publishing are explicit choices per post. The AI workspace, its projects
+and their export flow are unchanged.
 
 ## Pages
 
@@ -15,8 +16,10 @@ human decision inside Postiz. The AI workspace, its projects and their export fl
   copy the post as a new draft or delete a purely local one with a visible text button.
 - **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and an ordered media collection share a
   compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
-  usernames and multi-selection, without avatars or search/filter controls. There is no internal-title field, character counter, profile group,
-  simulated feed, publish-now option or scheduler. The right-hand summary lists chosen accounts,
+  usernames and multi-selection, without avatars or search/filter controls. **When to post?** offers
+  Post now, Save as draft (default) and Schedule; Schedule reveals a `datetime-local` input that uses the
+  browser's own time zone. There is no internal-title field, character counter, profile group or
+  simulated feed. The right-hand summary lists chosen accounts,
   their results and the **Push drafts** action. Existing internal titles are preserved;
   only a selected YouTube channel exposes the title as its video title and sends it to Postiz.
   The composer creates the record on the first effective edit; afterwards every
@@ -133,10 +136,17 @@ Verified against the official documentation:
 - `createStrictDraft` reuses ordered server-resolved Postiz references in the `image` array. The old
   single-inline-image path still uploads using `POST /public/v1/upload` for historical snapshots.
   A missing or invalid image fails the complete target instead of silently dropping an attachment.
-- It then calls `POST /public/v1/posts` with `type: "draft"`, a required ISO `date`,
-  `shortLink: false`, `tags: []` and one entry in `posts` containing `integration: { id }`,
-  `value: [{ content, image: [{ id, path }] }]` and provider-specific `settings.__type`.
-  The `date` satisfies the API schema; `type: "draft"` prevents scheduling or publishing.
+- It then calls `POST /public/v1/posts` with the post's mode as `type` (`draft`, `schedule` or `now`),
+  a required ISO UTC `date`, `shortLink: false`, `tags: []` and one entry in `posts` containing
+  `integration: { id }`, `value: [{ content, image: [{ id, path }] }]` and provider-specific
+  `settings.__type`. For `schedule`, `date` is the chosen publish time; for `now`, Postiz ignores
+  `date` and publishes immediately; for `draft`, the default, nothing is scheduled or published.
+  Postiz stores the supplied `date` on a draft as its publish date, so a draft created at a planned
+  time keeps that time when an administrator promotes it.
+- The editor's time input is interpreted in the device's time zone and converted to UTC; the API
+  stores UTC and rejects a `schedule` whose time is missing, invalid or not in the future. The
+  worker revalidates the frozen time before calling Postiz, so a queued job that outlives its slot
+  fails instead of publishing late or immediately.
 - YouTube channels use the same account selection, MP4 upload and queue. Selecting YouTube reveals
   the existing post title field as a video title; submission requires an owned MP4, a 2–100-character
   title without `<` or `>`, and a description of at most 5,000 UTF-8 bytes without `<` or `>`
@@ -152,9 +162,12 @@ Verified against the official documentation:
 
 - Storage, permissions and the claim/result protocol are documented in `docs/mysql-storage.md`
   (section "Manual posts").
-- Apply `deploy/mysql/migrations/2026-10-29-image-uploads.sql` before running this version on an
+- Apply `deploy/mysql/migrations/2026-10-29-image-uploads.sql` and
+  `deploy/mysql/migrations/2026-11-04-scheduled-publishing.sql` before running this version on an
   existing database; the LAN deploy script replays migrations. New databases use `deploy/mysql/init.sql`.
-  It adds immutable `image_uploads` (SELECT/INSERT only) and nullable `posts.image_media_ids`.
+  The scheduled-publishing migration adds `posts.publish_mode` (draft/schedule/now, default draft)
+  and nullable `posts.scheduled_at` (UTC); existing posts keep draft behaviour.
+  The image migration adds immutable `image_uploads` (SELECT/INSERT only) and nullable `posts.image_media_ids`.
   NULL means legacy single-image storage; [] explicitly clears it. No historical images are backfilled.
   Removing a reference or deleting a post never deletes potentially shared upstream media.
   An upstream upload followed by a failed database insert can leave an orphan; cross-service atomic

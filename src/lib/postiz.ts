@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { openAsBlob } from "node:fs";
 import sharp from "sharp";
 import type { SocialAccount } from "./types";
-import { youtubePostError } from "./post-types";
+import { publishScheduleError, youtubePostError, type PostPublishMode } from "./post-types";
 import { imageSelectionError } from "./image-types";
 import { DEFAULT_PLATFORMS, type SocialPlatform } from "./types";
 
@@ -166,6 +166,10 @@ export interface PostizPublishRequest {
   uploadedMedia?: { id: string; path: string };
   uploadedImages?: Array<{ id: string; path: string }>;
   platform?: string;
+  /** "draft" keeps the review hand-off; "schedule" and "now" publish from Postiz. */
+  publishMode?: PostPublishMode;
+  /** ISO UTC; required when publishMode is "schedule". */
+  scheduledAt?: string;
 }
 
 const DEFAULT_POSTIZ_SETTINGS: Record<string, object> = {
@@ -506,9 +510,8 @@ export async function fetchPostizPostStatus(postIds: string[]): Promise<Map<stri
 }
 
 /**
- * Hands one asset to Postiz as a draft. Polaris never publishes or schedules: the returned post id
- * points at a draft that an administrator reviews and promotes inside Postiz. The required `date`
- * field does not schedule anything while the request's type is fixed to "draft".
+ * Hands one asset to Postiz and returns its id. The default remains a draft an administrator
+ * promotes inside Postiz; callers that ask for schedule/now are responsible for the publish policy.
  */
 export async function publishToPostiz(req: PostizPublishRequest): Promise<{ success: boolean; postId?: string; error?: string; warning?: string }> {
   const config = getPostizConfig();
@@ -536,9 +539,9 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
 }
 
 /**
- * Builds the create-draft payload. The `date` is required by the Postiz create endpoint and is the
- * moment the draft was written, not a publish time: promoting the draft inside Postiz sets the real
- * one, and `type` stays "draft" so nothing here can go live on its own.
+ * Hands one asset to Postiz. The default mode is a draft that an administrator reviews and
+ * promotes inside Postiz; a manual post may instead ask Postiz to schedule or publish it now.
+ * The required `date` is the publish time for "schedule" and is ignored by Postiz for "now".
  * Contract: https://docs.postiz.com/public-api/posts/create
  */
 function draftPayload(req: PostizPublishRequest, images: Array<{ id: string; path: string }>) {
@@ -546,10 +549,11 @@ function draftPayload(req: PostizPublishRequest, images: Array<{ id: string; pat
   const settings = normalizedPlatform === "youtube"
     ? { __type: "youtube", title: req.title?.trim() || "", type: "private" }
     : DEFAULT_POSTIZ_SETTINGS[normalizedPlatform] || { __type: normalizedPlatform };
+  const type = req.publishMode || "draft";
 
   return {
-    type: "draft",
-    date: new Date().toISOString(),
+    type,
+    date: type === "schedule" && req.scheduledAt ? req.scheduledAt : new Date().toISOString(),
     shortLink: false,
     tags: [],
     posts: [
@@ -623,16 +627,18 @@ export interface StrictDraftResult {
 }
 
 /**
- * Creates a Postiz draft for content that must not degrade silently. A failed image upload aborts
- * the submission instead of sending a text-only draft, and transport
- * failures are flagged as uncertain so the caller can record "needs review" instead of a failure.
- * Polaris still only ever creates drafts.
+ * Creates a Postiz post for content that must not degrade silently. A failed image upload aborts
+ * the submission instead of sending a text-only post, and transport failures are flagged as
+ * uncertain so the caller can record "needs review" instead of a failure.
+ * Draft is the default mode; schedule/now must carry their own time and publish policy.
  */
 export async function createStrictDraft(req: PostizPublishRequest): Promise<StrictDraftResult> {
   const config = getPostizConfig();
   if (!config) {
     return { success: false, error: "Postiz is not configured on the server. Set POSTIZ_API_URL and POSTIZ_API_KEY." };
   }
+  const scheduleError = publishScheduleError(req.publishMode || "draft", req.scheduledAt);
+  if (scheduleError) return { success: false, error: scheduleError };
 
   if (req.uploadedImages !== undefined && (!Array.isArray(req.uploadedImages) || req.imageUrl !== undefined)) {
     return { success: false, error: "Choose uploaded images or an inline image, not both. No draft was created." };

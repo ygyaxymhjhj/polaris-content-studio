@@ -3,12 +3,12 @@ import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
-import { createManualPost, listManualPosts, PostMediaValidationError, sweepStaleSubmissions, type PostAccountSnapshot } from "@/lib/posts";
+import { createManualPost, listManualPosts, PostMediaValidationError, PostScheduleValidationError, sweepStaleSubmissions, type PostAccountSnapshot } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
 import { areImageMediaIds } from "@/lib/image-types";
 import { listAccountOwners } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
-import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
+import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_PUBLISH_MODES, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +27,8 @@ const createSchema = z.object({
   videoMediaId: z.string().uuid().nullable().optional(),
   imageMediaIds: z.custom<string[]>(areImageMediaIds).optional(),
   imageName: z.string().max(POST_TITLE_MAX_LENGTH).optional(),
+  publishMode: z.enum(POST_PUBLISH_MODES).optional(),
+  scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
   integrationIds: z.array(z.string().regex(integrationIdPattern)).max(MAX_POST_TARGETS).optional()
 }).strict().refine(value => value.imageMediaIds?.length
   ? !value.imageDataUrl && !value.videoMediaId
@@ -121,9 +123,11 @@ export async function POST(request: NextRequest) {
   try {
     const targets = await resolveTargets(auth.user.id, auth.user.role === "admin", parsed.data.integrationIds);
     if (!targets.ok) return failure(targets.message, 400, "INVALID_TARGET");
-    const post = await createManualPost(auth.user.id, { title, content, image, imageMediaIds: parsed.data.imageMediaIds, videoMediaId: parsed.data.videoMediaId, targets: targets.targets });
+    const post = await createManualPost(auth.user.id, { title, content, image, imageMediaIds: parsed.data.imageMediaIds, videoMediaId: parsed.data.videoMediaId,
+      publishMode: parsed.data.publishMode, scheduledAt: parsed.data.scheduledAt, targets: targets.targets });
     return json({ post }, 201);
   } catch (error) {
+    if (error instanceof PostScheduleValidationError) return failure(error.message, 400, "INVALID_SCHEDULE");
     if (error instanceof PostMediaValidationError) return failure(error.message, 400, "INVALID_MEDIA");
     console.error("[posts] create failed", error);
     return failure("The post could not be saved. Try again.", 503, "STORAGE_UNAVAILABLE");

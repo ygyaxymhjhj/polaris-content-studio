@@ -8,6 +8,20 @@ import type { SocialPlatform } from "./types";
 export const POST_TARGET_STATUSES = ["not_started", "submitting", "accepted", "rejected", "failed", "pending_unknown"] as const;
 export type PostTargetStatus = typeof POST_TARGET_STATUSES[number];
 
+/** "draft" keeps the review hand-off; "schedule" and "now" publish from Postiz. */
+export const POST_PUBLISH_MODES = ["draft", "schedule", "now"] as const;
+export type PostPublishMode = typeof POST_PUBLISH_MODES[number];
+
+/** Shared by the browser, the API and the worker so a scheduled time is validated the same way. */
+export function publishScheduleError(mode: PostPublishMode, scheduledAt: string | null | undefined, now = Date.now()): string {
+  if (mode !== "schedule") return "";
+  if (!scheduledAt) return "Choose a date and time for this scheduled post.";
+  const time = Date.parse(scheduledAt);
+  if (!Number.isFinite(time)) return "Choose a valid date and time for this scheduled post.";
+  if (time <= now) return "The scheduled time must be in the future.";
+  return "";
+}
+
 /** Derived, per-post view of its targets. "attention" covers failures, unknown results and partial delivery. */
 export const MANUAL_POST_STATUSES = ["draft", "pushing", "pushed", "attention"] as const;
 export type ManualPostStatus = typeof MANUAL_POST_STATUSES[number];
@@ -58,6 +72,9 @@ export interface ManualPostDetail {
   imageMediaIds?: string[];
   /** Owner-bound upload reference; preview through /api/media/uploads/:id. */
   videoMediaId?: string | null;
+  publishMode: PostPublishMode;
+  /** ISO UTC publish time; set only while publishMode is "schedule". */
+  scheduledAt: string | null;
   imageName: string | null;
   imageWidth: number | null;
   imageHeight: number | null;

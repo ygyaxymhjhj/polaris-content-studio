@@ -25,8 +25,10 @@ import {
   formatPostTimestamp,
   isTargetSetEditable,
   platformRuleFor,
+  publishScheduleError,
   youtubePostError,
   type ManualPostDetail,
+  type PostPublishMode,
   type PostTarget
 } from "@/lib/post-types";
 
@@ -41,6 +43,20 @@ import {
 
 type Account = SocialAccount;
 type DeletionOperation = { phase: "idle" | "pending" | "deleted" } | { phase: "failed"; error: string };
+
+/** datetime-local has no zone: this converts the stored UTC instant to the device's local wall clock. */
+function localScheduleValue(iso: string | null | undefined): string {
+  const date = iso ? new Date(iso) : null;
+  if (!date || !Number.isFinite(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** A datetime-local value is device-local time, so Date parses it in the browser's own zone. */
+function scheduleIso(value: string): string | null {
+  const time = value ? Date.parse(value) : NaN;
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
 
 export default function PostEditorView({
   postId,
@@ -82,6 +98,12 @@ export default function PostEditorView({
   const [image, setImage] = useState("");
   const [imageMediaIds, setImageMediaIds] = useState<string[] | undefined>(undefined);
   const [videoMediaId, setVideoMediaId] = useState<string | null>(null);
+  const [publishMode, setPublishMode] = useState<PostPublishMode>("draft");
+  const [scheduledAt, setScheduledAt] = useState("");
+  const [timeZone, setTimeZone] = useState("");
+  useEffect(() => {
+    setTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone || "");
+  }, []);
   const [imageDirty, setImageDirty] = useState(false);
   const [imageName, setImageName] = useState("");
   const [imageBusy, setImageBusy] = useState(false);
@@ -132,8 +154,8 @@ export default function PostEditorView({
   const versionRef = useRef(0);
   const savedPayload = useRef("");
   const saveFlight = useRef<Promise<ManualPostDetail | null> | null>(null);
-  const payloadRef = useRef({ title, content, image, imageMediaIds, videoMediaId, imageDirty, imageName, targetIds });
-  payloadRef.current = { title, content, image, imageMediaIds, videoMediaId, imageDirty, imageName, targetIds };
+  const payloadRef = useRef({ title, content, image, imageMediaIds, videoMediaId, publishMode, scheduledAt, imageDirty, imageName, targetIds });
+  payloadRef.current = { title, content, image, imageMediaIds, videoMediaId, publishMode, scheduledAt, imageDirty, imageName, targetIds };
 
   const applyDetail = useCallback((detail: ManualPostDetail, options: { resetFields: boolean }) => {
     setPost(detail);
@@ -145,11 +167,14 @@ export default function PostEditorView({
       setImage(detail.imageMediaIds === undefined ? detail.imageUrl ?? "" : "");
       setImageMediaIds(detail.imageMediaIds);
       setVideoMediaId(detail.imageMediaIds?.length ? null : detail.videoMediaId ?? null);
+      setPublishMode(detail.publishMode ?? "draft");
+      setScheduledAt(localScheduleValue(detail.scheduledAt));
       setImageDirty(false);
       setImageName(detail.imageName ?? "");
       setTargetIds(detail.targets.map((target) => target.integrationId));
     }
-    savedPayload.current = JSON.stringify([detail.title.trim(), detail.content, false, detail.imageMediaIds ?? null, detail.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    savedPayload.current = JSON.stringify([detail.title.trim(), detail.content, false, detail.imageMediaIds ?? null, detail.videoMediaId ?? null,
+      detail.publishMode ?? "draft", localScheduleValue(detail.scheduledAt), detail.targets.map((target) => target.integrationId).sort().join(",")]);
     setSavedRevision((revision) => revision + 1);
   }, []);
 
@@ -159,8 +184,9 @@ export default function PostEditorView({
       updateDeletion({ phase: "idle" });
       setPost(null); postRef.current = null; versionRef.current = 0;
       setTitle(""); setContent(""); setImage(""); setImageMediaIds(undefined); setVideoMediaId(null); setImageDirty(false); setImageName("");
+      setPublishMode("draft"); setScheduledAt("");
       setTargetIds([]);
-      savedPayload.current = JSON.stringify(["", "", false, null, null, ""]);
+      savedPayload.current = JSON.stringify(["", "", false, null, null, "draft", "", ""]);
       setSavedRevision((revision) => revision + 1);
       setLoading(false); setLoadError(""); setConflict(false); setSaveError(""); setSubmitError(""); setFrozenNotice("");
       return;
@@ -192,14 +218,16 @@ export default function PostEditorView({
   }, [postId, applyDetail, updateDeletion]);
 
   const payloadKey = useMemo(
-    () => JSON.stringify([title.trim(), content, imageDirty ? image : false, imageMediaIds ?? null, videoMediaId ?? null, [...targetIds].sort().join(",")]),
-    [title, content, image, imageDirty, imageMediaIds, videoMediaId, targetIds]
+    () => JSON.stringify([title.trim(), content, imageDirty ? image : false, imageMediaIds ?? null, videoMediaId ?? null,
+      publishMode, publishMode === "schedule" ? scheduledAt : "", [...targetIds].sort().join(",")]),
+    [title, content, image, imageDirty, imageMediaIds, videoMediaId, publishMode, scheduledAt, targetIds]
   );
   // Save results live in a ref, so the re-render that setSavedRevision triggers is what makes this
   // comparison visible to the next render; savedRevision itself is not read here on purpose.
   const dirty = payloadKey !== savedPayload.current;
   void savedRevision;
   const editable = post ? post.editable : true;
+  const scheduleError = editable ? publishScheduleError(publishMode, publishMode === "schedule" ? scheduleIso(scheduledAt) : null) : "";
   const controlsLocked = !editable || preparingPush || Boolean(submitting.length) || deletionBlocked || copying || Boolean(editorTransition);
   const canDelete = editable && !post?.frozenReason && (!post || post.targets.every(target => target.status === "not_started" || target.status === "failed"));
 
@@ -293,6 +321,8 @@ export default function PostEditorView({
       title: payload.title.trim(),
       content: payload.content,
       videoMediaId: payload.videoMediaId ?? null,
+      publishMode: payload.publishMode,
+      scheduledAt: payload.publishMode === "schedule" ? scheduleIso(payload.scheduledAt) : null,
       integrationIds: payload.targetIds
     };
     if (payload.imageMediaIds !== undefined && !payload.videoMediaId) body.imageMediaIds = payload.imageMediaIds;
@@ -312,7 +342,8 @@ export default function PostEditorView({
     if (!response.ok || !data.post) throw new Error(data.error || "The post could not be saved.");
     const detail = data.post;
     setPost(detail); postRef.current = detail; versionRef.current = detail.version;
-    savedPayload.current = JSON.stringify([sentTitle, sentContent, false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    savedPayload.current = JSON.stringify([sentTitle, sentContent, false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null,
+      detail.publishMode ?? "draft", localScheduleValue(detail.scheduledAt), detail.targets.map((target) => target.integrationId).sort().join(",")]);
     if (sentImageIncluded && payloadRef.current.imageMediaIds === undefined && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
       setImage(detail.imageUrl ?? "");
       setImageDirty(false);
@@ -330,6 +361,8 @@ export default function PostEditorView({
       title: payload.title.trim(),
       content: payload.content,
       videoMediaId: payload.videoMediaId ?? null,
+      publishMode: payload.publishMode,
+      scheduledAt: payload.publishMode === "schedule" ? scheduleIso(payload.scheduledAt) : null,
       integrationIds: payload.targetIds
     };
     if (payload.imageMediaIds !== undefined && !payload.videoMediaId) body.imageMediaIds = payload.imageMediaIds;
@@ -355,7 +388,8 @@ export default function PostEditorView({
     if (!response.ok || !data.post) throw new Error(data.error || "The post could not be saved.");
     const detail = data.post;
     setPost(detail); postRef.current = detail; versionRef.current = detail.version;
-    savedPayload.current = JSON.stringify([String(body.title), String(body.content), false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null, detail.targets.map((target) => target.integrationId).sort().join(",")]);
+    savedPayload.current = JSON.stringify([String(body.title), String(body.content), false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null,
+      detail.publishMode ?? "draft", localScheduleValue(detail.scheduledAt), detail.targets.map((target) => target.integrationId).sort().join(",")]);
     if (payload.imageDirty && payloadRef.current.imageMediaIds === undefined && payloadRef.current.image === payload.image && payloadRef.current.videoMediaId === payload.videoMediaId) {
       setImage(detail.imageUrl ?? "");
       setImageDirty(false);
@@ -374,9 +408,15 @@ export default function PostEditorView({
     if (saveFlight.current) return saveFlight.current;
     const flight = (async (): Promise<ManualPostDetail | null> => {
       const payload = payloadRef.current;
-      const key = JSON.stringify([payload.title.trim(), payload.content, payload.imageDirty ? payload.image : false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null, [...payload.targetIds].sort().join(",")]);
       const current = postRef.current;
       if (current && !current.editable) return current;
+      const schedule = publishScheduleError(payload.publishMode, payload.publishMode === "schedule" ? scheduleIso(payload.scheduledAt) : null);
+      if (schedule) {
+        setSaveError(schedule);
+        return null;
+      }
+      const key = JSON.stringify([payload.title.trim(), payload.content, payload.imageDirty ? payload.image : false, payload.imageMediaIds ?? null, payload.videoMediaId ?? null,
+        payload.publishMode, payload.publishMode === "schedule" ? payload.scheduledAt : "", [...payload.targetIds].sort().join(",")]);
       if (key === savedPayload.current) return current;
       operationEpoch.current += 1;
       setSaveError("");
@@ -402,10 +442,10 @@ export default function PostEditorView({
   // Debounced autosave. It stays parked while accounts are submitting: those requests carry the
   // current version, and a save landing in between would invalidate them mid-flight.
   useEffect(() => {
-    if (editorTransition || copying || deletionBlocked || !editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length) return;
+    if (editorTransition || copying || deletionBlocked || !editable || !dirty || loading || conflict || imageBusy || preparingPush || submitting.length || scheduleError) return;
     const timer = window.setTimeout(() => { void save(); }, 1200);
     return () => window.clearTimeout(timer);
-  }, [editorTransition, copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, save, title, content, image, imageMediaIds, videoMediaId, imageDirty, targetIds, postId]);
+  }, [editorTransition, copying, deletionBlocked, editable, dirty, loading, conflict, imageBusy, preparingPush, submitting.length, scheduleError, save, title, content, image, imageMediaIds, videoMediaId, imageDirty, publishMode, scheduledAt, targetIds, postId]);
 
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
@@ -422,7 +462,9 @@ export default function PostEditorView({
     if (mediaBusyRef.current || editorTransitionRef.current) return;
     if (copyFlight.current) return;
     if (deletionOperation.current.phase === "pending" || deletionOperation.current.phase === "deleted") return;
-    if (!integrationIds.length || pushFlight.current || accountsLoading || accountsError || imageBusy || conflict) return;
+    if (!integrationIds.length || pushFlight.current || accountsLoading || accountsError || imageBusy || conflict || scheduleError) return;
+    if (payloadRef.current.publishMode === "now"
+      && !window.confirm(t("Publish this post now? It will go live on every selected account and cannot be edited here."))) return;
     const shownTargets = new Map(postRef.current?.targets.map(target => [target.integrationId, target]));
     operationEpoch.current += 1;
     pushFlight.current = true;
@@ -434,7 +476,8 @@ export default function PostEditorView({
     // An older autosave may have been in flight when the push was clicked. Flush the latest
     // snapshot before submitting so selected accounts never receive an earlier edit.
     const latest = payloadRef.current;
-    const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty ? latest.image : false, latest.imageMediaIds ?? null, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+    const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty ? latest.image : false, latest.imageMediaIds ?? null, latest.videoMediaId ?? null,
+      latest.publishMode, latest.publishMode === "schedule" ? latest.scheduledAt : "", [...latest.targetIds].sort().join(",")]);
     if (saved && latestKey !== savedPayload.current) saved = await save();
     if (!saved) {
       setSubmitError(t("Save the post before submitting it."));
@@ -493,7 +536,7 @@ export default function PostEditorView({
     setPreparingPush(false);
     onDeletionPendingChange?.(false);
     onSaved();
-  }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict, onDeletionPendingChange]);
+  }, [save, onSaved, reloadPost, t, accountsLoading, accountsError, imageBusy, conflict, scheduleError, onDeletionPendingChange]);
 
   async function copyAsNewDraft() {
     if (editorTransitionRef.current || mediaBusyRef.current || deletionBlocked || copyFlight.current) return;
@@ -525,7 +568,8 @@ export default function PostEditorView({
       if (dirty) {
         if (!await save()) return;
         const latest = payloadRef.current;
-        const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty ? latest.image : false, latest.imageMediaIds ?? null, latest.videoMediaId ?? null, [...latest.targetIds].sort().join(",")]);
+        const latestKey = JSON.stringify([latest.title.trim(), latest.content, latest.imageDirty ? latest.image : false, latest.imageMediaIds ?? null, latest.videoMediaId ?? null,
+          latest.publishMode, latest.publishMode === "schedule" ? latest.scheduledAt : "", [...latest.targetIds].sort().join(",")]);
         if (latestKey !== savedPayload.current && !await save()) return;
       }
       if (!mediaBusyRef.current && editorMounted.current) onBack();
@@ -590,6 +634,7 @@ export default function PostEditorView({
 
   /** Per-account blockers; each one only ever gates its own account. */
   function targetBlocker(target: PostTarget): string {
+    if (scheduleError) return t(scheduleError);
     const imageError = imageSelectionError(target.platform, imageCount, Boolean(currentVideoId));
     if (imageError) return t(imageError);
     if (target.platform === "youtube") return t(youtubePostError(editable ? title : post?.title, editable ? content : post?.content ?? content, Boolean(editable ? videoMediaId : post?.videoMediaId)));
@@ -603,6 +648,22 @@ export default function PostEditorView({
     .filter((target) => editable || post?.targets.some(savedTarget => savedTarget.integrationId === target.integrationId))
     .filter((target) => (target.status === "not_started" || target.status === "failed" || (target.status === "rejected" && Boolean(target.auditId))) && !submitting.includes(target.integrationId) && !targetBlocker(target))
     .map((target) => target.integrationId);
+
+  function choosePublishMode(mode: PostPublishMode) {
+    setPublishMode(mode);
+    if (mode !== "schedule") {
+      setScheduledAt("");
+      return;
+    }
+    // The device's own zone is the default: prefill one hour ahead when there is no usable time.
+    if (!scheduledAt || Date.parse(scheduledAt) <= Date.now()) {
+      setScheduledAt(localScheduleValue(new Date(Date.now() + 3_600_000).toISOString()));
+    }
+  }
+
+  const pushLabel = publishMode === "draft" ? "Push drafts to Postiz" : publishMode === "schedule" ? "Schedule posts" : "Post now";
+  const acceptedLabel = (post?.publishMode ?? "draft") === "schedule" ? "Scheduled"
+    : (post?.publishMode ?? "draft") === "now" ? "Publishing…" : POST_TARGET_STATUS_LABEL.accepted;
 
   if (loading) {
     return (
@@ -675,7 +736,9 @@ export default function PostEditorView({
               ? t("A submission result is unconfirmed. Check Postiz before changing anything.")
               : post?.frozenReason === "submitting"
                 ? t("A submission is running. This view unlocks only while no draft exists in Postiz.")
-                : t("A draft already exists in Postiz for at least one account, so the local copy stays as it was submitted. Copy it as a new draft to change the text.")}
+                : post?.publishMode && post.publishMode !== "draft"
+                  ? t("This post was already submitted to Postiz and stays read-only. Copy it as a new draft to change the text.")
+                  : t("A draft already exists in Postiz for at least one account, so the local copy stays as it was submitted. Copy it as a new draft to change the text.")}
             <div className="frozen-actions">
               <button type="button" className="secondary-button" disabled={Boolean(editorTransition) || copying || preparingPush || imageBusy || saving || Boolean(submitting.length)} onClick={() => void copyAsNewDraft()}><Copy size={13} aria-hidden="true" /> {t("Copy as new draft")}</button>
               {isAdmin && postizUiUrl && <a className="text-button" href={postizUiUrl} target="_blank" rel="noopener noreferrer">{t("Open Postiz")} <ExternalLink size={13} aria-hidden="true" /></a>}
@@ -763,12 +826,32 @@ export default function PostEditorView({
             onChange={setTargetIds}
             onOpenAccounts={() => { if (!editorTransitionRef.current && !deletionBlocked && !mediaBusyRef.current) onOpenAccounts(); }}
           />
+          <section className="post-schedule" aria-labelledby="post-schedule-title">
+            <h2 id="post-schedule-title">{t("When to post?")}</h2>
+            <div className="post-schedule-options" role="group" aria-labelledby="post-schedule-title">
+              {([["now", "Post now"], ["draft", "Save as draft"], ["schedule", "Schedule"]] as const).map(([mode, label]) => (
+                <button key={mode} type="button" className={`post-schedule-option${publishMode === mode ? " active" : ""}`}
+                  aria-pressed={publishMode === mode} disabled={controlsLocked} onClick={() => choosePublishMode(mode)}>
+                  {t(label)}
+                </button>
+              ))}
+            </div>
+            {publishMode === "schedule" && (
+              <div className="post-schedule-time">
+                <label htmlFor="post-schedule-at">{t("Scheduled time")}</label>
+                <input id="post-schedule-at" type="datetime-local" value={scheduledAt} disabled={controlsLocked}
+                  onChange={event => setScheduledAt(event.target.value)} />
+                <small>{t("Times use your device time zone")}{timeZone ? ` · ${timeZone}` : ""}</small>
+              </div>
+            )}
+            {scheduleError && <p className="post-schedule-error" role="alert">{t(scheduleError)}</p>}
+          </section>
         </div>
 
         <aside className="post-editor-aside">
           <section className="post-editor-panel" aria-labelledby="post-editor-targets-title">
             <div className="post-editor-panel-head">
-              <h2 id="post-editor-targets-title">{t("Send drafts to")}</h2>
+              <h2 id="post-editor-targets-title">{t(publishMode === "draft" ? "Send drafts to" : "Send to")}</h2>
             </div>
             {targets.length ? (
               <ul className="post-editor-targets">
@@ -783,12 +866,12 @@ export default function PostEditorView({
                         <span className="posts-platform-mark" style={{ "--chip-accent": meta?.accent || "#71717a" } as React.CSSProperties}>{meta?.short || (target.platform || "?").slice(0, 2).toUpperCase()}</span>
                         <span className="post-editor-target-name">
                           <strong>{target.accountName || target.integrationId}</strong>
-                          <small className={`target-state ${target.status}`}>{t(POST_TARGET_STATUS_LABEL[target.status])}</small>
+                          <small className={`target-state ${target.status}`}>{t(target.status === "accepted" ? acceptedLabel : POST_TARGET_STATUS_LABEL[target.status])}</small>
                         </span>
                       </div>
                       {target.status === "accepted" && (
                         <div className="post-editor-target-meta">
-                          {target.postizPostId ? <span>{t("Postiz draft")}: <code>{target.postizPostId}</code></span> : <span>{t("Accepted without a tracking ID; check Postiz before resubmitting.")}</span>}
+                          {target.postizPostId ? <span>{t(publishMode === "draft" ? "Postiz draft" : "Postiz post")}: <code>{target.postizPostId}</code></span> : <span>{t("Accepted without a tracking ID; check Postiz before resubmitting.")}</span>}
                           {target.submittedAt && <span>{formatPostTimestamp(target.submittedAt)}</span>}
                         </div>
                       )}
@@ -817,7 +900,7 @@ export default function PostEditorView({
             disabled={Boolean(editorTransition) || copying || deletionBlocked || !pendingPushIds.length || preparingPush || imageBusy || Boolean(submitting.length) || accountsLoading || Boolean(accountsError) || conflict}
               onClick={() => void pushTargets(pendingPushIds)}>
               {preparingPush || submitting.length ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
-              {preparingPush || submitting.length ? t("Submitting…") : t("Push drafts to Postiz")}
+              {preparingPush || submitting.length ? t("Submitting…") : t(pushLabel)}
             </button>
           </section>
         </aside>

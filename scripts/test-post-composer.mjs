@@ -367,6 +367,8 @@ try {
         imageUrl: body.imageMediaIds !== undefined || body.videoMediaId || body.imageDataUrl === null ? null : body.imageDataUrl || storedPost?.imageUrl || null,
         imageMediaIds: body.imageMediaIds !== undefined ? body.imageMediaIds : body.videoMediaId || body.imageDataUrl !== undefined ? [] : storedPost?.imageMediaIds,
         videoMediaId: body.imageMediaIds !== undefined || body.imageDataUrl ? null : body.videoMediaId === undefined ? storedPost?.videoMediaId ?? null : body.videoMediaId,
+        publishMode: body.publishMode ?? storedPost?.publishMode ?? 'draft',
+        scheduledAt: body.scheduledAt !== undefined ? body.scheduledAt : storedPost?.scheduledAt ?? null,
         version: (storedPost?.version || 0) + 1, editable: true, frozenReason: null,
         createdAt: timestamp, updatedAt: timestamp,
         targets: body.integrationIds.map(integrationId => ({ integrationId, platform: accounts.find(account => account.id === integrationId).identifier,
@@ -1320,6 +1322,30 @@ try {
   await page.waitForTimeout(100);
   assert.equal(await videoPreview.count(), 0, 'Unmounted job cannot leak media into the fresh session');
   assert.equal(await outerNavigation.isEnabled(), true);
+
+  // "When to post?" persists the mode and converts the device-local time to a UTC instant.
+  storedPost = undefined;
+  requests.length = 0;
+  await page.goto(origin);
+  const scheduledText = page.getByRole('textbox', { name: 'Post text', exact: true });
+  await scheduledText.waitFor();
+  await scheduledText.fill('Scheduled content');
+  await page.getByRole('button', { name: 'Schedule', exact: true }).click();
+  const scheduledInput = page.getByLabel('Scheduled time', { exact: true });
+  await scheduledInput.waitFor();
+  assert.match(await scheduledInput.inputValue(), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'schedule defaults to a device-local wall time');
+  const localTime = await page.evaluate(() => {
+    const date = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    date.setSeconds(0, 0);
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  });
+  const expectedIso = await page.evaluate(value => new Date(value).toISOString(), localTime);
+  await scheduledInput.fill(localTime);
+  await page.waitForFunction(() => document.querySelector('.post-editor-save-state')?.textContent.includes('Saved'));
+  assert.equal(storedPost.publishMode, 'schedule');
+  assert.equal(storedPost.scheduledAt, expectedIso, 'the API receives the device-local time as a UTC instant');
+  assert.equal(await page.getByRole('button', { name: 'Schedule posts', exact: true }).count(), 1, 'the hand-off action reflects the mode');
   assert.deepEqual(errors, []);
   console.log('PASS: async video phases and early 202, queue/running locks, safe failed/malformed jobs, same-job status recovery without POST/request ID, cancelled recovery fencing and unmount isolation.');
   console.log('PASS: original composer safeguards; raw MP4 upload, 100 MiB boundary, local playback, validation-stage busy/navigation guards, failure/cancel recovery, stale completion fencing, save/reopen/copy, image/video exclusion, Instagram and async 202 navigation.');

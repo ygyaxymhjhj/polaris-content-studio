@@ -69,7 +69,7 @@ test("a transport failure is reported as uncertain so the caller does not retry 
   assert.equal(result.uncertain, true);
 });
 
-test("every supported account receives the documented draft-only payload and authentication", async () => {
+test("every supported account receives the documented draft payload and authentication", async () => {
   for (const platform of ["x", "facebook", "instagram", "linkedin", "threads"]) {
     calls.requests.length = 0;
     respond = async (url) => url.endsWith("/upload") ? uploadOk() : Response.json([{ postId: `draft-${platform}` }]);
@@ -115,8 +115,33 @@ test("an explicit Postiz refusal is a failure, and an accepted draft without an 
   assert.equal(accepted.postId, undefined);
   assert.match(accepted.warning, /no post ID/i);
   const payload = JSON.parse(calls.requests.filter(request => request.url.includes("/posts")).at(-1).options.body);
-  assert.equal(payload.type, "draft", "only drafts may ever be created");
+  assert.equal(payload.type, "draft", "the default remains a draft");
   assert.equal(payload.posts[0].value[0].image[0].id, "media-one");
+});
+
+test("schedule and now modes send their own type and UTC date", async () => {
+  const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
+  respond = async () => Response.json([{ postId: "scheduled-one" }]);
+  calls.requests.length = 0;
+  const scheduled = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Later", platform: "x", publishMode: "schedule", scheduledAt });
+  assert.equal(scheduled.success, true);
+  let payload = JSON.parse(calls.requests.at(-1).options.body);
+  assert.equal(payload.type, "schedule");
+  assert.equal(payload.date, scheduledAt);
+
+  const now = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Now", platform: "x", publishMode: "now" });
+  assert.equal(now.success, true);
+  payload = JSON.parse(calls.requests.at(-1).options.body);
+  assert.equal(payload.type, "now");
+
+  const missing = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Later", platform: "x", publishMode: "schedule" });
+  assert.equal(missing.success, false);
+  assert.match(missing.error, /date and time/i);
+
+  const past = await postiz.createStrictDraft({ integrationId: "channel-one", content: "Later", platform: "x", publishMode: "schedule", scheduledAt: new Date(Date.now() - 60_000).toISOString() });
+  assert.equal(past.success, false);
+  assert.match(past.error, /future/i);
+  assert.equal(calls.requests.length, 2, "invalid schedules never reach Postiz");
 });
 
 /* ------------------------------------------------------------------ *

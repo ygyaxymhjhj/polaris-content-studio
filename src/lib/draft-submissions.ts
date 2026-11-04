@@ -10,6 +10,7 @@ import { recordSocialSubmission } from "@/lib/social-notifications";
 import { getVideoUpload } from "@/lib/video-uploads";
 import { getImageUploads } from "@/lib/image-uploads";
 import { areImageMediaIds, imageSelectionError } from "./image-types";
+import { publishScheduleError, type PostPublishMode } from "@/lib/post-types";
 import type { DraftSubmissionState, DraftSubmissionTask } from "./draft-submission-types";
 
 const utc = (date: Date) => date.toISOString().slice(0, 23).replace("T", " ");
@@ -24,6 +25,9 @@ type Snapshot = {
   imageUrl: string | null;
   imageMediaIds?: string[];
   videoMediaId?: string;
+  publishMode?: PostPublishMode;
+  /** ISO UTC; present only for a scheduled post. */
+  scheduledAt?: string;
   platform: string;
   accountName: string;
   version?: number;
@@ -123,6 +127,7 @@ export async function enqueueManualSubmission(options: {
         snapshot: { title: frozen.title, content: frozen.content, imageUrl: frozen.imageDataUrl,
           ...(imageMediaIds !== undefined ? { imageMediaIds } : {}),
           ...(frozen.videoMediaId ? { videoMediaId: frozen.videoMediaId } : {}), platform: account?.provider || "unknown",
+          publishMode: frozen.publishMode, ...(frozen.scheduledAt ? { scheduledAt: frozen.scheduledAt } : {}),
           accountName: account?.accountName || options.integrationId, version: options.expectedVersion, rejectedBinding }
       });
     }
@@ -307,6 +312,9 @@ async function executeTask(task: TaskRow): Promise<void> {
     if (snapshot.imageMediaIds?.length && snapshot.imageUrl) throw new Error("The frozen snapshot contains mixed image sources. No draft was created.");
     const imageUrl = snapshot.imageMediaIds === undefined ? snapshot.imageUrl || undefined : undefined;
     if (snapshot.videoMediaId && (imageUrl || snapshot.imageMediaIds?.length)) throw new Error("The frozen snapshot contains both image and video. No draft was created.");
+    const publishMode = snapshot.publishMode ?? "draft";
+    const scheduleError = publishScheduleError(publishMode, snapshot.scheduledAt);
+    if (scheduleError) throw new Error(`${scheduleError} No post was submitted.`);
     const images = snapshot.imageMediaIds !== undefined ? await getImageUploads(task.owner_user_id, snapshot.imageMediaIds) : undefined;
     const video = snapshot.videoMediaId ? await getVideoUpload(task.owner_user_id, snapshot.videoMediaId) : null;
     if (snapshot.videoMediaId && !video) throw new Error("The video attachment is unavailable in this account. No draft was created.");
@@ -348,6 +356,7 @@ async function executeTask(task: TaskRow): Promise<void> {
       imageUrl,
       ...(images !== undefined ? { uploadedImages: images.map(image => ({ id: image.postizMediaId, path: image.postizPath })) } : {}),
       ...(video ? { uploadedMedia: { id: video.postizMediaId, path: video.postizPath } } : {}),
+      publishMode, ...(snapshot.scheduledAt ? { scheduledAt: snapshot.scheduledAt } : {}),
       platform: liveAccount.identifier || snapshot.platform });
     if (result.success) {
       completion = { state: "succeeded", postId: result.postId, warning: result.warning };
@@ -356,14 +365,16 @@ async function executeTask(task: TaskRow): Promise<void> {
           projectId: task.project_id || undefined, assetId: task.source_id, platform: liveAccount.identifier || snapshot.platform,
           integrationId: task.integration_id, accountName: liveAccount.name || snapshot.accountName,
           publishedBy: task.owner_user_id, publishedByName: String(users[0].display_name),
-          contentPreview: snapshot.content.slice(0, 200), postizPostId: result.postId, status: "drafted"
+          contentPreview: snapshot.content.slice(0, 200), postizPostId: result.postId,
+          status: publishMode === "draft" ? "drafted" : "queued",
+          ...(publishMode === "schedule" && snapshot.scheduledAt ? { scheduledAt: snapshot.scheduledAt } : {})
         });
         completion.auditId = registration.auditId;
         completion.warning = [result.warning, registration.warning || (!registration.auditId ? AUDIT_WARNING : "")].filter(Boolean).join(" ") || undefined;
       } catch { completion.warning = [result.warning, AUDIT_WARNING].filter(Boolean).join(" "); }
     } else {
       completion = result.uncertain ? { state: "unknown", warning: UNKNOWN_WARNING }
-        : { state: "failed", error: "The publishing engine refused the draft. No draft was created." };
+        : { state: "failed", error: publishMode === "draft" ? "The publishing engine refused the draft. No draft was created." : "The publishing engine refused the post. Nothing was published." };
       if (!result.uncertain) {
         try {
           const registration = await recordSocialSubmission({ projectId: task.project_id || undefined,
