@@ -17,8 +17,9 @@ and their export flow are unchanged.
 - **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and an ordered media collection share a
   compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
   usernames and multi-selection, without avatars or search/filter controls. **When to post?** offers
-  Post now, Save as draft (default) and Schedule; Schedule reveals a `datetime-local` input that uses the
-  browser's own time zone. There is no internal-title field, character counter, profile group or
+  Save as draft (default) and Schedule; Schedule reveals a `datetime-local` input that uses the
+  browser's own time zone. The composer shows the current character count only (no platform limit).
+  There is no internal-title field, profile group or
   simulated feed. The right-hand summary lists chosen accounts,
   their results and the **Push drafts** action. Existing internal titles are preserved;
   only a selected YouTube channel exposes the title as its video title and sends it to Postiz.
