@@ -45,11 +45,11 @@ Vercel/serverless periodic scheduling is not supported; `after()` alone is not a
 - The old 120-second manual sweep excludes queue-owned queued/running attempts. Queue waiting is
   not treated as an unconfirmed external result.
 
-Workers re-read the user's current enabled flag and role, channel ownership, source-project
-ownership and live channel availability. An admin flag captured at request time is not authority
-to execute later. A rejected retry also needs a fresh `DRAFT` + `saveAction=pass` observation, the
-original owner/audit/upstream binding, and the current frozen manual attempt. A definite failure
-restores the original frozen binding; an uncertain create remains needs-review.
+Workers re-read the user's current enabled flag and role, the account's current assignment set,
+the source-project ownership and live channel availability. An admin flag captured at request time
+is not authority to execute later. A rejected retry also needs a fresh `DRAFT` + `saveAction=pass`
+observation, the original owner/audit/upstream binding, and the current frozen manual attempt. A
+definite failure restores the original frozen binding; an uncertain create remains needs-review.
 
 ## Snapshots and deduplication
 

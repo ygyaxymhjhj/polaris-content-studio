@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { database } from "@/lib/project-db";
 import { ownerHashFor } from "@/lib/auth";
-import { getSocialAccount } from "@/lib/social-accounts";
+import { getSocialAccount, isAccountAssignedTo } from "@/lib/social-accounts";
 import { claimPostTarget, readSubmissionTarget, type ClaimTargetRow, type SubmitOutcome } from "@/lib/post-submission";
 import { databaseEpoch, getManualPost } from "@/lib/posts";
 import { createStrictDraft, fetchPostizIntegrations, fetchPostizPostDetails } from "@/lib/postiz";
@@ -106,7 +106,7 @@ export async function enqueueManualSubmission(options: {
   expectedAuditId?: string;
 }): Promise<EnqueueOutcome> {
   const account = await getSocialAccount(options.integrationId);
-  if (!options.isAdmin && account?.ownerUserId !== options.userId) return { kind: "forbidden", message: "This social account is not assigned to you." };
+  if (!options.isAdmin && !isAccountAssignedTo(account, options.userId)) return { kind: "forbidden", message: "This social account is not assigned to you." };
   const current = await readSubmissionTarget(database(), options.userId, options.postId, options.integrationId);
   const rejectedBinding = current?.status === "rejected" ? current : null;
   if (rejectedBinding && (!options.expectedAuditId || options.expectedAuditId !== rejectedBinding.audit_id || !rejectedBinding.postiz_post_id)) {
@@ -150,7 +150,7 @@ export async function enqueueAssetSubmission(input: {
   if (imageMediaIds?.length && input.imageUrl) return { kind: "validation", message: "Choose uploaded images or an inline image, not both." };
   const imageUrl = imageMediaIds === undefined ? input.imageUrl || null : null;
   const account = await getSocialAccount(input.integrationId);
-  if (!input.isAdmin && account?.ownerUserId !== input.userId) return { kind: "forbidden", message: "This social account is not assigned to you." };
+  if (!input.isAdmin && !isAccountAssignedTo(account, input.userId)) return { kind: "forbidden", message: "This social account is not assigned to you." };
   const mediaError = imageSelectionError(account?.provider || input.platform || "unknown", imageMediaIds?.length ?? Number(Boolean(imageUrl)), Boolean(input.videoMediaId));
   if (mediaError) return { kind: "validation", message: mediaError };
   const scope = ["asset", input.userId, input.projectId || null, input.assetId, input.integrationId];
@@ -301,7 +301,7 @@ async function executeTask(task: TaskRow): Promise<void> {
   try {
     const [users] = await database().execute<RowDataPacket[]>("SELECT role, disabled, display_name FROM users WHERE id=?", [task.owner_user_id]);
     const account = await getSocialAccount(task.integration_id);
-    if (!users[0] || Number(users[0].disabled) || (users[0].role !== "admin" && account?.ownerUserId !== task.owner_user_id)) {
+    if (!users[0] || Number(users[0].disabled) || (users[0].role !== "admin" && !isAccountAssignedTo(account, task.owner_user_id))) {
       throw new Error("Submission permission changed. No draft was created.");
     }
     if (task.project_id) {

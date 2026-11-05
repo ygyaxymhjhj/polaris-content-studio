@@ -144,7 +144,10 @@ test("an AI enqueue reads its committed result without requesting a second poole
   const dependencies = {
     "@/lib/project-db": { database: () => pool },
     "@/lib/auth": { ownerHashFor: () => "owner-hash" },
-    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: "owner", provider: "x", accountName: "Account" }) },
+    "@/lib/social-accounts": {
+      getSocialAccount: async () => ({ assignedUsers: [{ id: "owner", name: "Owner" }], provider: "x", accountName: "Account" }),
+      isAccountAssignedTo: (account, userId) => Boolean(account?.assignedUsers?.some(user => user.id === userId))
+    },
     "@/lib/post-submission": {},
     "@/lib/posts": { databaseEpoch: value => Date.parse(`${value.replace(" ", "T")}Z`) },
     "@/lib/postiz": {}, "@/lib/social-notifications": {},

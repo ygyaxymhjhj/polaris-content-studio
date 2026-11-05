@@ -6,7 +6,7 @@ import { isSameOrigin } from "@/lib/same-origin";
 import { deleteManualPost, getManualPost, PostMediaValidationError, PostScheduleValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
 import { areImageMediaIds } from "@/lib/image-types";
-import { listAccountOwners } from "@/lib/social-accounts";
+import { isAccountAssignedTo, listSocialAccounts } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
 import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_PUBLISH_MODES, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
 
@@ -91,12 +91,12 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ p
 
   try {
     if (parsed.data.integrationIds) {
-      const owners = await listAccountOwners();
+      const owners = await listSocialAccounts();
       const targets = [];
       for (const integrationId of [...new Set(parsed.data.integrationIds)]) {
         const record = owners.get(integrationId);
         if (!record) return failure("That social account is not in the local registry yet. Refresh the account list and try again.", 400, "INVALID_TARGET");
-        if (auth.user.role !== "admin" && record.ownerUserId !== auth.user.id) {
+        if (auth.user.role !== "admin" && !isAccountAssignedTo(record, auth.user.id)) {
           return failure("One of the selected accounts is not assigned to you. Ask an administrator to assign it.", 400, "INVALID_TARGET");
         }
         targets.push({ integrationId, platform: record.provider || "", accountName: record.accountName || integrationId });

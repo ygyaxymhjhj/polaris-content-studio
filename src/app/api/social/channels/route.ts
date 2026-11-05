@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 import { fetchPostizIntegrations, getPostizUiUrl, isPostizOAuthConfigured } from "@/lib/postiz";
 import { currentUser, unauthorized } from "@/lib/auth";
-import { listAccountOwners, syncSocialAccounts } from "@/lib/social-accounts";
+import { isAccountAssignedTo, listSocialAccounts, syncSocialAccounts } from "@/lib/social-accounts";
 import type { SocialAccount } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Channels stay live from Postiz and are only decorated with local ownership: the registry never
+ * Channels stay live from Postiz and are only decorated with local assignments: the registry never
  * becomes the source of the list, so a channel deleted in Postiz disappears here immediately.
- * Members receive only the channels they own; administrators receive everything plus the owner name.
+ * Members receive only channels assigned to them; administrators receive everything plus assignees.
  */
 export async function GET() {
   const auth = await currentUser();
@@ -25,12 +25,12 @@ export async function GET() {
   }
   try {
     await syncSocialAccounts(result.accounts);
-    const owners = await listAccountOwners();
+    const records = await listSocialAccounts();
     const decorated: SocialAccount[] = result.accounts.map((account) => {
-      const record = owners.get(account.id);
-      return { ...account, ownerUserId: record?.ownerUserId ?? null, ownerName: record?.ownerName ?? null };
+      const record = records.get(account.id);
+      return { ...account, assignedUsers: record?.assignedUsers ?? [] };
     });
-    const accounts = auth.user.role === "admin" ? decorated : decorated.filter((account) => account.ownerUserId === auth.user.id);
+    const accounts = auth.user.role === "admin" ? decorated : decorated.filter((account) => isAccountAssignedTo(account, auth.user.id));
     return NextResponse.json({ ...result, accounts, uiUrl, oauthConfigured }, { headers });
   } catch (error) {
     // Fail closed: without ownership data no member may see any channel, administrators included.

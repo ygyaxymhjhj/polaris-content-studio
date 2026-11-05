@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS social_publishes (
 ) ENGINE=InnoDB;
 
 -- Local ownership registry for Postiz channels. Postiz remains the source of truth for tokens and
--- channel existence; this table only records who may see and publish to each integration.
--- owner_user_id NULL = unassigned (visible to administrators only, until they assign it).
+-- channel existence. owner_user_id is a legacy single-owner column: the migration backfills it into
+-- social_account_assignments and clears it; assignment rows are now authoritative.
 CREATE TABLE IF NOT EXISTS social_accounts (
   integration_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
   provider VARCHAR(32) NOT NULL DEFAULT '',
@@ -73,6 +73,18 @@ CREATE TABLE IF NOT EXISTS social_accounts (
   INDEX social_accounts_owner (owner_user_id),
   CONSTRAINT social_accounts_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL,
   CONSTRAINT social_accounts_assigned_by_fk FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- One row per member allowed to see and use an account. No rows = unassigned (administrators only).
+CREATE TABLE IF NOT EXISTS social_account_assignments (
+  integration_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (integration_id, user_id),
+  INDEX social_account_assignments_user (user_id),
+  CONSTRAINT social_account_assignments_account_fk FOREIGN KEY (integration_id)
+    REFERENCES social_accounts(integration_id) ON DELETE CASCADE,
+  CONSTRAINT social_account_assignments_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- One row per authorisation attempt: the channel-id snapshot taken when a member started the flow
@@ -310,6 +322,8 @@ GRANT SELECT, INSERT ON polaris_content_studio.social_publishes TO 'polaris_app'
 -- Ownership registry: the app upserts rows and reads ownership; no DELETE, so rows survive channel
 -- removal in Postiz (the live list, not the registry, decides what is visible).
 GRANT SELECT, INSERT, UPDATE ON polaris_content_studio.social_accounts TO 'polaris_app'@'%';
+-- Assignment replace-set from the admin API: insert + delete only, no UPDATE.
+GRANT SELECT, INSERT, DELETE ON polaris_content_studio.social_account_assignments TO 'polaris_app'@'%';
 -- Connect attempts are consumed once and swept when expired, hence DELETE.
 GRANT SELECT, INSERT, UPDATE, DELETE ON polaris_content_studio.social_connect_attempts TO 'polaris_app'@'%';
 GRANT SELECT, INSERT, UPDATE ON polaris_content_studio.workspace_feishu_config TO 'polaris_app'@'%';

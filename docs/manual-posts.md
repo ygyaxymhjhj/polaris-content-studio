@@ -99,8 +99,7 @@ engine, so a simultaneous administrator change can still race with creation of t
   publishing console, check whether the draft exists, and only then decide.
 - **Deleting is local.** A post with no accepted, in-flight or unconfirmed target can be deleted;
   anything that reached Postiz must be removed there.
-- **Accounts follow the existing ownership model.** Members only see and submit to their own
-  accounts; administrators can use any account but cannot read another member's post. Members have
+- **Accounts follow the existing assignment model.** Members only see and submit to accounts assigned to them; an account may be shared by several members, and all of them have the same access. Administrators can use any account but cannot read another member's post, and they are the only ones who can change the assignment list. Members have
   no Postiz back office entry, so editing an accepted draft is an administrator hand-off.
 - **Images.** Select or drop up to ten JPG/PNG/WebP images, append more, remove individual images,
   or move them left/right. X permits four; YouTube requires one MP4 instead. Each original may be

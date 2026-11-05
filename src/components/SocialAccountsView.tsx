@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink, Link2, Plus, RefreshCw } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { SOCIAL_PLATFORM_META as PLATFORM_META, type SocialPlatform as Platform, type SocialAccount } from "@/lib/types";
 
-type AssignableMember = { id: string; displayName: string };
+type AssignableMember = { id: string; displayName: string; disabled: boolean };
 
 type Props = {
   accounts: SocialAccount[];
@@ -24,36 +24,52 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
   const translate = useTranslation();
   const readyCount = accounts.filter(account => !account.disabled).length;
   const [members, setMembers] = useState<AssignableMember[]>([]);
+  const [membersLoaded, setMembersLoaded] = useState(false);
+  const [membersError, setMembersError] = useState(false);
   const [assigningId, setAssigningId] = useState("");
+  const assignmentFlight = useRef(false);
+  const [pending, setPending] = useState<{ integrationId: string; userIds: string[] } | null>(null);
   const [assignError, setAssignError] = useState("");
 
-  // The member list only feeds the administrator's assignment dropdown; /api/auth/users is itself
-  // administrator-gated, so a failed load simply leaves the dropdown with only "Unassigned".
+  // The member list only feeds the administrator's assignment checkboxes; /api/auth/users is itself
+  // administrator-gated, so a failed load pauses assignment instead of offering an empty list.
   useEffect(() => {
     if (!isAdmin) return;
     let cancelled = false;
     fetch("/api/auth/users", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : { users: [] }))
+      .then((response) => {
+        if (!response.ok) throw new Error("member list unavailable");
+        return response.json();
+      })
       .then((data) => {
         if (cancelled) return;
         const users: Array<{ id?: unknown; displayName?: unknown; disabled?: unknown }> = Array.isArray(data?.users) ? data.users : [];
         setMembers(users
-          .filter((member) => !member.disabled && typeof member.id === "string" && typeof member.displayName === "string")
-          .map((member) => ({ id: member.id as string, displayName: member.displayName as string })));
+          .filter((member) => typeof member.id === "string" && typeof member.displayName === "string")
+          .map((member) => ({ id: member.id as string, displayName: member.displayName as string, disabled: Boolean(member.disabled) })));
+        setMembersError(false);
+        setMembersLoaded(true);
       })
-      .catch(() => { if (!cancelled) setMembers([]); });
+      .catch(() => { if (!cancelled) { setMembers([]); setMembersError(true); setMembersLoaded(true); } });
     return () => { cancelled = true; };
   }, [isAdmin]);
 
-  const assignOwner = useCallback(async (integrationId: string, ownerUserId: string | null) => {
-    if (assigningId) return;
+  const assignedUsers = (account: SocialAccount) => account.assignedUsers ?? [];
+  const assignedIds = (account: SocialAccount) => pending?.integrationId === account.id
+    ? pending.userIds
+    : assignedUsers(account).map((user) => user.id);
+
+  const saveAssignments = useCallback(async (integrationId: string, userIds: string[]) => {
+    if (assignmentFlight.current || membersError) return;
+    assignmentFlight.current = true;
     setAssigningId(integrationId);
+    setPending({ integrationId, userIds });
     setAssignError("");
     try {
       const response = await fetch(`/api/social/accounts/${encodeURIComponent(integrationId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ownerUserId })
+        body: JSON.stringify({ userIds })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Could not update the account assignment.");
@@ -61,9 +77,17 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
     } catch (assignmentFailure) {
       setAssignError(assignmentFailure instanceof Error ? assignmentFailure.message : "Could not update the account assignment.");
     } finally {
+      assignmentFlight.current = false;
+      setPending(null);
       setAssigningId("");
     }
-  }, [assigningId, onRefresh]);
+  }, [membersError, onRefresh]);
+
+  const toggleAssignment = (account: SocialAccount, memberId: string) => {
+    if (assignmentFlight.current) return;
+    const current = assignedIds(account);
+    void saveAssignments(account.id, current.includes(memberId) ? current.filter(id => id !== memberId) : [...current, memberId]);
+  };
 
   return (
     <section className="social-accounts-view" aria-labelledby="social-accounts-title">
@@ -96,23 +120,38 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
             <ul className="accounts-directory">
               {accounts.map(account => {
                 const metadata = PLATFORM_META[account.identifier.toLowerCase() as Platform];
+                const assigned = assignedUsers(account);
                 return (
-                  <li key={account.id} className={`accounts-directory-row ${isAdmin && !account.ownerUserId ? "unassigned" : ""}`}>
+                  <li key={account.id} className={`accounts-directory-row ${isAdmin && !assigned.length ? "unassigned" : ""}`}>
                     <span className="accounts-platform-mark">{metadata?.short || account.identifier.slice(0, 2).toUpperCase() || "?"}</span>
                     <div className="accounts-directory-identity"><strong>{account.name}</strong><span>{metadata?.label || account.identifier}</span></div>
                     {isAdmin && (
-                      <label className="account-owner-control">
-                        <span>{translate(account.ownerUserId ? "Assigned to" : "Unassigned")}</span>
-                        <select
-                          value={account.ownerUserId ?? ""}
-                          disabled={assigningId === account.id}
-                          onChange={(event) => void assignOwner(account.id, event.target.value || null)}
-                          aria-label={`${translate("Assign account")}: ${account.name}`}
-                        >
-                          <option value="">{translate("Unassigned")}</option>
-                          {members.map(member => <option key={member.id} value={member.id}>{member.displayName}</option>)}
-                        </select>
-                      </label>
+                      <details className="account-owner-control">
+                        <summary aria-label={`${translate("Assign account")}: ${account.name}`}>
+                          {assigned.length
+                            ? `${translate("Assigned to")}: ${assigned.map(user => user.name).join(", ")}`
+                            : translate("Unassigned")}
+                        </summary>
+                        <div className="account-assignment-menu">
+                          {membersError ? (
+                            <span className="account-assignment-empty">{translate("The member list is unavailable. Assignment is paused.")}</span>
+                          ) : (
+                            <>
+                              {members
+                                .filter(member => !member.disabled || assignedIds(account).includes(member.id))
+                                .map(member => (
+                                  <label key={member.id} className="account-assignment-option">
+                                    <input type="checkbox" checked={assignedIds(account).includes(member.id)}
+                                      disabled={Boolean(assigningId)}
+                                      onChange={() => toggleAssignment(account, member.id)} />
+                                    <span>{member.displayName}{member.disabled ? ` (${translate("Disabled")})` : ""}</span>
+                                  </label>
+                                ))}
+                              {!members.length && membersLoaded && <span className="account-assignment-empty">{translate("No members available")}</span>}
+                            </>
+                          )}
+                        </div>
+                      </details>
                     )}
                     <span className={`account-state ${account.disabled ? "warn" : "ok"}`}>
                       {account.disabled ? <><AlertTriangle size={13} /> {translate("Needs reconnect")}</> : <><CheckCircle2 size={13} /> {translate("Ready")}</>}
