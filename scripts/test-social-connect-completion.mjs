@@ -17,17 +17,23 @@ function loadModule(path, mocks = {}) {
 }
 
 function createTransactionalDatabase() {
-  const state = { accounts: new Map(), attempts: new Map(), events: [], failure: null };
+  const state = { accounts: new Map(), assignments: new Map(), attempts: new Map(), events: [], failure: null };
   let snapshot;
+  const assignmentsFor = (integrationId) => state.assignments.get(integrationId) ?? new Set();
   const connection = {
     async beginTransaction() {
       state.events.push("begin");
-      snapshot = structuredClone({ accounts: state.accounts, attempts: state.attempts });
+      snapshot = structuredClone({ accounts: state.accounts, assignments: state.assignments, attempts: state.attempts });
     },
     async commit() { state.events.push("commit"); snapshot = undefined; },
     async rollback() {
       state.events.push("rollback");
-      if (snapshot) { state.accounts = snapshot.accounts; state.attempts = snapshot.attempts; snapshot = undefined; }
+      if (snapshot) {
+        state.accounts = snapshot.accounts;
+        state.assignments = snapshot.assignments;
+        state.attempts = snapshot.attempts;
+        snapshot = undefined;
+      }
     },
     release() { state.events.push("release"); },
     async execute(sql, parameters = []) {
@@ -54,15 +60,32 @@ function createTransactionalDatabase() {
         return [{ affectedRows: 1 }];
       }
       if (statement.startsWith("INSERT INTO social_accounts")) {
-        const [integrationId, provider, accountName, ownerUserId] = parameters;
+        const [integrationId, provider, accountName] = parameters;
         const existing = state.accounts.get(integrationId);
-        if (!existing) state.accounts.set(integrationId, { integration_id: integrationId, provider, account_name: accountName, owner_user_id: ownerUserId, origin: "connect" });
-        else if (existing.owner_user_id == null) { existing.owner_user_id = ownerUserId; existing.origin = "connect"; }
-        // FOUND_ROWS may report an existing row as affected; production must SELECT actual ownership.
+        if (!existing) state.accounts.set(integrationId, { integration_id: integrationId, provider, account_name: accountName, origin: null });
+        else { existing.provider = provider; existing.account_name = accountName; }
+        // FOUND_ROWS may report an existing row as affected; the assignment read decides the result.
         return [{ affectedRows: 1 }];
       }
-      if (statement.startsWith("SELECT") && statement.includes("FROM social_accounts")) {
-        return [[state.accounts.get(parameters[0])].filter(Boolean).map(row => ({ ...row }))];
+      if (statement.startsWith("SELECT integration_id FROM social_accounts")) {
+        return [state.accounts.has(parameters[0]) ? [{ integration_id: parameters[0] }] : []];
+      }
+      if (statement.startsWith("SELECT user_id FROM social_account_assignments")) {
+        return [[...assignmentsFor(parameters[0])].map(userId => ({ user_id: userId }))];
+      }
+      if (statement.startsWith("INSERT INTO social_account_assignments")) {
+        const [integrationId, userId] = parameters;
+        const assigned = assignmentsFor(integrationId);
+        assigned.add(userId);
+        state.assignments.set(integrationId, assigned);
+        return [{ affectedRows: 1 }];
+      }
+      if (statement.startsWith("UPDATE social_accounts SET assigned_by_user_id=?, origin='connect'")) {
+        const account = state.accounts.get(parameters[1]);
+        if (!account) return [{ affectedRows: 0 }];
+        account.assigned_by_user_id = parameters[0];
+        account.origin = "connect";
+        return [{ affectedRows: 1 }];
       }
       throw new Error(`Unexpected SQL: ${statement}`);
     }
@@ -162,14 +185,14 @@ for (const failure of ["unconfigured", "snapshot-error", "snapshot-throw", "atte
 
 test("unique real provider id is owned and consumed atomically; double-question callback succeeds", async () => {
   const context = setup();
-  context.database.state.accounts.set("historical", { owner_user_id: null });
+  context.database.state.accounts.set("historical", { integration_id: "historical", provider: "x", account_name: "historical", origin: null });
   const attempt = await context.start();
   context.state.liveAccounts.push(account("new-real-integration"));
   const response = await context.callback(`${attempt.url}?added=x&msg=Channel+Updated`, attempt.cookie);
   const destination = inspectCompletion(response, "returned");
   assert.equal(destination.searchParams.has("retry"), false);
-  assert.equal(context.database.state.accounts.get("new-real-integration").owner_user_id, memberId);
-  assert.equal(context.database.state.accounts.get("historical").owner_user_id, null);
+  assert.deepEqual([...(context.database.state.assignments.get("new-real-integration") ?? [])], [memberId]);
+  assert.equal((context.database.state.assignments.get("historical") ?? new Set()).size, 0);
   assert.ok(context.database.state.attempts.get(attempt.cookie).consumed_at);
   assert.equal(response.cookies.get(stateCookie).maxAge, 0);
   assert.ok(context.database.state.events.some(event => event.includes("social_connect_attempts") && event.includes("FOR UPDATE")));
@@ -183,13 +206,14 @@ test("a member can connect two different X accounts sequentially; repeating an e
     const attempt = await context.start();
     context.state.liveAccounts.push(account(id));
     inspectCompletion(await context.callback(attempt.url, attempt.cookie), "returned");
-    assert.equal(context.database.state.accounts.get(id).owner_user_id, memberId);
+    assert.deepEqual([...(context.database.state.assignments.get(id) ?? [])], [memberId]);
   }
   const repeated = await context.start();
   inspectCompletion(await context.callback(`${repeated.url}?added=x&msg=Channel+Updated`, repeated.cookie), "unconfirmed");
   assert.equal(context.database.state.attempts.get(repeated.cookie).consumed_at, null);
   assert.equal(context.database.state.accounts.size, 2);
-  assert.ok([...context.database.state.accounts.values()].every(account => account.owner_user_id === memberId));
+  assert.equal(context.database.state.assignments.size, 2);
+  assert.ok([...context.database.state.assignments.values()].every(assigned => assigned.has(memberId)));
 });
 
 test("LinkedIn authorizes and claims a company Page; a personal profile cannot complete the attempt", async () => {
@@ -202,7 +226,7 @@ test("LinkedIn authorizes and claims a company Page; a personal profile cannot c
   assert.equal(context.database.state.accounts.size, 0);
   context.state.liveAccounts.push(account("company-page", "linkedin-page"));
   inspectCompletion(await context.callback(`${attempt.url}?added=linkedin-page`, attempt.cookie), "returned");
-  assert.equal(context.database.state.accounts.get("company-page").owner_user_id, memberId);
+  assert.deepEqual([...(context.database.state.assignments.get("company-page") ?? [])], [memberId]);
   assert.equal(context.database.state.accounts.has("personal-profile"), false);
 });
 
@@ -212,7 +236,7 @@ test("YouTube channel authorization claims the new channel only for its initiati
   assert.equal(context.state.authorizationCalls.at(-1).provider, "youtube");
   context.state.liveAccounts.push(account("youtube-channel-one", "youtube"));
   inspectCompletion(await context.callback(`${attempt.url}?added=youtube`, attempt.cookie), "returned");
-  assert.equal(context.database.state.accounts.get("youtube-channel-one").owner_user_id, memberId);
+  assert.deepEqual([...(context.database.state.assignments.get("youtube-channel-one") ?? [])], [memberId]);
   assert.equal(context.database.state.accounts.get("youtube-channel-one").provider, "youtube");
 });
 
@@ -221,9 +245,10 @@ test("already-owned unique candidate is confirmed only for the same member", asy
     const context = setup();
     const attempt = await context.start();
     context.state.liveAccounts.push(account("new-real-integration"));
-    context.database.state.accounts.set("new-real-integration", { owner_user_id: owner, origin: "admin" });
+    context.database.state.accounts.set("new-real-integration", { integration_id: "new-real-integration", provider: "x", account_name: "new-real-integration", origin: "admin" });
+    context.database.state.assignments.set("new-real-integration", new Set([owner]));
     inspectCompletion(await context.callback(attempt.url, attempt.cookie), owner === memberId ? "returned" : "conflict");
-    assert.equal(context.database.state.accounts.get("new-real-integration").owner_user_id, owner);
+    assert.deepEqual([...(context.database.state.assignments.get("new-real-integration") ?? [])], [owner]);
     assert.equal(context.database.state.accounts.get("new-real-integration").origin, "admin");
     assert.equal(Boolean(context.database.state.attempts.get(attempt.cookie).consumed_at), owner === memberId);
   }
@@ -254,10 +279,12 @@ test("consume failure rolls back ownership and preserves attempt/cookie for succ
   assert.equal(failedResponse.cookies.get(stateCookie), undefined);
   assert.equal(context.database.state.attempts.get(attempt.cookie).consumed_at, null);
   assert.equal(context.database.state.accounts.has("new-real-integration"), false);
+  assert.equal((context.database.state.assignments.get("new-real-integration") ?? new Set()).size, 0, "The assignment insert rolls back with the attempt");
   assert.ok(context.database.state.events.includes("rollback"));
   assert.equal(context.database.state.events.at(-1), "release");
   context.database.state.failure = null;
   inspectCompletion(await context.callback(attempt.url, attempt.cookie), "returned");
+  assert.deepEqual([...(context.database.state.assignments.get("new-real-integration") ?? [])], [memberId]);
 });
 
 test("upstream callback failure does not consume and manual retry can recover", async () => {

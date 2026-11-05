@@ -9,7 +9,7 @@ export const CONNECTION_MESSAGES: Record<ConnectionOutcome, string> = {
   unauthenticated: "Your Polaris session expired. Sign in again in the workspace, then restart authorisation.",
   error: "Polaris could not verify the account connection. No successful connection has been confirmed. Retry the return check or start again.",
   unconfirmed: "No new account was confirmed. Finish authorisation on the platform, then retry the return check.",
-  conflict: "This social account belongs to another Polaris user and was not added to your account. Ask a workspace administrator for help."
+  conflict: "This social account is already assigned to other members and was not added to your account. Ask a workspace administrator to add you."
 };
 
 export function parseConnectionOutcome(value: unknown): ConnectionOutcome {

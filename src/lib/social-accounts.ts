@@ -1,6 +1,6 @@
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { database } from "@/lib/project-db";
-import type { SocialAccount } from "@/lib/types";
+import type { SocialAccount, SocialAccountAssignee } from "@/lib/types";
 
 /**
  * MySQL DATETIME values are written and compared as explicit UTC strings. The pool sets timezone "Z",
@@ -17,20 +17,45 @@ export interface SocialAccountRecord {
   integrationId: string;
   provider: string;
   accountName: string;
-  ownerUserId: string | null;
-  ownerName: string | null;
   origin: AccountOrigin | null;
+  /** Empty = unassigned (administrators only). */
+  assignedUsers: SocialAccountAssignee[];
 }
 
-function toRecord(row: RowDataPacket): SocialAccountRecord {
-  return {
-    integrationId: String(row.integration_id),
-    provider: String(row.provider || ""),
-    accountName: String(row.account_name || ""),
-    ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
-    ownerName: row.owner_name ? String(row.owner_name) : null,
-    origin: row.origin === "connect" || row.origin === "admin" ? row.origin : null
-  };
+const ACCOUNT_SELECT = `SELECT a.integration_id, a.provider, a.account_name, a.origin,
+         u.id AS assigned_user_id, u.display_name AS assigned_user_name
+    FROM social_accounts a
+    LEFT JOIN social_account_assignments sa ON sa.integration_id = a.integration_id
+    LEFT JOIN users u ON u.id = sa.user_id`;
+
+function foldRecords(rows: RowDataPacket[]): Map<string, SocialAccountRecord> {
+  const records = new Map<string, SocialAccountRecord>();
+  for (const row of rows) {
+    const integrationId = String(row.integration_id);
+    let record = records.get(integrationId);
+    if (!record) {
+      record = {
+        integrationId,
+        provider: String(row.provider || ""),
+        accountName: String(row.account_name || ""),
+        origin: row.origin === "connect" || row.origin === "admin" ? row.origin : null,
+        assignedUsers: []
+      };
+      records.set(integrationId, record);
+    }
+    if (row.assigned_user_id) {
+      record.assignedUsers.push({ id: String(row.assigned_user_id), name: String(row.assigned_user_name || "") });
+    }
+  }
+  return records;
+}
+
+/** One predicate for every account-visibility decision; admins bypass it at the call site. */
+export function isAccountAssignedTo(
+  account: { assignedUsers?: readonly SocialAccountAssignee[] } | null | undefined,
+  userId: string
+): boolean {
+  return Boolean(account?.assignedUsers?.some(user => user.id === userId));
 }
 
 /**
@@ -49,28 +74,21 @@ export async function syncSocialAccounts(accounts: SocialAccount[]): Promise<voi
   );
 }
 
-/** Ownership of every registered channel, keyed by integration id. */
-export async function listAccountOwners(): Promise<Map<string, SocialAccountRecord>> {
+/** Every registered channel with its assigned users, keyed by integration id. */
+export async function listSocialAccounts(): Promise<Map<string, SocialAccountRecord>> {
   const [rows] = await database().execute<RowDataPacket[]>(
-    `SELECT a.integration_id, a.provider, a.account_name, a.owner_user_id, a.origin,
-            u.display_name AS owner_name
-       FROM social_accounts a
-       LEFT JOIN users u ON u.id = a.owner_user_id`
+    `${ACCOUNT_SELECT} ORDER BY a.integration_id, u.display_name, u.id`
   );
-  return new Map(rows.map((row) => [String(row.integration_id), toRecord(row)]));
+  return foldRecords(rows);
 }
 
 /** Single registry row; null when the channel has never been synced (or does not exist). */
 export async function getSocialAccount(integrationId: string): Promise<SocialAccountRecord | null> {
   const [rows] = await database().execute<RowDataPacket[]>(
-    `SELECT a.integration_id, a.provider, a.account_name, a.owner_user_id, a.origin,
-            u.display_name AS owner_name
-       FROM social_accounts a
-       LEFT JOIN users u ON u.id = a.owner_user_id
-      WHERE a.integration_id = ?`,
+    `${ACCOUNT_SELECT} WHERE a.integration_id = ?`,
     [integrationId]
   );
-  return rows.length ? toRecord(rows[0]) : null;
+  return foldRecords(rows).get(integrationId) ?? null;
 }
 
 /**
@@ -149,21 +167,27 @@ export async function completeConnectAttempt(
     }
     const candidate = candidates[0];
     await connection.execute(
-      `INSERT INTO social_accounts (integration_id, provider, account_name, owner_user_id, assigned_by_user_id, origin)
-       VALUES (?,?,?,?,?,'connect')
-       ON DUPLICATE KEY UPDATE
-         assigned_by_user_id = IF(owner_user_id IS NULL, VALUES(assigned_by_user_id), assigned_by_user_id),
-         origin = IF(owner_user_id IS NULL, 'connect', origin),
-         account_name = IF(owner_user_id IS NULL, VALUES(account_name), account_name),
-         provider = IF(owner_user_id IS NULL, VALUES(provider), provider),
-         owner_user_id = IF(owner_user_id IS NULL, VALUES(owner_user_id), owner_user_id)`,
-      [candidate.id, candidate.identifier, candidate.name, userId, userId]
+      `INSERT INTO social_accounts (integration_id, provider, account_name) VALUES (?,?,?)
+       ON DUPLICATE KEY UPDATE provider=VALUES(provider), account_name=VALUES(account_name)`,
+      [candidate.id, candidate.identifier, candidate.name]
     );
-    const [owners] = await connection.execute<RowDataPacket[]>(
-      "SELECT owner_user_id FROM social_accounts WHERE integration_id=? FOR UPDATE",
-      [candidate.id]
+    // Connect and the admin replace-set serialize on this row.
+    await connection.execute("SELECT integration_id FROM social_accounts WHERE integration_id=? FOR UPDATE", [candidate.id]);
+    const [assignmentRows] = await connection.execute<RowDataPacket[]>(
+      "SELECT user_id FROM social_account_assignments WHERE integration_id=? FOR UPDATE", [candidate.id]
     );
-    if (!owners[0] || String(owners[0].owner_user_id) !== userId) {
+    const assignedUserIds = assignmentRows.map(row => String(row.user_id));
+    if (!assignedUserIds.length) {
+      await connection.execute(
+        "INSERT INTO social_account_assignments (integration_id, user_id, created_at) VALUES (?,?,?)",
+        [candidate.id, userId, utc(new Date())]
+      );
+      await connection.execute(
+        "UPDATE social_accounts SET assigned_by_user_id=?, origin='connect' WHERE integration_id=?",
+        [userId, candidate.id]
+      );
+    } else if (!assignedUserIds.includes(userId)) {
+      // An existing assignment set is never extended by re-authorisation.
       await connection.rollback();
       return { outcome: "conflict", returnView };
     }
@@ -188,24 +212,51 @@ export async function completeConnectAttempt(
 }
 
 /**
- * Administrator assignment: ownerUserId sets the new owner, null returns the channel to the
- * unassigned pool. Existence of both the channel row and the target member is validated by the
- * caller, so a missing row here simply means nothing changed.
+ * Administrator assignment: replaces the complete user set. An empty list returns the channel to
+ * the unassigned pool (administrators only). Existence of the channel and users is validated by the
+ * caller; a missing row here returns false without changing anything.
  */
-export async function assignAccount(
+export async function replaceAccountAssignments(
   integrationId: string,
-  ownerUserId: string | null,
+  userIds: string[],
   adminUserId: string
-): Promise<void> {
-  if (ownerUserId) {
-    await database().execute(
-      "UPDATE social_accounts SET owner_user_id=?, assigned_by_user_id=?, origin='admin' WHERE integration_id=?",
-      [ownerUserId, adminUserId, integrationId]
-    );
-  } else {
-    await database().execute(
-      "UPDATE social_accounts SET owner_user_id=NULL, assigned_by_user_id=NULL, origin=NULL WHERE integration_id=?",
+): Promise<boolean> {
+  const ids = [...new Set(userIds)];
+  const connection = await database().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [accounts] = await connection.execute<RowDataPacket[]>(
+      "SELECT integration_id FROM social_accounts WHERE integration_id=? FOR UPDATE",
       [integrationId]
     );
+    if (!accounts.length) {
+      await connection.rollback();
+      return false;
+    }
+    await connection.execute("DELETE FROM social_account_assignments WHERE integration_id=?", [integrationId]);
+    if (ids.length) {
+      const now = utc(new Date());
+      await connection.execute(
+        `INSERT INTO social_account_assignments (integration_id, user_id, created_at)
+         VALUES ${ids.map(() => "(?,?,?)").join(",")}`,
+        ids.flatMap(userId => [integrationId, userId, now])
+      );
+      await connection.execute(
+        "UPDATE social_accounts SET assigned_by_user_id=?, origin='admin' WHERE integration_id=?",
+        [adminUserId, integrationId]
+      );
+    } else {
+      await connection.execute(
+        "UPDATE social_accounts SET assigned_by_user_id=NULL, origin=NULL WHERE integration_id=?",
+        [integrationId]
+      );
+    }
+    await connection.commit();
+    return true;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
 }

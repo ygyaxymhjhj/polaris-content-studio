@@ -31,15 +31,19 @@ export interface SubmissionStatusSnapshot {
   publishedAt: string | null;
 }
 
+export interface SocialAccountAssignee {
+  id: string;
+  name: string;
+}
+
 export interface SocialAccount {
   id: string;
   name: string;
   identifier: string;
   picture?: string;
   disabled?: boolean;
-  /** Local ownership: the member this channel belongs to; null/undefined means unassigned (admins only). */
-  ownerUserId?: string | null;
-  ownerName?: string | null;
+  /** Members allowed to use this channel; empty/undefined means unassigned (admins only). */
+  assignedUsers?: SocialAccountAssignee[];
 }
 
 export interface FactItem {

@@ -117,7 +117,10 @@ function createHarness() {
     "@/lib/post-types": postTypes,
     "@/lib/video-uploads": { getVideoUpload: async () => { throw new Error("Legacy image tasks must not query video uploads"); } },
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
-    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: "x", accountName: "Account" }) },
+    "@/lib/social-accounts": {
+      getSocialAccount: async () => ({ assignedUsers: [{ id: harness.accountOwner, name: "Account" }], provider: "x", accountName: "Account" }),
+      isAccountAssignedTo: (account, userId) => Boolean(account?.assignedUsers?.some(user => user.id === userId))
+    },
     "@/lib/postiz": {
       ...upstream,
       fetchPostizIntegrations: async () => {

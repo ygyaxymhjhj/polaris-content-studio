@@ -202,13 +202,17 @@ const route = loadModule("../src/app/api/posts/route.ts", {
   "@/lib/posts": {
     sweepStaleSubmissions: async () => 0,
     listManualPosts: async () => ({ items: [], total: 0, counts: { all: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 } }),
-    createManualPost: async (ownerUserId, input) => { createdPosts.push({ ownerUserId, input }); return { id: postId }; }
+    createManualPost: async (ownerUserId, input) => { createdPosts.push({ ownerUserId, input }); return { id: postId }; },
+    PostMediaValidationError: class PostMediaValidationError extends Error {},
+    PostScheduleValidationError: class PostScheduleValidationError extends Error {}
   },
   "@/lib/post-media": { validatePostImage: media.validatePostImage },
   "@/lib/request-body": loadModule("../src/lib/request-body.ts"),
   "@/lib/post-types": postTypes,
   "@/lib/social-accounts": {
-    listAccountOwners: async () => new Map([[integrationId, { integrationId, provider: "x", accountName: "Owned Account", ownerUserId: memberUser.id, ownerName: "Manual Author", origin: "connect" }]])
+    listSocialAccounts: async () => new Map([[integrationId, { integrationId, provider: "x", accountName: "Owned Account",
+      assignedUsers: [{ id: memberUser.id, name: "Manual Author" }], origin: "connect" }]]),
+    isAccountAssignedTo: (account, userId) => Boolean(account?.assignedUsers?.some(user => user.id === userId))
   }
 });
 

@@ -39,7 +39,10 @@ for (const kind of ["manual", "asset"]) {
       "@/lib/same-origin": { isSameOrigin: () => true },
       "@/lib/request-body": loadModule("../src/lib/request-body.ts"),
       "@/lib/image-upload": loadModule("../src/lib/image-upload.ts"),
-      "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: "owner", provider: "x" }) },
+      "@/lib/social-accounts": {
+        getSocialAccount: async () => ({ assignedUsers: [{ id: "owner", name: "Owner" }], provider: "x" }),
+        isAccountAssignedTo: (account, userId) => Boolean(account?.assignedUsers?.some(user => user.id === userId))
+      },
       "@/lib/draft-submissions": { enqueueManualSubmission: enqueue, enqueueAssetSubmission: enqueue },
       "@/lib/draft-submission-scheduler": { wakeDraftSubmissionWorker: async () => { externalCalls++; await never; } },
       "@/lib/postiz": { createStrictDraft: async () => { externalCalls++; await never; } },
@@ -142,7 +145,10 @@ function createHarness() {
     "@/lib/image-uploads": imageUploads,
     "@/lib/post-types": postTypes,
     "@/lib/auth": { ownerHashFor: owner => `hash-${owner}` },
-    "@/lib/social-accounts": { getSocialAccount: async () => ({ ownerUserId: harness.accountOwner, provider: harness.accountProvider || "x", accountName: "Account" }) },
+    "@/lib/social-accounts": {
+      getSocialAccount: async () => ({ assignedUsers: [{ id: harness.accountOwner, name: "Owner" }], provider: harness.accountProvider || "x", accountName: "Account" }),
+      isAccountAssignedTo: (account, userId) => Boolean(account?.assignedUsers?.some(user => user.id === userId))
+    },
     "@/lib/postiz": {
       fetchPostizIntegrations: async () => { assert.equal(transactionOpen, false); return { configured: true, accounts: harness.liveAccountMissing ? [] : [{ id: "account", identifier: harness.liveIdentifier, disabled: harness.liveDisabled }] }; },
       fetchPostizPostDetails: async () => {

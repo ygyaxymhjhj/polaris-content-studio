@@ -8,8 +8,8 @@ import { openWorkspace, signIn } from './_login.mjs';
 
 const base = process.env.TEST_BASE_URL || 'http://localhost:3002';
 const accounts = [
-  { id: 'acct-first', name: 'First Desk', identifier: 'x', disabled: false, ownerUserId: null, ownerName: null },
-  { id: 'acct-second', name: 'Second Desk', identifier: 'x', disabled: false, ownerUserId: null, ownerName: null }
+  { id: 'acct-first', name: 'First Desk', identifier: 'x', disabled: false, assignedUsers: [] },
+  { id: 'acct-second', name: 'Second Desk', identifier: 'x', disabled: false, assignedUsers: [] }
 ];
 const analysis = {
   summaryShort: 'Dialog regression source',

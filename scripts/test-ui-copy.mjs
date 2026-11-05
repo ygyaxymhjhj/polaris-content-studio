@@ -196,7 +196,7 @@ await submitAsset(selectedMediaAsset, 'account');
 assert.equal(submittedMediaPayload.videoMediaId, videoId);
 assert.equal(Object.hasOwn(submittedMediaPayload, 'imageUrl'), false, 'actual AI submission never adds an article-image fallback to video');
 const analysis = { summaryShort: 'Article summary', summaryLong: 'Source context.', keyTerms: [], riskFlags: [], facts: [{ id: 'fact', type: 'claim', text: 'Source claim', sourceExcerpt: 'Source claim', sourceLocation: 'Article', verified: true, usableOnSocial: true, riskLevel: 'low' }] };
-const accountProperties = { accounts: [{ id: 'account', name: 'News desk', identifier: 'x' }], configured: true, uiUrl: consoleUrl, loading: false, error: '', notice: '', syncedAt: '', isAdmin: true, onAddAccount: noop, onRefresh: noop };
+const accountProperties = { accounts: [{ id: 'account', name: 'News desk', identifier: 'x', assignedUsers: [{ id: 'member', name: 'Ana' }] }], configured: true, uiUrl: consoleUrl, loading: false, error: '', notice: '', syncedAt: '', isAdmin: true, onAddAccount: noop, onRefresh: noop };
 const assetProperties = { assets: [asset], filteredAssets: [asset], filter: 'all', setFilter: noop, onOpen: noop, onPublish: noop, onGenerate: noop, onExport: noop, loading: null, usedFallback: false, pendingPlatforms: [], targetCount: 1, config };
 const exportProperties = { assets: [asset], submittedCount: 0, onExport: noop, onBatchSubmitDrafts: noop, loading: null, socialAccountsCount: 1 };
 const connectProperties = { open: true, onClose: noop, configured: true, oauthConfigured: true, loading: false, uiUrl: consoleUrl, accounts: [], error: '', onRefresh: noop, canUsePostizUi: true };
@@ -212,6 +212,9 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
   const accounts = load(renderView(language, SocialAccountsView, accountProperties));
   assert.equal(accounts('.accounts-guide, .accounts-trust-note').length, 0);
   assert.equal(accounts('.accounts-directory-row').length, 1);
+  assert.equal(accounts('.account-owner-control select').length, 0, 'assignment uses a multi-select checklist, not a single-owner select');
+  assert.ok(accounts('.account-owner-control > summary').text().includes(translate(language, 'Assigned to')));
+  assert.ok(accounts('.account-owner-control > summary').text().includes('Ana'));
   assert.equal(accounts('.accounts-list-footer a').attr('href'), consoleUrl);
   assert.equal(accounts('.accounts-list-footer > span').eq(1).text(), conciseLabels[language].connected);
   assert.equal(translate(language, 'Submit to Postiz draft'), conciseLabels[language].single);

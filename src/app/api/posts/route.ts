@@ -6,7 +6,7 @@ import { isSameOrigin } from "@/lib/same-origin";
 import { createManualPost, listManualPosts, PostMediaValidationError, PostScheduleValidationError, sweepStaleSubmissions, type PostAccountSnapshot } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
 import { areImageMediaIds } from "@/lib/image-types";
-import { listAccountOwners } from "@/lib/social-accounts";
+import { isAccountAssignedTo, listSocialAccounts } from "@/lib/social-accounts";
 import { readBoundedJson } from "@/lib/request-body";
 import { MAX_POST_TARGETS, POST_CONTENT_MAX_LENGTH, POST_PUBLISH_MODES, POST_TITLE_MAX_LENGTH } from "@/lib/post-types";
 
@@ -43,14 +43,14 @@ async function resolveTargets(
   integrationIds: string[] | undefined
 ): Promise<{ ok: true; targets: PostAccountSnapshot[] } | { ok: false; message: string }> {
   if (!integrationIds?.length) return { ok: true, targets: [] };
-  const owners = await listAccountOwners();
+  const records = await listSocialAccounts();
   const targets: PostAccountSnapshot[] = [];
   for (const integrationId of [...new Set(integrationIds)]) {
-    const record = owners.get(integrationId);
+    const record = records.get(integrationId);
     if (!record) return { ok: false, message: "That social account is not in the local registry yet. Refresh the account list and try again." };
-    // Members may only target their own channels; administrators keep full access, matching the
-    // publish route. Refusals never reach Postiz.
-    if (!isAdmin && record.ownerUserId !== userId) {
+    // Members may only target accounts assigned to them; administrators keep full access, matching
+    // the publish route. An account may be assigned to several members.
+    if (!isAdmin && !isAccountAssignedTo(record, userId)) {
       return { ok: false, message: "One of the selected accounts is not assigned to you. Ask an administrator to assign it." };
     }
     targets.push({ integrationId, platform: record.provider || "", accountName: record.accountName || integrationId });

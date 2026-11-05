@@ -32,11 +32,13 @@ function createFakeDatabase() {
   const state = {
     users: new Map(),
     accounts: new Map(),
+    assignments: new Map(),
     attempts: new Map(),
     draftTasks: new Map(),
     publishes: [],
     statements: []
   };
+  const assignmentsFor = (integrationId) => state.assignments.get(integrationId) ?? new Set();
   const database = {
     state,
     execute: async (sql, params = []) => {
@@ -59,49 +61,85 @@ function createFakeDatabase() {
         const task = state.draftTasks.get(params[0]);
         return [task && task.owner_user_id === params[1] ? [task] : []];
       }
-      if (text.startsWith("INSERT INTO social_accounts") && text.includes("'connect'")) {
-        const [integrationId, provider, accountName, ownerUserId, assignedBy] = params;
-        const existing = state.accounts.get(integrationId);
-        if (!existing) {
-          state.accounts.set(integrationId, {
-            integration_id: integrationId, provider, account_name: accountName,
-            owner_user_id: ownerUserId, assigned_by_user_id: assignedBy, origin: "connect"
-          });
-          return [{ affectedRows: 1 }];
-        }
-        if (existing.owner_user_id == null) {
-          existing.owner_user_id = ownerUserId;
-          existing.assigned_by_user_id = assignedBy;
-          existing.origin = "connect";
-          return [{ affectedRows: 2 }];
-        }
-        return [{ affectedRows: 0 }];
-      }
       if (text.startsWith("INSERT INTO social_accounts")) {
+        let affectedRows = 0;
         for (let i = 0; i < params.length; i += 3) {
           const [integrationId, provider, accountName] = params.slice(i, i + 3);
           const existing = state.accounts.get(integrationId);
           if (existing) {
             existing.provider = provider;
             existing.account_name = accountName;
+            affectedRows += 2;
           } else {
             state.accounts.set(integrationId, {
               integration_id: integrationId, provider, account_name: accountName,
-              owner_user_id: null, assigned_by_user_id: null, origin: null
+              assigned_by_user_id: null, origin: null
+            });
+            affectedRows += 1;
+          }
+        }
+        return [{ affectedRows }];
+      }
+      if (text.startsWith("SELECT") && text.includes("FROM social_accounts a")) {
+        let accounts = [...state.accounts.values()];
+        if (text.includes("WHERE a.integration_id = ?")) {
+          accounts = accounts.filter((account) => account.integration_id === params[0]);
+        }
+        const rows = [];
+        for (const account of accounts) {
+          const assignees = [...assignmentsFor(account.integration_id)]
+            .map(userId => state.users.get(userId))
+            .filter(Boolean)
+            .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id));
+          for (const assignee of assignees.length ? assignees : [null]) {
+            rows.push({
+              ...account,
+              assigned_user_id: assignee?.id ?? null,
+              assigned_user_name: assignee?.displayName ?? null
             });
           }
         }
+        return [rows];
+      }
+      if (text.startsWith("SELECT integration_id FROM social_accounts")) {
+        const account = state.accounts.get(params[0]);
+        return [account ? [{ integration_id: account.integration_id }] : []];
+      }
+      if (text.startsWith("SELECT user_id FROM social_account_assignments")) {
+        return [[...assignmentsFor(params[0])].map(userId => ({ user_id: userId }))];
+      }
+      if (text.startsWith("INSERT INTO social_account_assignments")) {
+        for (let i = 0; i < params.length; i += 3) {
+          const [integrationId, userId] = params.slice(i, i + 3);
+          const assigned = assignmentsFor(integrationId);
+          assigned.add(userId);
+          state.assignments.set(integrationId, assigned);
+        }
         return [{ affectedRows: params.length / 3 }];
       }
-      if (text.startsWith("SELECT") && text.includes("FROM social_accounts a")) {
-        let rows = [...state.accounts.values()].map((row) => ({
-          ...row,
-          owner_name: row.owner_user_id ? state.users.get(row.owner_user_id)?.displayName ?? null : null
-        }));
-        if (text.includes("WHERE a.integration_id = ?")) {
-          rows = rows.filter((row) => row.integration_id === params[0]);
-        }
-        return [rows];
+      if (text.startsWith("DELETE FROM social_account_assignments")) {
+        return [{ affectedRows: state.assignments.delete(params[0]) ? 1 : 0 }];
+      }
+      if (text.startsWith("UPDATE social_accounts SET assigned_by_user_id=?, origin='connect'")) {
+        const account = state.accounts.get(params[1]);
+        if (!account) return [{ affectedRows: 0 }];
+        account.assigned_by_user_id = params[0];
+        account.origin = "connect";
+        return [{ affectedRows: 1 }];
+      }
+      if (text.startsWith("UPDATE social_accounts SET assigned_by_user_id=?, origin='admin'")) {
+        const account = state.accounts.get(params[1]);
+        if (!account) return [{ affectedRows: 0 }];
+        account.assigned_by_user_id = params[0];
+        account.origin = "admin";
+        return [{ affectedRows: 1 }];
+      }
+      if (text.startsWith("UPDATE social_accounts SET assigned_by_user_id=NULL")) {
+        const account = state.accounts.get(params[0]);
+        if (!account) return [{ affectedRows: 0 }];
+        account.assigned_by_user_id = null;
+        account.origin = null;
+        return [{ affectedRows: 1 }];
       }
       if (text.startsWith("INSERT INTO social_connect_attempts")) {
         const [stateHash, userId, provider, snapshotIds, returnView, expiresAt] = params;
@@ -131,26 +169,6 @@ function createFakeDatabase() {
         const row = state.attempts.get(params[0]);
         return [row ? [{ ...row }] : []];
       }
-      if (text.startsWith("SELECT owner_user_id FROM social_accounts")) {
-        const row = state.accounts.get(params[0]);
-        return [row ? [{ owner_user_id: row.owner_user_id }] : []];
-      }
-      if (text.startsWith("UPDATE social_accounts SET owner_user_id=?")) {
-        const row = state.accounts.get(params[2]);
-        if (!row) return [{ affectedRows: 0 }];
-        row.owner_user_id = params[0];
-        row.assigned_by_user_id = params[1];
-        row.origin = "admin";
-        return [{ affectedRows: 1 }];
-      }
-      if (text.startsWith("UPDATE social_accounts SET owner_user_id=NULL")) {
-        const row = state.accounts.get(params[0]);
-        if (!row) return [{ affectedRows: 0 }];
-        row.owner_user_id = null;
-        row.assigned_by_user_id = null;
-        row.origin = null;
-        return [{ affectedRows: 1 }];
-      }
       if (text.startsWith("INSERT INTO social_publishes")) {
         state.publishes.push({ integrationId: params[4], publishedBy: params[6], status: params[12] });
         return [{ affectedRows: 1 }];
@@ -162,10 +180,15 @@ function createFakeDatabase() {
     let snapshot;
     return {
       execute: (sql, params) => database.execute(sql, params),
-      beginTransaction: async () => { snapshot = structuredClone({ accounts: state.accounts, attempts: state.attempts }); },
+      beginTransaction: async () => { snapshot = structuredClone({ accounts: state.accounts, assignments: state.assignments, attempts: state.attempts }); },
       commit: async () => { snapshot = undefined; },
       rollback: async () => {
-        if (snapshot) { state.accounts = snapshot.accounts; state.attempts = snapshot.attempts; snapshot = undefined; }
+        if (snapshot) {
+          state.accounts = snapshot.accounts;
+          state.assignments = snapshot.assignments;
+          state.attempts = snapshot.attempts;
+          snapshot = undefined;
+        }
       },
       release() {}
     };
@@ -178,12 +201,17 @@ try {
   const users = [
     { id: "11111111-1111-4111-8111-111111111111", displayName: "Admin", role: "admin" },
     { id: "22222222-2222-4222-8222-222222222222", displayName: "Ana", role: "member" },
-    { id: "33333333-3333-4333-8333-333333333333", displayName: "Ben", role: "member" }
+    { id: "33333333-3333-4333-8333-333333333333", displayName: "Ben", role: "member" },
+    { id: "44444444-4444-4444-8444-444444444444", displayName: "Disabled", role: "member", disabled: true }
   ];
-  const [adminUser, anaUser, benUser] = users;
+  const [adminUser, anaUser, benUser, disabledUser] = users;
   for (const user of users) fake.state.users.set(user.id, user);
-  fake.state.accounts.set("acct-ana", { integration_id: "acct-ana", provider: "x", account_name: "Ana X", owner_user_id: anaUser.id, assigned_by_user_id: anaUser.id, origin: "connect" });
-  fake.state.accounts.set("acct-ben", { integration_id: "acct-ben", provider: "x", account_name: "Ben X", owner_user_id: benUser.id, assigned_by_user_id: adminUser.id, origin: "admin" });
+  fake.state.accounts.set("acct-ana", { integration_id: "acct-ana", provider: "x", account_name: "Ana X", assigned_by_user_id: anaUser.id, origin: "connect" });
+  fake.state.accounts.set("acct-ben", { integration_id: "acct-ben", provider: "x", account_name: "Ben X", assigned_by_user_id: adminUser.id, origin: "admin" });
+  fake.state.accounts.set("acct-shared", { integration_id: "acct-shared", provider: "x", account_name: "Shared X", assigned_by_user_id: adminUser.id, origin: "admin" });
+  fake.state.assignments.set("acct-ana", new Set([anaUser.id]));
+  fake.state.assignments.set("acct-ben", new Set([benUser.id]));
+  fake.state.assignments.set("acct-shared", new Set([anaUser.id, benUser.id]));
 
   let currentAuth = null;
   const authMock = {
@@ -191,7 +219,7 @@ try {
     unauthorized: () => NextResponse.json({ code: "UNAUTHORIZED" }, { status: 401 }),
     findUserById: async (id) => {
       const user = fake.state.users.get(id);
-      return user ? { ...user, username: user.id, disabled: false, createdAt: "2026-10-08 00:00:00" } : undefined;
+      return user ? { ...user, username: user.id, disabled: Boolean(user.disabled), createdAt: "2026-10-08 00:00:00" } : undefined;
     }
   };
   const projectDbModule = { databaseConfigured: () => true, database: () => fake };
@@ -202,7 +230,8 @@ try {
   const liveAccounts = [
     { id: "acct-old", name: "Distant", identifier: "x", disabled: false },
     { id: "acct-ana", name: "Ana X", identifier: "x", disabled: false },
-    { id: "acct-ben", name: "Ben X", identifier: "x", disabled: true }
+    { id: "acct-ben", name: "Ben X", identifier: "x", disabled: true },
+    { id: "acct-shared", name: "Shared X", identifier: "x", disabled: false }
   ];
   const channelsPostiz = {
     fetchPostizIntegrations: async () => ({ configured: true, accounts: liveAccounts }),
@@ -215,16 +244,20 @@ try {
 
   currentAuth = { user: anaUser };
   const anaChannels = await (await channelsRoute.GET()).json();
-  assert.deepEqual(anaChannels.accounts.map((account) => account.id), ["acct-ana"], "Members only see their own channels");
-  assert.equal(anaChannels.accounts[0].ownerUserId, anaUser.id);
-  assert.equal(anaChannels.accounts[0].ownerName, "Ana");
-  assert.equal(fake.state.accounts.get("acct-old").owner_user_id, null, "Unseen Postiz channels are registered as unassigned");
+  assert.deepEqual(anaChannels.accounts.map((account) => account.id), ["acct-ana", "acct-shared"], "Members see every channel assigned to them");
+  assert.deepEqual(anaChannels.accounts[0].assignedUsers, [{ id: anaUser.id, name: "Ana" }]);
+  assert.deepEqual(anaChannels.accounts[1].assignedUsers.map((user) => user.name), ["Ana", "Ben"]);
+  assert.equal(fake.state.accounts.get("acct-old").assigned_by_user_id, null, "Unseen Postiz channels are registered as unassigned");
+
+  currentAuth = { user: benUser };
+  const benChannels = await (await channelsRoute.GET()).json();
+  assert.deepEqual(benChannels.accounts.map((account) => account.id), ["acct-ben", "acct-shared"], "A shared channel is visible to both assignees");
 
   currentAuth = { user: adminUser };
   const adminChannels = await (await channelsRoute.GET()).json();
-  assert.deepEqual(adminChannels.accounts.map((account) => account.id).sort(), ["acct-ana", "acct-ben", "acct-old"], "Admins see every channel");
-  assert.equal(adminChannels.accounts.find((account) => account.id === "acct-old").ownerUserId, null);
-  assert.equal(adminChannels.accounts.find((account) => account.id === "acct-ben").ownerName, "Ben");
+  assert.deepEqual(adminChannels.accounts.map((account) => account.id).sort(), ["acct-ana", "acct-ben", "acct-old", "acct-shared"], "Admins see every channel");
+  assert.deepEqual(adminChannels.accounts.find((account) => account.id === "acct-old").assignedUsers, []);
+  assert.deepEqual(adminChannels.accounts.find((account) => account.id === "acct-ben").assignedUsers, [{ id: benUser.id, name: "Ben" }]);
 
   channelsPostiz.fetchPostizIntegrations = async () => ({ configured: true, accounts: [], error: "Postiz API error (500): upstream" });
   currentAuth = { user: anaUser };
@@ -288,10 +321,16 @@ try {
   assert.equal(fake.state.publishes.length, 0, "Acceptance alone never invents a successful audit");
   assert.equal(wakeups.length, 1);
 
+  const sharedPublish = await publishRoute.POST(publishRequest("acct-shared"));
+  assert.equal(sharedPublish.status, 202, "Any assignee may publish to a shared channel");
+  currentAuth = { user: benUser };
+  assert.equal((await publishRoute.POST(publishRequest("acct-shared"))).status, 202, "Sharing grants equal publish access");
+  assert.equal(fake.state.draftTasks.size, 3);
+
   currentAuth = { user: adminUser };
   assert.equal((await publishRoute.POST(publishRequest("acct-old"))).status, 202, "Admins may submit to unassigned channels");
-  assert.equal(fake.state.draftTasks.size, 2);
-  assert.equal(wakeups.length, 2);
+  assert.equal(fake.state.draftTasks.size, 4);
+  assert.equal(wakeups.length, 4);
 
   // ---------- 3. Connect return: claim only channels that appeared after the snapshot ----------
   let capturedRedirect = "";
@@ -329,28 +368,34 @@ try {
   connectLive = [...liveAccounts, { id: "acct-new", name: "New X", identifier: "x", disabled: false }];
   const claimResponse = await returnFromConnect(capturedRedirect, claimCookie);
   assert.equal(await connectionOutcome(claimResponse), "returned");
-  assert.equal(fake.state.accounts.get("acct-new").owner_user_id, anaUser.id, "A channel created after the snapshot is claimed for the initiator");
+  assert.deepEqual([...(fake.state.assignments.get("acct-new") ?? [])], [anaUser.id], "A channel created after the snapshot is assigned to the initiator");
   assert.equal(fake.state.accounts.get("acct-new").origin, "connect");
-  assert.equal(fake.state.accounts.get("acct-old").owner_user_id, null, "Pre-existing channels stay untouched");
+  assert.equal((fake.state.assignments.get("acct-old") ?? new Set()).size, 0, "Pre-existing channels stay untouched");
   assert.ok(fake.state.attempts.get(claimCookie).consumed_at, "The attempt is consumed exactly once");
 
   connectLive = [...connectLive, { id: "acct-replay", name: "Replay X", identifier: "x", disabled: false }];
   assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, claimCookie)), "invalid", "Consumed attempts cannot report success on replay");
-  const replayRow = fake.state.accounts.get("acct-replay");
-  assert.ok(!replayRow || replayRow.owner_user_id === null, "A replayed return must not claim again");
+  assert.equal((fake.state.assignments.get("acct-replay") ?? new Set()).size, 0, "A replayed return must not claim again");
 
   const providerCookie = await startConnect("x");
   connectLive = [...connectLive, { id: "acct-fb", name: "FB Page", identifier: "facebook", disabled: false }];
   assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, providerCookie)), "unconfirmed");
   assert.equal(fake.state.attempts.get(providerCookie).consumed_at, null);
-  const fbRow = fake.state.accounts.get("acct-fb");
-  assert.ok(!fbRow || fbRow.owner_user_id === null, "Channels of another provider are not claimed");
+  assert.equal((fake.state.assignments.get("acct-fb") ?? new Set()).size, 0, "Channels of another provider are not claimed");
 
   const ownedCookie = await startConnect("x");
-  fake.state.accounts.set("acct-owned", { integration_id: "acct-owned", provider: "x", account_name: "Owned", owner_user_id: benUser.id, assigned_by_user_id: adminUser.id, origin: "admin" });
+  fake.state.accounts.set("acct-owned", { integration_id: "acct-owned", provider: "x", account_name: "Owned", assigned_by_user_id: adminUser.id, origin: "admin" });
+  fake.state.assignments.set("acct-owned", new Set([benUser.id]));
   connectLive = [...connectLive, { id: "acct-owned", name: "Owned", identifier: "x", disabled: false }];
   assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, ownedCookie)), "conflict");
-  assert.equal(fake.state.accounts.get("acct-owned").owner_user_id, benUser.id, "An already-owned channel is never overwritten");
+  assert.deepEqual([...(fake.state.assignments.get("acct-owned") ?? [])], [benUser.id], "An already-assigned channel is never extended by re-authorisation");
+
+  const sharedCookie = await startConnect("x");
+  fake.state.accounts.set("acct-already-shared", { integration_id: "acct-already-shared", provider: "x", account_name: "Already Shared", assigned_by_user_id: adminUser.id, origin: "admin" });
+  fake.state.assignments.set("acct-already-shared", new Set([anaUser.id, benUser.id]));
+  connectLive = [...connectLive, { id: "acct-already-shared", name: "Already Shared", identifier: "x", disabled: false }];
+  assert.equal(await connectionOutcome(await returnFromConnect(capturedRedirect, sharedCookie)), "returned", "An existing assignee re-authorising is idempotent");
+  assert.deepEqual([...(fake.state.assignments.get("acct-already-shared") ?? [])].sort(), [anaUser.id, benUser.id].sort(), "Re-authorisation never changes the set");
 
   connectPostiz.fetchPostizIntegrations = async () => { throw new Error("Postiz unreachable"); };
   const previousRedirect = capturedRedirect;
@@ -368,14 +413,13 @@ try {
   connectLive = [...connectLive, { id: "acct-expired", name: "Expired", identifier: "x", disabled: false }];
   const expiredResponse = await returnFromConnect(capturedRedirect, expiredCookie);
   assert.equal(await connectionOutcome(expiredResponse), "invalid");
-  const expiredRow = fake.state.accounts.get("acct-expired");
-  assert.ok(!expiredRow || expiredRow.owner_user_id === null, "An expired attempt claims nothing");
+  assert.equal((fake.state.assignments.get("acct-expired") ?? new Set()).size, 0, "An expired attempt claims nothing");
 
   const pollutedCookie = await startConnect("x");
   connectLive = [...connectLive, { id: "acct-polluted", name: "Polluted", identifier: "x", disabled: false }];
   const pollutedResponse = await returnFromConnect(`${capturedRedirect}?added=x&msg=Channel+Updated`, pollutedCookie);
   assert.equal(await connectionOutcome(pollutedResponse), "returned", "Postiz-appended params must not break the return");
-  assert.equal(fake.state.accounts.get("acct-polluted").owner_user_id, anaUser.id, "Claiming still works with appended params");
+  assert.deepEqual([...(fake.state.assignments.get("acct-polluted") ?? [])], [anaUser.id], "Claiming still works with appended params");
 
   const forgedResponse = await returnFromConnect(`${capturedRedirect}?added=x`, "f".repeat(64));
   assert.equal(await connectionOutcome(forgedResponse), "invalid");
@@ -391,27 +435,34 @@ try {
   const context = (integrationId) => ({ params: Promise.resolve({ integrationId }) });
 
   currentAuth = { user: anaUser };
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: anaUser.id }), context("acct-old"))).status, 403);
-  assert.equal(fake.state.accounts.get("acct-old").owner_user_id, null, "Members cannot assign channels");
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [anaUser.id] }), context("acct-old"))).status, 403);
+  assert.equal((fake.state.assignments.get("acct-old") ?? new Set()).size, 0, "Members cannot assign channels");
 
   currentAuth = { user: adminUser };
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: anaUser.id }, "https://untrusted.example.test"), context("acct-old"))).status, 403);
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: "not-a-uuid" }), context("acct-old"))).status, 400);
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: anaUser.id, extra: 1 }), context("acct-old"))).status, 400);
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: "99999999-9999-4999-8999-999999999999" }), context("acct-old"))).status, 400);
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-missing", { ownerUserId: anaUser.id }), context("acct-missing"))).status, 404);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [anaUser.id] }, "https://untrusted.example.test"), context("acct-old"))).status, 403);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: ["not-a-uuid"] }), context("acct-old"))).status, 400);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [anaUser.id], extra: 1 }), context("acct-old"))).status, 400);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: ["99999999-9999-4999-8999-999999999999"] }), context("acct-old"))).status, 400);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [disabledUser.id] }), context("acct-old"))).status, 400, "A disabled member cannot be newly assigned");
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-missing", { userIds: [anaUser.id] }), context("acct-missing"))).status, 404);
 
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: anaUser.id }), context("acct-old"))).status, 200);
-  assert.equal(fake.state.accounts.get("acct-old").owner_user_id, anaUser.id);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [anaUser.id, benUser.id] }), context("acct-old"))).status, 200);
+  assert.deepEqual([...(fake.state.assignments.get("acct-old") ?? [])].sort(), [anaUser.id, benUser.id].sort(), "The API replaces the complete assignment set");
   assert.equal(fake.state.accounts.get("acct-old").origin, "admin");
   assert.equal(fake.state.accounts.get("acct-old").assigned_by_user_id, adminUser.id);
 
-  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { ownerUserId: null }), context("acct-old"))).status, 200);
-  assert.equal(fake.state.accounts.get("acct-old").owner_user_id, null, "Unassigning returns the channel to the admin-only pool");
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [benUser.id] }), context("acct-old"))).status, 200);
+  assert.deepEqual([...(fake.state.assignments.get("acct-old") ?? [])], [benUser.id], "Removing one member keeps the others");
+
+  fake.state.assignments.get("acct-old").add(disabledUser.id);
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [benUser.id, disabledUser.id] }), context("acct-old"))).status, 200, "An existing disabled assignee stays editable");
+
+  assert.equal((await assignRoute.PATCH(assignRequest("acct-old", { userIds: [] }), context("acct-old"))).status, 200);
+  assert.deepEqual([...(fake.state.assignments.get("acct-old") ?? [])], [], "Unassigning returns the channel to the admin-only pool");
   assert.equal(fake.state.accounts.get("acct-old").origin, null);
 
   originalConsoleError(`(expected route diagnostics captured: ${loggedErrors.length})`);
-  console.log("PASS: member list filtered and admin list decorated; publish refused for others' and unassigned channels without touching Postiz; claims limited to new, provider-matching, unowned channels with single-use attempts; assignment API admin-only with validation; polluted and forged returns handled.");
+  console.log("PASS: assignment-based channel filtering for members and admins; shared accounts usable by every assignee; publish refused for non-assignees and unassigned channels; claims limited to new, provider-matching, unassigned channels with single-use attempts and no re-auth widening; assignment API admin-only with replace-set validation.");
 } finally {
   console.error = originalConsoleError;
 }

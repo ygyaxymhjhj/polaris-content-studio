@@ -1,15 +1,16 @@
 # 社媒账号授权与分配模型
 
-## 1. 决策：个人归属 + 管理员分配
+## 1. 决策：账号可分配给多个用户（用户集合）+ 仅管理员管理分配
 
-社媒账号归属到个人，访问由服务端强制校验（本次已确认的规则）：
+社媒账号可以同时分配给多个用户，访问由服务端强制校验：
 
-- 成员默认只能查看、只能发布到自己**授权**或**管理员分配**的账号；其他成员的账号不可见、不可用（服务端强制，不只是界面过滤）。
-- 管理员可查看、分配、使用工作区内全部账号；可把存量账号分配/改派/收回给任意成员。
-- **不对 Postiz 做任何修改**。Postiz 里已授权的存量账号不动，进入「未分配」池（仅管理员可见），由管理员分配给成员。
-- 成员正常新增授权的账号默认归属发起成员（快照 + 单候选认领，见第 3 节），不需要管理员再次分配。只有归属写入成功后才显示授权完成。
+- 成员默认只能查看、只能发布到**分配给自己**的账号；一个账号可以分配给任意多个成员，所有被分配用户权限完全平等。其他账号不可见、不可用（服务端强制，不只是界面过滤）。
+- 管理员可查看、分配、使用工作区内全部账号；只有管理员可以添加/移除账号的共享用户。
+- 不保留“主负责人”：账号只维护一个用户集合；发布审计仍记录实际提交人。
+- **不对 Postiz 做任何修改**。Postiz 里已授权的存量账号不动，升级时原 `owner_user_id` 会回填为唯一被分配用户。
+- 成员正常新增授权的账号默认归属发起成员（快照 + 单候选认领，见第 3 节）；已有分配集合的账号在重新授权时**不追加、不覆盖**，成员不会因此获得访问权。只有归属写入成功后才显示授权完成。
 
-为什么不沿用共享池：出现「部分账号不能让所有人发」的需求后，团队共享池无法表达账号级访问。风控仍靠「服务端校验 + 分配留痕 + 发布审计」实现，账号归属只是可见性与发布权的边界，token 依旧由 Postiz 统一管理。
+风控仍靠「服务端校验 + 分配留痕 + 发布审计」实现，账号分配只是可见性与发布权的边界，token 依旧由 Postiz 统一管理。共享账号**不等于共享草稿**：帖子、项目、图片/视频上传仍归创建者私有。
 
 ## 2. 授权网关：Postiz
 
@@ -27,25 +28,26 @@
 
 ## 3. 归属登记与自动认领
 
-两张本地表（见 `deploy/mysql/init.sql` 与 `deploy/mysql/migrations/2026-10-08-social-account-ownership.sql`）：
+三张本地表（见 `deploy/mysql/init.sql` 与 `deploy/mysql/migrations/`）：
 
-- `social_accounts`：`integration_id` 主键、`provider`/`account_name` 快照、`owner_user_id`（NULL = 未分配，仅管理员可见）、`assigned_by_user_id`、`origin ENUM('connect','admin')`。
+- `social_accounts`：`integration_id` 主键、`provider`/`account_name` 快照、`assigned_by_user_id`、`origin ENUM('connect','admin')`。`owner_user_id` 是 legacy 单负责人列：迁移回填到 assignment 后清空，新代码不读不写。
+- `social_account_assignments`：`(integration_id, user_id)` 联合主键；一个账号对应任意多个被分配用户，零行 = 未分配（仅管理员可见/可用）。`user_id` 有单列索引；账号/用户删除时级联删除。
 - `social_connect_attempts`：`state_hash` 主键（= 连接 Cookie 值 `sha256(userId:state)`）、`user_id`、`provider`、`snapshot_ids JSON`、`return_view`、`expires_at`、`consumed_at`。旧数据库还需要执行 `2026-10-12-connect-return-view.sql` 补迁移。
 
 自动认领机制（正常新增账号默认归属发起人）：
 
 1. 发起授权时（`POST /api/social/connect`）必须成功取得当前 Postiz 账号 id 快照并保存 attempt，才会生成外部授权链接。快照或数据库不可用时阻止发起，不再让用户走进无法自动归属的流程。
-2. 返回时（`GET /api/social/connect`）校验 Cookie/state，取得实时列表，并在短事务中锁定有效 attempt。仅当存在一个「快照后新增 + 平台匹配」的候选账号时，才条件写入归属；已属于他人的账号不能被覆盖。实际 owner 校验、归属写入和 attempt 消费在同一事务提交。
+2. 返回时（`GET /api/social/connect`）校验 Cookie/state，取得实时列表，并在短事务中锁定有效 attempt。仅当存在一个「快照后新增 + 平台匹配」的候选账号时，才写入分配；若账号已有分配集合，重新授权不会追加或覆盖。锁顺序为 attempt → account → assignments；分配写入和 attempt 消费在同一事务提交。
 3. Postiz 查询或数据库暂时失败时明确显示错误，保留有效 attempt 和 Cookie 供重试，不再静默显示成功或默认要求管理员补分配。零候选或多个候选时显示「尚未确认」，不自动认领；过期、重放或更换登录用户时显示无效。
 4. 回调统一通过相对重定向进入 `/social/connect/complete`，避免代理内部 `localhost` 被用于后续跳转。外部授权返回地址从通过同源校验的浏览器 Origin 构造；兼容 Postiz 在已有查询串后追加第二个 `?` 的行为。
 
 访问与发布规则（服务端强制）：
 
-- `GET /api/social/channels`：实时列表 + 归属装饰；成员只返回 `ownerUserId === 自己` 的账号，管理员返回全部并带 `ownerName`。Postiz 报错时返回空列表 + 错误，不回落登记表。
-- `POST /api/social/publish`：调用 Postiz 前校验归属——成员发他人或未分配账号（含登记表无此行）返回 403，且不写审计、不调用 Postiz；管理员放行。
-- `PATCH /api/social/accounts/:id`（管理员 + 同源校验）：`{ ownerUserId: uuid | null }` 分配/收回；账号不在登记表时 404，成员一律 403。
+- `GET /api/social/channels`：实时列表 + `assignedUsers` 装饰；成员只返回分配集合包含自己的账号，管理员返回全部（未分配账号的 `assignedUsers` 为 `[]`）。Postiz 报错时返回空列表 + 错误，不回落登记表。
+- `POST /api/social/publish` 与手动贴文目标选择：调用 Postiz 前校验分配集合——成员发未分配或未包含自己的账号（含登记表无此行）返回 403/400，且不写审计、不调用 Postiz；管理员放行。
+- `PATCH /api/social/accounts/:id`（管理员 + 同源校验）：`{ userIds: uuid[] }` 替换完整分配集合；空数组收回为「未分配」。账号不在登记表时 404，成员一律 403。新加入的禁用用户被拒绝；已在集合中的禁用用户可保留或移除。
 
-存量账号处理：升级后 Postiz 里已有的账号（如 Distant）首次出现在列表时登记为「未分配」，仅管理员可见；管理员在账号页的分配下拉里指派给成员后，该成员即可查看与发布。
+存量账号处理：升级迁移把原 `owner_user_id` 回填为唯一被分配用户并清空该列。Postiz 里新出现、登记表无记录的账号首次同步时进入「未分配」池，仅管理员可见；管理员在账号页的多选清单里勾选成员后，这些成员即可查看与发布。
 
 发布审计（`social_publishes`）：**保持全员可见**。审计回答「谁、何时、把哪条内容发到了哪个账号」，按素材/项目查询，本身落在各人的项目范围内，不在本次收紧。
 
@@ -90,14 +92,14 @@ Postiz 按平台自动选择四类连接方式：OAuth 重定向（大多数平�
 4. **所有者保护**：Owner 永远 Full Access 且不可降级。
 5. **内容归组织、操作留审计**：Postiz「成员移除后其创建的 posts 和 channels 留在组织」；Buffer「队列里能看到每条 post 是谁创建的」。
 
-本项目当前实现的是两层模型的第一层（组织角色 admin/member）+ 最简账号级访问（owner 一人可见可用 + 管理员全量）。`social_accounts.owner_user_id` 单列即「每用户 × 每账号一格」的当前形态，向「多档访问级别 / 分组」扩展时只需给该表加列或加关联表。
+本项目当前实现的是两层模型的第一层（组织角色 admin/member）+ 账号级访问集合（可多人共享、仅管理员维护）。`social_account_assignments` 即「每用户 × 每账号一格」；向「多档访问级别 / 分组」扩展时，在该表增加权限列即可。
 
 ## 5. 升级路径与触发条件
 
 | 触发条件 | 升级项 | 参考对象 |
 |---|---|---|
 | 账号多 / 多品牌，需要过滤视图 | 账号分组过滤 | Later Access Groups / Postiz customer groups（只过滤不设权限） |
-| 一个账号需要多人协作（编辑+发布） | 多档账号级权限 | Buffer 三档（Full / Needs Approval / No Access），每用户 × 每账号一格 |
+| 一个账号需要多人协作（编辑+发布） | 账号共享（已实现）/ 多档账号级权限（未来） | 当前的 `social_account_assignments`；未来参考 Buffer 三档（Full / Needs Approval / No Access） |
 | 需要「成员发起、管理员批准」 | 发布审批流 | 先做 Buffer/Later 式「审批作为权限级别」；Sprout 多层工作流留到确有多级合规需求 |
 | 品牌方 / 合规要看稿 | 外部审稿 | Postiz preview links（外部人无账号可评论，不阻塞发布） |
 | 成员账号失效需自助重连 | refreshId 重连流程 | Postiz `/enterprise/url` 的 `refreshId` 参数（本期未实现） |
@@ -109,10 +111,10 @@ Postiz 按平台自动选择四类连接方式：OAuth 重定向（大多数平�
   docker exec -i polaris-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' \
     < deploy/mysql/migrations/2026-10-08-social-account-ownership.sql
   ```
-  **新卷**由 `deploy/mysql/init.sql` 自动建表，无需迁移。早前的 `2026-10-08-social-publishes.sql`、`2026-10-08-user-roles.sql` 同理。
+  **新卷**由 `deploy/mysql/init.sql` 自动建表，无需迁移。升级到多用户共享还需要执行 `deploy/mysql/migrations/2026-11-05-social-account-assignments.sql`（回填并清空 legacy `owner_user_id`，可重复执行）。早前的 `2026-10-08-social-publishes.sql`、`2026-10-08-user-roles.sql` 同理。
 - 服务器 `.env.local` 配置 `POSTIZ_UI_URL` 为浏览器可达地址（如 `http://192.168.220.109:5000`）；服务端调 Postiz API 仍走 `POSTIZ_API_URL`（可为 localhost），两者可以不同。
 - `POSTIZ_API_URL` 可填根地址、`/api` 或 `/api/public/v1`；项目统一规范化为 `/api` 后再拼接接口路径。直连授权新增 `POSTIZ_JWT_SECRET` 后需要重启应用；不要把它改成 `NEXT_PUBLIC_` 变量。
 - 平台 OAuth 的开发者应用回调仍是 Postiz 的 `{POSTIZ_UI_URL}/integrations/social/{provider}`，不是 Polaris 的返回接口。Polaris 返回地址由当前访问域名生成，请从同一个域名发起并完成流程。
 - **不要把 Postiz 登录给普通成员**：Postiz 界面本身无法按成员隔离渠道；Polaris 内的「打开 Postiz / 改用 Postiz 连接 / 在 Postiz 中重连」入口已只对管理员展示。
-- 无真实平台凭证的回归：`node scripts/test-postiz-connect.mjs`（签名、密钥保护、匿名拦截、跨站拒绝、用户绑定的 state、成员隐藏 Postiz 入口）、`node scripts/test-user-roles.mjs`、`node scripts/test-social-ownership.mjs`（列表过滤、发布 403、认领规则、分配 API、返回容错）。真实 OAuth 与浏览器回归（`node scripts/test-auth.mjs`，需 `TEST_BASE_URL` 指向本地服务）仍需运维配置匹配的 JWT secret 与各平台应用后人工验收。
+- 无真实平台凭证的回归：`node scripts/test-postiz-connect.mjs`（签名、密钥保护、匿名拦截、跨站拒绝、用户绑定的 state、成员隐藏 Postiz 入口）、`node scripts/test-user-roles.mjs`、`node scripts/test-social-ownership.mjs`（多用户分配过滤、共享账号发布、认领不扩充分配、分配 API、返回容错）。真实 OAuth 与浏览器回归（`node scripts/test-auth.mjs`，需 `TEST_BASE_URL` 指向本地服务）仍需运维配置匹配的 JWT secret 与各平台应用后人工验收。
 - Token 失效的账号在 Postiz 侧显示红色感叹号（需重连），发布失败会留 `failed` 审计行并在弹窗记录中显示错误；重连由管理员处理。

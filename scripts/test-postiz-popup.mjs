@@ -81,7 +81,7 @@ try {
       ["unauthenticated", "session expired"],
       ["error", "No successful connection has been confirmed"],
       ["unconfirmed", "No new account was confirmed"],
-      ["conflict", "belongs to another Polaris user"]
+      ["conflict", "already assigned to other members"]
     ]) {
       const popup = await openPopup(page, completionUrl(outcome));
       await waitForReturn(page, outcome);
