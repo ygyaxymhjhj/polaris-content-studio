@@ -140,6 +140,9 @@ export async function completeConnectAttempt(
 ): Promise<ConnectCompletion> {
   const connection = await database().getConnection();
   try {
+    // READ COMMITTED avoids REPEATABLE READ gap locks on the assignment range: different accounts
+    // can be assigned concurrently without deadlocking; the account row lock serializes one account.
+    await connection.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     await connection.beginTransaction();
     const [attempts] = await connection.execute<RowDataPacket[]>(
       "SELECT user_id, provider, snapshot_ids, return_view, expires_at, consumed_at FROM social_connect_attempts WHERE state_hash=? FOR UPDATE",
@@ -224,6 +227,7 @@ export async function replaceAccountAssignments(
   const ids = [...new Set(userIds)];
   const connection = await database().getConnection();
   try {
+    await connection.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     await connection.beginTransaction();
     const [accounts] = await connection.execute<RowDataPacket[]>(
       "SELECT integration_id FROM social_accounts WHERE integration_id=? FOR UPDATE",

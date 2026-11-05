@@ -14,9 +14,15 @@ CREATE TABLE IF NOT EXISTS social_account_assignments (
 ) ENGINE=InnoDB;
 
 INSERT IGNORE INTO social_account_assignments (integration_id, user_id, created_at)
-SELECT integration_id, owner_user_id, updated_at
-  FROM social_accounts
- WHERE owner_user_id IS NOT NULL;
+SELECT s.integration_id, s.owner_user_id, s.updated_at
+  FROM social_accounts s
+  LEFT JOIN (SELECT DISTINCT integration_id FROM social_account_assignments) a
+    ON a.integration_id = s.integration_id
+ WHERE s.owner_user_id IS NOT NULL
+   -- Only migrate accounts that have no assignment set. After a rollback, old code can write
+   -- owner_user_id again; replaying this migration must not merge that stale owner into an
+   -- existing set and silently restore access an admin removed.
+   AND a.integration_id IS NULL;
 
 -- Fail closed on a code rollback: old code treats every account as unassigned (admins only).
 UPDATE social_accounts SET owner_user_id=NULL WHERE owner_user_id IS NOT NULL;

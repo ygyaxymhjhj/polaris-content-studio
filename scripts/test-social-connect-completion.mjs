@@ -21,6 +21,7 @@ function createTransactionalDatabase() {
   let snapshot;
   const assignmentsFor = (integrationId) => state.assignments.get(integrationId) ?? new Set();
   const connection = {
+    async query() { state.events.push("query"); return [{ affectedRows: 0 }]; },
     async beginTransaction() {
       state.events.push("begin");
       snapshot = structuredClone({ accounts: state.accounts, assignments: state.assignments, attempts: state.attempts });

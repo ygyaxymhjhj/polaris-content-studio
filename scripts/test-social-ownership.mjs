@@ -180,6 +180,7 @@ function createFakeDatabase() {
     let snapshot;
     return {
       execute: (sql, params) => database.execute(sql, params),
+      query: async () => [{ affectedRows: 0 }],
       beginTransaction: async () => { snapshot = structuredClone({ accounts: state.accounts, assignments: state.assignments, attempts: state.attempts }); },
       commit: async () => { snapshot = undefined; },
       rollback: async () => {

@@ -58,6 +58,20 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
   const assignedIds = (account: SocialAccount) => pending?.integrationId === account.id
     ? pending.userIds
     : assignedUsers(account).map((user) => user.id);
+  const assignedNames = (account: SocialAccount) => assignedIds(account).map((id) =>
+    members.find((member) => member.id === id)?.displayName
+    ?? assignedUsers(account).find((user) => user.id === id)?.name
+    ?? id);
+
+  // Keep the optimistic set until the refreshed accounts confirm it. A failed refresh must not
+  // silently revert the checkboxes, or the next toggle would replace the server set with stale data.
+  useEffect(() => {
+    if (!pending) return;
+    const account = accounts.find((candidate) => candidate.id === pending.integrationId);
+    if (!account) return;
+    const actual = (account.assignedUsers ?? []).map((user) => user.id).sort().join(",");
+    if (actual === [...pending.userIds].sort().join(",")) setPending(null);
+  }, [accounts, pending]);
 
   const saveAssignments = useCallback(async (integrationId: string, userIds: string[]) => {
     if (assignmentFlight.current || membersError) return;
@@ -65,6 +79,7 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
     setAssigningId(integrationId);
     setPending({ integrationId, userIds });
     setAssignError("");
+    let persisted = false;
     try {
       const response = await fetch(`/api/social/accounts/${encodeURIComponent(integrationId)}`, {
         method: "PATCH",
@@ -74,11 +89,12 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Could not update the account assignment.");
       await onRefresh();
+      persisted = true;
     } catch (assignmentFailure) {
       setAssignError(assignmentFailure instanceof Error ? assignmentFailure.message : "Could not update the account assignment.");
     } finally {
       assignmentFlight.current = false;
-      setPending(null);
+      if (!persisted) setPending(null);
       setAssigningId("");
     }
   }, [membersError, onRefresh]);
@@ -120,7 +136,7 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
             <ul className="accounts-directory">
               {accounts.map(account => {
                 const metadata = PLATFORM_META[account.identifier.toLowerCase() as Platform];
-                const assigned = assignedUsers(account);
+                const assigned = assignedNames(account);
                 return (
                   <li key={account.id} className={`accounts-directory-row ${isAdmin && !assigned.length ? "unassigned" : ""}`}>
                     <span className="accounts-platform-mark">{metadata?.short || account.identifier.slice(0, 2).toUpperCase() || "?"}</span>
@@ -129,7 +145,7 @@ export default function SocialAccountsView({ accounts, configured, uiUrl, loadin
                       <details className="account-owner-control">
                         <summary aria-label={`${translate("Assign account")}: ${account.name}`}>
                           {assigned.length
-                            ? `${translate("Assigned to")}: ${assigned.map(user => user.name).join(", ")}`
+                            ? `${translate("Assigned to")}: ${assigned.join(", ")}`
                             : translate("Unassigned")}
                         </summary>
                         <div className="account-assignment-menu">
