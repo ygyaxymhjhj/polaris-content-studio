@@ -387,7 +387,7 @@ test("successful ffmpeg exit cannot hide truncation, oversized output, or a fail
   }
 });
 
-test("live output watchdog stops a writer above 100 MiB and still waits for close", async () => {
+test("live output watchdog stops a writer above 500 MiB and still waits for close", async () => {
   const harness = createProcessHarness({ liveSize: videoTypes.MAX_VIDEO_UPLOAD_BYTES + 1 });
   const pending = assert.rejects(harness.prepare(), error => error.code === "VIDEO_TOO_LARGE");
   await harness.started;

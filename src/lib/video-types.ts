@@ -1,4 +1,4 @@
-export const MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024;
+export const MAX_VIDEO_UPLOAD_BYTES = 500 * 1024 * 1024;
 
 export interface VideoAttachment {
   id: string;

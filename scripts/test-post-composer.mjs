@@ -954,9 +954,10 @@ try {
   const expectedOldImage = storedPost.imageUrl;
   assert.match(await videoInput.getAttribute('accept'), /video\/mp4/);
   assert.doesNotMatch(await videoInput.getAttribute('accept'), /video\/\*/);
-  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /100 MB|30 MB/);
+  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /500 MB|30 MB/);
   const boundary = await page.evaluate(() => {
-    const maximum = new File([new Uint8Array(100 * 1024 * 1024)], 'limit.mp4', { type: 'video/mp4' });
+    const chunk = new Blob([new Uint8Array(1024 * 1024)]);
+    const maximum = new File(Array(500).fill(chunk), 'limit.mp4', { type: 'video/mp4' });
     window.testValidateVideoUpload(maximum);
     const rejected = [];
     for (const file of [new File([maximum, new Uint8Array(1)], 'too-large.mp4', { type: 'video/mp4' }),
@@ -970,8 +971,8 @@ try {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return rejected;
   });
-  assert.deepEqual(boundary, ['This video exceeds 100 MB. Choose an MP4 up to 100 MB.', 'Choose a non-empty MP4 video.', 'Use a JPG, PNG, WebP image or an MP4 video.']);
-  await page.getByRole('alert').filter({ hasText: 'exceeds 100 MB' }).waitFor();
+  assert.deepEqual(boundary, ['This video exceeds 500 MB. Choose an MP4 up to 500 MB.', 'Choose a non-empty MP4 video.', 'Use a JPG, PNG, WebP image or an MP4 video.']);
+  await page.getByRole('alert').filter({ hasText: 'exceeds 500 MB' }).waitFor();
   assert.equal(uploads.length, 0, 'oversized video is rejected before network work');
   assert.equal(await page.locator('.post-media-thumbnail img').getAttribute('src'), expectedOldImage);
   nextUploadFailure = true;
@@ -1032,7 +1033,7 @@ try {
   assert.equal(storedPost.videoMediaId, firstVideoId);
   assert.equal(storedPost.imageUrl, null, 'a saved video atomically clears the image');
   assert.equal(await page.locator('.post-media-thumbnail img').count(), 0);
-  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /100 MB|30 MB/);
+  assert.doesNotMatch(await page.locator('.post-composer-media').innerText(), /500 MB|30 MB/);
 
   // A save response for image=='' must not discard a different, newly selected video id.
   delayNextSave = true;
@@ -1351,7 +1352,7 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Schedule posts', exact: true }).count(), 1, 'the hand-off action reflects the mode');
   assert.deepEqual(errors, []);
   console.log('PASS: async video phases and early 202, queue/running locks, safe failed/malformed jobs, same-job status recovery without POST/request ID, cancelled recovery fencing and unmount isolation.');
-  console.log('PASS: original composer safeguards; raw MP4 upload, 100 MiB boundary, local playback, validation-stage busy/navigation guards, failure/cancel recovery, stale completion fencing, save/reopen/copy, image/video exclusion, Instagram and async 202 navigation.');
+  console.log('PASS: original composer safeguards; raw MP4 upload, 500 MiB boundary, local playback, validation-stage busy/navigation guards, failure/cancel recovery, stale completion fencing, save/reopen/copy, image/video exclusion, Instagram and async 202 navigation.');
 } finally {
   if (browser) await browser.close();
   await new Promise(resolveClosed => server.close(resolveClosed));

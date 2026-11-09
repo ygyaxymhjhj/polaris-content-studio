@@ -92,8 +92,8 @@ Ubuntu 的 `ffmpeg` 软件包提供 ffmpeg/ffprobe；需以 `polaris-studio` 用
 生产视频 worker 独立于通知自动启动；开发定时恢复需显式 `VIDEO_PROCESSING_SCHEDULER_ENABLED=true`，请求 after 唤醒仍可用。
 目前仅支持单应用进程/单节点；排队可恢复，过期 running 无 receipt 会失败而不自动重传，取消需等旧读取者 settle 才清文件。
 崩溃可留下输入/输出，有界 24 小时清理不是磁盘硬配额；任务行保留审计，跨 Postiz/MySQL 不承诺媒体 exactly-once。
-还需验收 Postiz 媒体持久化、浏览器播放、
-实际 provider 草稿及备份。预览 307 不会让公开上游媒体变私有。完整契约与失败窗口见 `docs/video-uploads.md`。
+还需用 500 MiB MP4 验收实际 Postiz 上传和媒体持久化、浏览器播放、
+实际 provider 草稿及备份。若有反向代理，Polaris 上传路径需允许至少 500 MiB，Postiz 上传路径还需留出 multipart 封装开销。预览 307 不会让公开上游媒体变私有。完整契约与失败窗口见 `docs/video-uploads.md`。
 
 ### 异步草稿提交迁移
 

@@ -82,7 +82,7 @@ export function readVideoContentLength(value: string | null): number | null {
   }
   const length = Number(value);
   if (length > MAX_VIDEO_UPLOAD_BYTES) {
-    throw new VideoUploadError("The video is too large. Choose an MP4 up to 100 MB.", "VIDEO_TOO_LARGE", 413);
+    throw new VideoUploadError("The video is too large. Choose an MP4 up to 500 MB.", "VIDEO_TOO_LARGE", 413);
   }
   return length;
 }
@@ -119,7 +119,7 @@ export async function streamVideoUpload(
         if (done) break;
         bytes += value.byteLength;
         if (bytes > MAX_VIDEO_UPLOAD_BYTES) {
-          throw new VideoUploadError("The video is too large. Choose an MP4 up to 100 MB.", "VIDEO_TOO_LARGE", 413);
+          throw new VideoUploadError("The video is too large. Choose an MP4 up to 500 MB.", "VIDEO_TOO_LARGE", 413);
         }
         checksum.update(value);
         await file.writeFile(value);

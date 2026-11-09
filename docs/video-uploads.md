@@ -2,7 +2,7 @@
 
 ## 状态与上线门槛
 
-本阶段只做本地实现与隔离测试，**没有访问实际 Postiz、数据库或服务器，也未证明当前部署支持视频**。上线前必须用测试账号验收实际 Postiz 版本、100 MiB 上传、五个平台及实际 provider alias 的草稿、浏览器播放/拖动、重启后媒体持久化、存储备份与容量。只创建草稿，不执行正式发布。
+本阶段只做本地实现与隔离测试，**没有访问实际 Postiz、数据库或服务器，也未证明当前部署支持视频**。上线前必须用测试账号验收实际 Postiz 版本、500 MiB 上传、五个平台及实际 provider alias 的草稿、浏览器播放/拖动、重启后媒体持久化、存储备份与容量。只创建草稿，不执行正式发布。
 
 ## HTTP 契约
 
@@ -11,7 +11,7 @@
 - `Content-Type: video/mp4`
 - `X-Upload-Request-Id: <UUID>`：同一个文件重试沿用；换文件使用新 UUID。
 - `X-File-Name: encodeURIComponent(file.name)`：MP4 扩展名，最长 255 个 UTF-16 码元，不允许控制字符和目录分隔符。
-- 原文件非空，最大 `100 * 1024 * 1024` 字节。`Content-Length` 可省略；有值时用于提前拒绝和检测截断，最终以实际流读取字节数为准。
+- 原文件非空，最大 `500 * 1024 * 1024` 字节。`Content-Length` 可省略；有值时用于提前拒绝和检测截断，最终以实际流读取字节数为准。
 
 正常收流完成后，关闭 `input.part`、原子改名为 `input.mp4` 并提交持久任务，立即返回 `202 { job }`；请求不会等待 ffprobe、兼容处理或 Postiz。`after(wakeVideoProcessingWorker)` 只唤醒持久 worker，不是任务存储。202 不是媒体已可用，也不创建草稿。
 
@@ -41,13 +41,13 @@
 
 共享 Postiz 图片上传分支只接受 sharp 实际识别并可解码的单帧 JPEG/PNG/WebP，不能把 MP4 URL 或伪装的 image MIME 当成图片上传。远端响应逐块读取、实际限 30 MiB（不信 Content-Length）；data URL 先检查编码长度再分配 Buffer。解码器上限 4000 万像素，以 1px raw probe 强制解码；原始图片字节不重编码，上传 MIME/扩展名由实际格式决定。文章原图不受编辑器的 1.5 MB / 2048px 限制。图片验证/上传失败时 strict 和 legacy 草稿入口均拒绝创建草稿，不悄悄退化为无附件稿；已登记视频仍直接复用引用，不走此图片下载路径。
 
-请求按 chunk 写入 spool 下随机 job UUID 的 `input.part`，计算 SHA-256，目录 0700、文件 0600，不将 100 MiB 读成整块 Buffer。原流/temp 工具保留，但此入口采用持久 spool。流完整关闭后原子改名并入队；明确回滚/未提交才删输入，COMMIT 结果不确定保留待核对，不能在请求 finally 无条件删除。
+请求按 chunk 写入 spool 下随机 job UUID 的 `input.part`，计算 SHA-256，目录 0700、文件 0600，不将 500 MiB 读成整块 Buffer。原流/temp 工具保留，但此入口采用持久 spool。流完整关闭后原子改名并入队；明确回滚/未提交才删输入，COMMIT 结果不确定保留待核对，不能在请求 finally 无条件删除。
 
-读取阶段限 5 分钟。ffprobe 每次限 15 秒、输出 64 KiB、单次分配 64 MiB、单线程；ffmpeg 兼容处理限 300 秒；上游 multipart 限 180 秒；完整 worker lease/deadline 为 15 分钟，包含验证、转码、上传和登记。`openAsBlob` 从文件构造原生 FormData，明确 `adjust=false`，不依赖 Postiz 转码。兼容的 H.264/yuv420p/AAC MP4 直接使用输入，不重编码；AV1/HEVC 等由本地兼容模块决定是否转为 H.264 MP4，必要时处理音轨、旋转、像素格式、尺寸和帧率。输入与输出均有 100 MiB 边界，服务资源预算不是五个平台的通用发布保证。
+读取阶段限 5 分钟。ffprobe 每次限 15 秒、输出 64 KiB、单次分配 64 MiB、单线程；ffmpeg 兼容处理限 300 秒；上游 multipart 限 180 秒；完整 worker lease/deadline 为 15 分钟，包含验证、转码、上传和登记。`openAsBlob` 从文件构造原生 FormData，明确 `adjust=false`，不依赖 Postiz 转码。兼容的 H.264/yuv420p/AAC MP4 直接使用输入，不重编码；AV1/HEVC 等由本地兼容模块决定是否转为 H.264 MP4，必要时处理音轨、旋转、像素格式、尺寸和帧率。输入与输出均有 500 MiB 边界，服务资源预算不是五个平台的通用发布保证。
 
 仅接受本地、有效 MP4，宽高/时长及流结构要满足兼容模块边界。强制 mov demuxer、仅 file 协议、禁用 dref/绝对外部引用，不处理网络播放列表。worker 先检查账户未禁用、UUID 派生目录、文件类型/权限/单链接、实际大小与 SHA-256；文件来源不由客户端决定。兼容输出重新探测；错误不回传 stderr、密钥或磁盘路径。实际 provider 兼容性仍需上线验收。
 
-收流仍每进程最多 2 个、每 owner 1 个；queued+running 每 owner 1 个、全局 8 个，MySQL GET_LOCK 短锁串行保护事务中的 count+insert，不能裸 COUNT 竞争。worker 每进程只跑 1 个，claim 使用 `FOR UPDATE SKIP LOCKED` 和随机 lease。本方案只支持单应用进程/单节点；共享数据库锁不等于跨节点共享 spool 或跨实例收流限流。
+收流仍每进程最多 2 个、每 owner 1 个；queued+running 每 owner 1 个、全局 8 个，MySQL GET_LOCK 短锁串行保护事务中的 count+insert，不能裸 COUNT 竞争。worker 每进程只跑 1 个，claim 使用 `FOR UPDATE SKIP LOCKED` 和随机 lease。本方案只支持单应用进程/单节点；共享数据库锁不等于跨节点共享 spool 或跨实例收流限流。按现有并发上限估算，8 个任务输入、2 个正在接收的输入和 1 个转码输出合计可占约 5.4 GiB，另需为失败残留预留空间。
 
 排队任务重启后可继续。running 先查已有 receipt 恢复成功；lease 过期且没有 receipt 则保守置 `failed / PROCESSING_INTERRUPTED`，绝不静默回 queued 或自动重新上传疑似已成功的上游媒体。ready receipt INSERT 与 success UPDATE 在同一短事务内，先锁 job 核验 running/token/deadline；取消取得同一行锁，迟到 worker 不能给 cancelled 创建 receipt。取消触发本进程 AbortController，另每 2 秒短轮询跨模块/进程状态；必须等待子进程 close 和上游请求 settle 才清理源/输出，不能 Promise.race 提前 unlink。
 
@@ -55,7 +55,7 @@
 
 Node 20 的 execFile signal 中止可能先发 SIGTERM 并清除内部 timeout；收到中止回调后显式对 ffprobe 再发 SIGKILL，随后等待 close，避免忽略 SIGTERM 的进程长期占用额度。
 
-持久 spool 每分钟至多一次有界清理：检查至多 200 项、删除至多 20 个超过 24 小时且数据库无引用的 UUID 目录；未知提交的文件不能凭文件名直接删。queued 在持有 claim 行锁时取消并确认提交后，可立即清理无人读取的输入，避免反复取消积累 100 MiB 文件。已运行的终态任务只在本 worker 完全 settle 后清输入/输出并记录 files_cleaned_at；崩溃遗留的终态文件在 updated_at 和保留的 lease 均超过 24 小时后批量清理（每批 20），DB 任务行保留追踪。不会删除本进程 active worker 的目录。受目录遍历上限、停服、磁盘/权限错误影响，不保证立即扫净所有文件；运维仍需容量告警及停服后核对。长期停服/频繁崩溃可留下 spool，不能宣传磁盘硬配额或崩溃零残留。
+持久 spool 每分钟至多一次有界清理：检查至多 200 项、删除至多 20 个超过 24 小时且数据库无引用的 UUID 目录；未知提交的文件不能凭文件名直接删。queued 在持有 claim 行锁时取消并确认提交后，可立即清理无人读取的输入，避免反复取消积累 500 MiB 文件。已运行的终态任务只在本 worker 完全 settle 后清输入/输出并记录 files_cleaned_at；崩溃遗留的终态文件在 updated_at 和保留的 lease 均超过 24 小时后批量清理（每批 20），DB 任务行保留追踪。不会删除本进程 active worker 的目录。受目录遍历上限、停服、磁盘/权限错误影响，不保证立即扫净所有文件；运维仍需容量告警及停服后核对。长期停服/频繁崩溃可留下 spool，不能宣传磁盘硬配额或崩溃零残留。
 
 跨系统没有原子事务：上游保存成功但本地 INSERT/回包失败、客户端取消或多实例竞争可能留下孤儿/重复媒体。首版接受这个失败窗口，允许重新上传，不承诺媒体 exactly-once、不回滚上游、不自动删除媒体。删除附件只是解绑；副本、archive、排队/unknown 草稿仍可能引用原媒体。人工清理 Postiz 前必须核对引用和备份。
 
@@ -69,7 +69,7 @@ Node 20 的 execFile signal 中止可能先发 SIGTERM 并清除内部 timeout�
 
 `VIDEO_PROCESSING_DIRECTORY` 默认项目内 `.data/video-processing`（已 gitignore），只适合本地开发。生产必须使用 systemd 模板指定的 `/var/lib/polaris-content-studio/video-processing`：`StateDirectory=polaris-content-studio/video-processing`、`StateDirectoryMode=0700`、对应 Environment/ReadWritePaths；保留 UMask/PrivateTmp/ProtectSystem。该目录在 app rsync --delete 范围外，重启/代码同步不会清空输入，不需要改全局 rsync 规则。已有服务器必须由管理员安装更新后的服务模板并 daemon-reload 后再启动；当前部署脚本只同步源码/安装 drop-in，不会自动替换主 service 模板。持久 spool 不是最终媒体库，最终媒体仍在 Postiz。
 
-生产 worker 由 instrumentation 独立自动启动，与通知开关无关；开发定时恢复需显式 `VIDEO_PROCESSING_SCHEDULER_ENABLED=true`，正常开发 POST 的 after 唤醒不依赖此开关。显式 false 停止周期恢复但不屏蔽请求唤醒。Vercel/生产构建不启动此 worker；不支持 serverless 持久任务。反向代理只给该上传路径配置至少 100 MiB 和足够收流超时，不修改全站或用 Server Actions bodySizeLimit 代替。
+生产 worker 由 instrumentation 独立自动启动，与通知开关无关；开发定时恢复需显式 `VIDEO_PROCESSING_SCHEDULER_ENABLED=true`，正常开发 POST 的 after 唤醒不依赖此开关。显式 false 停止周期恢复但不屏蔽请求唤醒。Vercel/生产构建不启动此 worker；不支持 serverless 持久任务。反向代理只给 Polaris 上传路径配置至少 500 MiB；Postiz 的上传代理还需允许 multipart 封装开销。两段传输都需在现有超时内完成（满额文件的平均有效速率分别约需 14 Mbps 和 24 Mbps）。不修改全站或用 Server Actions bodySizeLimit 代替。
 
 ## 本地隔离验证
 
@@ -83,6 +83,6 @@ npx eslint src/lib/video-types.ts src/lib/video-uploads.ts src/lib/video-validat
 npx tsc --noEmit --incremental false
 ```
 
-测试只使用合成配置、内存 SQL stub、mock fetch 和 /tmp 的短 MP4 fixture；不读取 .env，不访问实际 Postiz/MySQL/SSH。不运行生产构建或部署。真实测试环境验收仍需覆盖 Postiz 版本/持久化、Node20、100 MiB、Chrome/Safari 播放拖动和实际账号草稿。
+测试只使用合成配置、内存 SQL stub、mock fetch 和 /tmp 的短 MP4 fixture；不读取 .env，不访问实际 Postiz/MySQL/SSH。不运行生产构建或部署。真实测试环境验收仍需覆盖 Postiz 版本/持久化、Node20、500 MiB、Chrome/Safari 播放拖动和实际账号草稿。
 
 官方契约依据：[上传接口](https://docs.postiz.com/public-api/uploads/upload-file)、[Instagram](https://docs.postiz.com/public-api/providers/instagram)、[LinkedIn](https://docs.postiz.com/public-api/providers/linkedin)、[Node20 openAsBlob](https://nodejs.org/docs/latest-v20.x/api/fs.html#fsopenasblobpath-options)。文档能力不代表当前自托管版本已通过验收。
