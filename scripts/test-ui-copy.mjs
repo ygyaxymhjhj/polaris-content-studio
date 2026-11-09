@@ -68,7 +68,7 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
     const mediaMarkup = render(React.createElement(AssetImageEditor, {
       value: '', title: '', variant, onChange() {}, onVideoChange() {}, onBusyChange() {}
     }));
-    assert.doesNotMatch(mediaMarkup, /100 MB|30 MB|video\/\*|aria-describedby/, 'MP4 selection adds no persistent limits or unsupported formats');
+    assert.doesNotMatch(mediaMarkup, /500 MB|30 MB|video\/\*|aria-describedby/, 'MP4 selection adds no persistent limits or unsupported formats');
     assert.match(mediaMarkup, /accept="[^"]*video\/mp4/);
     for (const message of ['Post media', 'Upload post media', 'Post video', 'Replace video', 'Remove video', 'Cancel upload',
       'Uploading video…', 'Video transferred. Waiting for processing…', 'Video queued…', 'Validating video…',
@@ -79,7 +79,7 @@ for (const language of ['en', 'zh', 'vi', 'th']) {
       'This video exceeds the processing limits. Choose a smaller or shorter MP4.',
       'Could not confirm video processing status. The job may still be running. Do not upload the file again.',
       'Video processing is taking longer than expected. The job may still be running. Do not upload the file again.',
-      'This video exceeds 100 MB. Choose an MP4 up to 100 MB.', 'Could not upload this video. Please try again.']) {
+      'This video exceeds 500 MB. Choose an MP4 up to 500 MB.', 'Could not upload this video. Please try again.']) {
       if (language !== 'en') assert.notEqual(translate(language, message), message, `${language}: missing media copy: ${message}`);
     }
   }

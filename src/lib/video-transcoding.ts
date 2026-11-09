@@ -33,7 +33,7 @@ function conversionFailed(): VideoUploadError {
 }
 
 function tooLarge(): VideoUploadError {
-  return new VideoUploadError("The compatible video exceeds 100 MiB. Choose a smaller or shorter MP4.", "VIDEO_TOO_LARGE", 413);
+  return new VideoUploadError("The compatible video exceeds 500 MiB. Choose a smaller or shorter MP4.", "VIDEO_TOO_LARGE", 413);
 }
 
 function readRatio(value: string | undefined, separator: ":" | "/"): number | null {

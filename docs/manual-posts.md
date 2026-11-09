@@ -153,7 +153,7 @@ Verified against the official documentation:
   (empty is allowed).
   The title is frozen with the content and video reference in the queued task. Settings use
   `__type: "youtube"`, the frozen `title`, and `type: "private"`; administrators review visibility
-  in Postiz before publishing. No audience declaration is inferred. The existing 100 MiB MP4
+  in Postiz before publishing. No audience declaration is inferred. The existing 500 MiB MP4
   limit still applies, and Google OAuth credentials are configured only on Postiz.
 - The returned `postId` is stored per account. Non-rejected accepted accounts are not submitted again;
   transport-uncertain results require manual review rather than automatic retries.

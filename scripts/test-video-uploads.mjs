@@ -214,7 +214,7 @@ function assertSafe(text) {
   assert.doesNotMatch(text, /synthetic-video-secret|\/private\/tmp|polaris-video-|postiz-media-one/);
 }
 
-test("route streams exactly 100 MiB without Content-Length, queues before processing, then exposes a ready receipt", async () => {
+test("route streams exactly 500 MiB without Content-Length, queues before processing, then exposes a ready receipt", async () => {
   const harness = createRouteHarness();
   const response = await harness.route.POST(makeRequest(sizedStream(videoTypes.MAX_VIDEO_UPLOAD_BYTES)));
   assert.equal(response.status, 202);
@@ -223,11 +223,11 @@ test("route streams exactly 100 MiB without Content-Length, queues before proces
   assert.equal(body.job.state, "queued");
   assert.equal(harness.rows.length, 0);
   assert.equal(harness.uploads.length, 0);
-  assert.equal(harness.jobs[0].bytes, 100 * 1024 * 1024);
+  assert.equal(harness.jobs[0].bytes, 500 * 1024 * 1024);
   await access(harness.temporaryFiles[0].filePath);
   await harness.finishJobs();
   const video = harness.jobs.find(job => job.id === body.job.id).video;
-  assert.equal(video.bytes, 100 * 1024 * 1024);
+  assert.equal(video.bytes, 500 * 1024 * 1024);
   assert.equal(harness.rows.length, 1);
   assert.equal(harness.uploads.length, 1);
   const ready = await (await harness.route.POST(makeRequest(sizedStream(videoTypes.MAX_VIDEO_UPLOAD_BYTES)))).json();
@@ -238,7 +238,7 @@ test("route streams exactly 100 MiB without Content-Length, queues before proces
   await harness.assertClean();
 });
 
-test("actual stream bytes enforce 100 MiB + 1, regardless of missing or dishonest Content-Length", async () => {
+test("actual stream bytes enforce 500 MiB + 1, regardless of missing or dishonest Content-Length", async () => {
   for (const headers of [{}, { "content-length": "1" }]) {
     const harness = createRouteHarness();
     const response = await harness.route.POST(makeRequest(sizedStream(videoTypes.MAX_VIDEO_UPLOAD_BYTES + 1), { headers }));

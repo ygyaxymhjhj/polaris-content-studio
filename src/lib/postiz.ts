@@ -206,7 +206,7 @@ export function getTrustedPostizMediaUrl(path: string): string {
   }
 }
 
-/** File-backed Blob keeps the 100 MiB video off the JavaScript heap; no image helper behavior changes. */
+/** File-backed Blob keeps the video off the JavaScript heap; no image helper behavior changes. */
 export async function uploadVideoFileToPostiz(filePath: string, signal?: AbortSignal): Promise<{ id: string; path: string }> {
   const config = getPostizConfig();
   if (!config) throw new PostizConnectionError("Postiz is not configured on the server.", 503);

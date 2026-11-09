@@ -28,11 +28,11 @@ export function validateVideoUpload(file: File): void {
     throw new Error("Use a JPG, PNG, WebP image or an MP4 video.");
   }
   if (!file.size) throw new Error("Choose a non-empty MP4 video.");
-  if (file.size > MAX_VIDEO_UPLOAD_BYTES) throw new Error("This video exceeds 100 MB. Choose an MP4 up to 100 MB.");
+  if (file.size > MAX_VIDEO_UPLOAD_BYTES) throw new Error("This video exceeds 500 MB. Choose an MP4 up to 500 MB.");
 }
 
 const uploadErrors: Record<string, string> = {
-  VIDEO_TOO_LARGE: "This video exceeds 100 MB. Choose an MP4 up to 100 MB.",
+  VIDEO_TOO_LARGE: "This video exceeds 500 MB. Choose an MP4 up to 500 MB.",
   EMPTY_VIDEO: "Choose a non-empty MP4 video.",
   INVALID_VIDEO: "Convert this file to an H.264 MP4 with optional AAC audio, then try again.",
   UNSUPPORTED_VIDEO: "Convert this file to an H.264 MP4 with optional AAC audio, then try again.",
