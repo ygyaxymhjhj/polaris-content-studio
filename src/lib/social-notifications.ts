@@ -49,6 +49,7 @@ type NotificationPayload = {
   timeKind: "submission" | "publication" | "confirmation" | "detection";
   releaseUrl?: string;
   failureReason?: string;
+  failureDetail?: string;
 };
 
 const MAX_DELIVERY_ATTEMPTS = 5;
@@ -90,14 +91,42 @@ function shortenText(value: string, maximum: number): string {
 
 function describePublishFailure(value: string | null | undefined): string {
   if (!value?.trim()) return "Postiz 未返回具体原因。";
-  // Only send fixed descriptions; provider errors may embed secrets, URLs or private account details.
   if (/aspect ratio/i.test(value)) return "视频宽高比不符合平台要求。";
   if (/(?:user|account) is restricted|restricted from posting|banned from posting/i.test(value)) return "社交账号受到平台发布限制。";
   if (/\breconnect\b|refresh channel needed|re-?authoriz|(?:access token|authorization).{0,40}expir/i.test(value)) return "社交账号需要重新授权。";
   if (/too large|file size.{0,30}(?:limit|exceed)/i.test(value)) return "媒体文件大小超过平台限制。";
   if (/unsupported (?:media|video|file) (?:format|type)|unsupported codec/i.test(value)) return "平台不支持该媒体格式或编码。";
   if (/rate limit|too many requests/i.test(value)) return "平台限制了发布请求频率。";
-  return "Postiz 返回了未识别的错误，请前往 Postiz 查看详情。";
+  return "Postiz 返回了平台错误。";
+}
+
+function summarizePostizError(value: string | undefined): string | undefined {
+  let message = value?.trim();
+  if (!message) return;
+  if (/^(?:\{|\[\s*\{)/.test(message)) {
+    try {
+      const parsed = JSON.parse(message);
+      const body = Array.isArray(parsed) ? parsed[0] : parsed;
+      // Only read diagnostic fields, never serialize a whole response into the group.
+      const fields: unknown[] = [body?.detail, body?.error?.message, body?.errors?.[0]?.message,
+        body?.errors?.[0]?.detail, body?.message, body?.error, body?.title];
+      message = fields.find((field): field is string => typeof field === "string" && Boolean(field.trim()));
+    } catch {
+      return;
+    }
+    if (!message) return;
+  }
+
+  // Keep one diagnostic line. Drop credential/header dumps rather than guessing where their values end.
+  const line = message.replace(/\p{Cf}/gu, "").trim().split(/[\r\n\u2028\u2029]/, 1)[0]
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s<>"']+|\bwww\.[^\s<>"']+/gi, "[链接已隐藏]")
+    .replace(/(?:^|[\s([,;])["']?(?:[\w-]*[_-]|access|refresh|oauth|id|client|session|bot|signing)?(?:authorization|headers?|cookies?|tokens?|secrets?|credentials?|api[ _-]?keys?|pass(?:word|phrase)|signatures?|private[ _-]?(?:data|key)|webhook)\s*["']?\s*[:=].*|\b(?:bearer|basic)\s+\S.*|-----BEGIN\b.*|[{}<>].*/i, "")
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}|[a-z0-9_+/=.-]{32,}/gi, "[已隐藏]")
+    .trim().replace(/[;,\s]+$/, "");
+  if (!line || !/[\p{L}\p{N}]/u.test(line.replace(/\[(?:链接)?已隐藏\]/g, ""))) return;
+  const excerpt = shortenText(line, 300);
+  return excerpt.length < line.length ? `${shortenText(excerpt, 299)}…` : excerpt;
 }
 
 function validateHttpUrl(value: unknown): string | null {
@@ -285,7 +314,7 @@ function formatMessage(notification: RowDataPacket): string {
   switch (notification.event_type as NotificationEvent) {
     case "draft_submitted": title = "[Polaris] 新草稿待审核"; timeLabel = "提交时间"; break;
     case "draft_rejected": title = "[Polaris] 草稿审核不通过"; timeLabel = "首次检测时间"; break;
-    case "publish_failed": title = "[Polaris] 内容发布失败"; timeLabel = "检测时间"; break;
+    case "publish_failed": title = "⚠️❗ [Polaris] 内容发布失败"; timeLabel = "检测时间"; break;
     case "published": title = "[Polaris] 内容已发布"; timeLabel = payload.timeKind === "publication" ? "发布时间" : "确认时间"; break;
     default: throw new Error("Unknown notification event");
   }
@@ -297,6 +326,7 @@ function formatMessage(notification: RowDataPacket): string {
   if (notification.event_type === "publish_failed") {
     if (typeof payload.postizPostId === "string") lines.push(`Postiz 帖子 ID：${singleLine(payload.postizPostId)}`);
     lines.push(`失败原因：${singleLine(payload.failureReason ?? describePublishFailure(null))}`);
+    if (payload.failureDetail) lines.push(`错误详情：${singleLine(payload.failureDetail)}`);
   }
   if (notification.event_type !== "published") {
     const reviewUrl = validateHttpUrl(getPostizUiUrl());
@@ -452,11 +482,14 @@ async function recordObservedPost(row: RowDataPacket, details: PostDetails): Pro
         Number(current.config_version), payload);
     }
     const publishDate = parsePublishDate(details.publishDate);
-    const error = details.state === "ERROR" ? describePublishFailure(details.error) : null;
+    const postizError = details.state === "ERROR" && typeof details.error === "string" ? details.error : undefined;
+    const error = details.state === "ERROR" ? describePublishFailure(postizError) : null;
     if (error && current.state !== "ERROR" && Number(current.notify_publish_failed) === 1) {
       const payload = createTrackingPayload(row, observedAt);
       payload.timeKind = "detection";
       payload.failureReason = error;
+      const errorDetail = summarizePostizError(postizError);
+      if (errorDetail) payload.failureDetail = errorDetail;
       await insertNotification(connection, String(row.publish_audit_id), "publish_failed", observedAt,
         Number(current.config_version), payload);
     }

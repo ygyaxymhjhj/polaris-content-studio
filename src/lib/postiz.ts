@@ -551,7 +551,7 @@ export async function publishToPostiz(req: PostizPublishRequest): Promise<{ succ
 function draftPayload(req: PostizPublishRequest, images: Array<{ id: string; path: string }>) {
   const normalizedPlatform = (req.platform || "x").toLowerCase();
   const settings = normalizedPlatform === "youtube"
-    ? { __type: "youtube", title: req.title?.trim() || "", type: "private" }
+    ? { __type: "youtube", title: req.title?.trim() || "", type: "public" }
     : DEFAULT_POSTIZ_SETTINGS[normalizedPlatform] || { __type: normalizedPlatform };
   const type = req.publishMode || "draft";
 

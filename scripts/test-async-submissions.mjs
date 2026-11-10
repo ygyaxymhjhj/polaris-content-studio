@@ -655,7 +655,7 @@ test("video worker reuses the frozen reference in a real draft-only payload with
   await harness.queue.processDraftSubmissions();
   assert.equal(requests.length, 1);
   assert.equal(requests[0].type, "draft");
-  assert.deepEqual(requests[0].posts[0].settings, { __type: "youtube", title: "Frozen YouTube title", type: "private" });
+  assert.deepEqual(requests[0].posts[0].settings, { __type: "youtube", title: "Frozen YouTube title", type: "public" });
   assert.equal(requests[0].posts[0].value[0].content, "");
   assert.deepEqual(requests[0].posts[0].value[0].image, [{ id: `upstream-${videoId}`, path: `https://media.test/${videoId}.mp4` }]);
   assert.equal(harness.tasks()[0].state, "succeeded");

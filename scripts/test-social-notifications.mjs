@@ -29,7 +29,9 @@ test("Postiz failures notify once, safely report the reason, and still allow lat
   state.now += 3_600_000;
   await service.processSocialNotifications();
   assert.equal(row.state, "ERROR");
-  assert.match(state.messages[0].text, /内容发布失败[\s\S]*视频宽高比不符合平台要求/);
+  assert.match(state.messages[0].text, /^⚠️❗ \[Polaris\] 内容发布失败\n/);
+  assert.match(state.messages[0].text, /失败原因：视频宽高比不符合平台要求/);
+  assert.match(state.messages[0].text, /错误详情：Aspect ratio not supported\n/);
   assert.match(state.messages[0].text, /Postiz 帖子 ID：real-post-one/);
   assert.match(state.messages[0].text, /处理入口：https:\/\/postiz\.example\.test/);
   assert.doesNotMatch(row.last_error, /synthetic-private-value/);
@@ -60,13 +62,14 @@ test("failure preference applies only to new submissions; missing reasons still 
   assert.equal(state.outbox.size, 1);
   assert.equal([...state.outbox.values()][0].publish_audit_id, newId);
   assert.match(state.messages[0].text, /Postiz 未返回具体原因/);
+  assert.doesNotMatch(state.messages[0].text, /错误详情：/);
 });
 
-test("only a confirmed matching ERROR triggers the failure-only subscription, and unknown reasons stay private", async () => {
+test("only a confirmed matching ERROR reports the Postiz diagnostic", async () => {
   const { service, state, advance } = setup();
   Object.assign(state.config, { notifyDrafts: false, notifyPublished: false, notifyRejected: false, notifyPublishFailed: true });
   await service.recordSocialSubmission({ ...submission, status: "queued" });
-  const unknownReason = "synthetic-provider-diagnostic";
+  const unknownReason = "You have already posted this post, please wait before posting again";
   for (const details of [undefined,
     { id: "another-post", state: "ERROR", error: unknownReason },
     { id: submission.postizPostId, state: "QUEUE", error: unknownReason }]) {
@@ -77,8 +80,34 @@ test("only a confirmed matching ERROR triggers the failure-only subscription, an
   }
   state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "ERROR", error: unknownReason });
   assert.equal((await service.processSocialNotifications()).sent, 1);
-  assert.match(state.messages[0].text, /未识别的错误，请前往 Postiz 查看详情/);
-  assert.ok(!state.messages[0].text.includes(unknownReason));
+  assert.match(state.messages[0].text, /失败原因：Postiz 返回了平台错误/);
+  assert.ok(state.messages[0].text.includes(`错误详情：${unknownReason}`));
+  assert.equal([...state.tracking.values()][0].last_error, "Postiz 返回了平台错误。");
+});
+
+test("failure excerpts omit credentials and response dumps, preserve diagnostics, and are bounded", async () => {
+  const { service, state } = setup();
+  Object.assign(state.config, { notifyDrafts: false, notifyPublished: false, notifyRejected: false, notifyPublishFailed: true });
+  const cases = [
+    [JSON.stringify({ error: { message: "HTTP 403: This app cannot post to this account" }, headers: { authorization: "do-not-send-1" } }),
+      "HTTP 403: This app cannot post to this account"],
+    [`X rejected the media at https://media.test/signed?key=do-not-send-2; clientSecret: ${"do-not-send-" + "3"}\n    at worker (private-stack)`,
+      "X rejected the media at [链接已隐藏]"],
+    ["Rejected for operator@private.test with credential A" + "B".repeat(48), "Rejected for [已隐藏] with credential [已隐藏]"],
+    ["Authorization: Bearer do-not-send-4", undefined],
+    ["平台拒绝：" + "文".repeat(400), "平台拒绝：" + "文".repeat(294) + "…"]
+  ];
+  for (const [index, [error, expected]] of cases.entries()) {
+    const postizPostId = `failed-${index}`;
+    await service.recordSocialSubmission({ ...submission, postizPostId });
+    state.details.set(postizPostId, { id: postizPostId, state: "ERROR", error });
+    assert.equal((await service.processSocialNotifications()).sent, 1);
+    const text = state.messages.at(-1).text;
+    const payload = [...state.outbox.values()].find(row => row.failure_postiz_post_id === postizPostId).payload;
+    assert.equal(payload.failureDetail, expected);
+    assert.equal(text.split("\n").find(line => line.startsWith("错误详情：")), expected ? `错误详情：${expected}` : undefined);
+    assert.doesNotMatch(JSON.stringify(payload) + text, /do-not-send|media\.test|private\.test|private-stack|BBBBBBBB/);
+  }
 });
 
 function setup() {

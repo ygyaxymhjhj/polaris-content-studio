@@ -775,7 +775,7 @@ export default function PostEditorView({
                 <span id="post-editor-video-title-label">{t("YouTube video title")}</span>
                 <input id="post-editor-video-title" value={title} maxLength={200} disabled={controlsLocked} aria-labelledby="post-editor-video-title-label" aria-describedby="post-editor-video-note"
                   onChange={event => setTitle(event.target.value)} />
-                <small id="post-editor-video-note">{t("YouTube drafts use private visibility. Review the title and visibility in Postiz before publishing.")}</small>
+                <small id="post-editor-video-note">{t("YouTube videos are public by default when published. Saving a draft does not publish the video.")}</small>
               </label>
             )}
             <label className="post-composer-sr-only" htmlFor="post-editor-content">{t("Post text")}</label>

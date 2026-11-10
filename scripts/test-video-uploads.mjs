@@ -626,7 +626,7 @@ test("strict drafts reuse media directly, keep provider aliases, reject mixed me
   } finally { globalThis.fetch = async () => { throw new Error("Unexpected network request"); }; }
 });
 
-test("YouTube drafts require a video and valid title and reuse the media with private visibility", async () => {
+test("YouTube posts require a video and valid title and use public visibility in every publish mode", async () => {
   const calls = [];
   globalThis.fetch = async (url, options) => {
     calls.push({ url, options });
@@ -652,14 +652,18 @@ test("YouTube drafts require a video and valid title and reuse the media with pr
     assert.equal(calls.length, 0);
     const title = "😀".repeat(100);
     const description = "中".repeat(1666) + "ab";
-    const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", title, content: description, uploadedMedia: upstreamMedia });
-    assert.equal(result.success, true);
-    assert.equal(calls.length, 1);
-    const payload = JSON.parse(calls[0].options.body);
-    assert.equal(payload.type, "draft");
-    assert.deepEqual(payload.posts[0].settings, { __type: "youtube", title, type: "private" });
-    assert.equal(payload.posts[0].value[0].content, description);
-    assert.deepEqual(payload.posts[0].value[0].image, [upstreamMedia]);
+    const scheduledAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    for (const publishMode of [undefined, "schedule", "now"]) {
+      const result = await postiz.createStrictDraft({ integrationId: "youtube-channel", platform: "youtube", title, content: description, uploadedMedia: upstreamMedia, publishMode, scheduledAt: publishMode === "schedule" ? scheduledAt : undefined });
+      assert.equal(result.success, true);
+      assert.equal(calls.length, 1);
+      const payload = JSON.parse(calls.pop().options.body);
+      assert.equal(payload.type, publishMode ?? "draft");
+      if (publishMode === "schedule") assert.equal(payload.date, scheduledAt);
+      assert.deepEqual(payload.posts[0].settings, { __type: "youtube", title, type: "public" });
+      assert.equal(payload.posts[0].value[0].content, description);
+      assert.deepEqual(payload.posts[0].value[0].image, [upstreamMedia]);
+    }
   } finally { globalThis.fetch = async () => { throw new Error("Unexpected network request"); }; }
 });
 
