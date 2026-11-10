@@ -93,7 +93,7 @@ try {
     Storage.prototype.setItem = () => { throw new Error('The Feishu panel must not persist credentials.'); };
   });
   const initialSettings = {
-    enabled: false, notifyDrafts: true, notifyPublished: false, notifyRejected: false,
+    enabled: false, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false,
     webhookConfigured: true, signingConfigured: true, encryptionReady: true,
     version: 1, updatedAt: '2026-10-14T08:00:00Z', lastTestAt: null,
     lastTestOk: null, lastTestError: null, lastWorkerAt: '2026-10-14T09:00:00Z',
@@ -117,13 +117,13 @@ try {
     } else if (request.method() === 'PATCH') {
       const body = request.postDataJSON();
       patches.push(body);
-      assert.ok(Object.keys(body).every(field => ['enabled', 'notifyDrafts', 'notifyPublished', 'notifyRejected', 'webhookUrl', 'signingSecret', 'clearWebhook', 'clearSigningSecret'].includes(field)));
+      assert.ok(Object.keys(body).every(field => ['enabled', 'notifyDrafts', 'notifyPublished', 'notifyRejected', 'notifyPublishFailed', 'webhookUrl', 'signingSecret', 'clearWebhook', 'clearSigningSecret'].includes(field)));
       if (patchStatus === 200 && body.enabled && body.clearWebhook) {
         await route.fulfill({ status: 400, json: { error: 'A webhook URL is required to enable Feishu notifications.' } });
         return;
       }
       if (patchStatus === 200) {
-        settings = { ...settings, enabled: body.enabled, notifyDrafts: body.notifyDrafts, notifyPublished: body.notifyPublished, notifyRejected: body.notifyRejected, version: settings.version + 1 };
+        settings = { ...settings, enabled: body.enabled, notifyDrafts: body.notifyDrafts, notifyPublished: body.notifyPublished, notifyRejected: body.notifyRejected, notifyPublishFailed: body.notifyPublishFailed, version: settings.version + 1 };
         if (body.clearWebhook) settings.webhookConfigured = false;
         else if (body.webhookUrl) settings.webhookConfigured = true;
         if (body.clearWebhook || body.clearSigningSecret) settings.signingConfigured = false;
@@ -170,7 +170,7 @@ try {
   await page.getByLabel('Webhook URL', { exact: true }).fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-unsigned-ui-only');
   await save();
   assert.deepEqual(patches.at(-1), {
-    enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false,
+    enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false,
     webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/fake-unsigned-ui-only', clearSigningSecret: true
   });
   assert.equal(settings.signingConfigured, false);
@@ -194,6 +194,18 @@ try {
   await save();
   assert.equal(patches.at(-1).notifyRejected, false);
   console.log('PASS: third rejection event has a visible label, dirty state, PATCH field and saved reload.');
+
+  const failureToggle = page.getByRole('checkbox', { name: /Publish failed When the publishing service confirms a failure/ });
+  assert.equal(await failureToggle.isChecked(), false);
+  await failureToggle.check();
+  assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
+  await save();
+  assert.equal(patches.at(-1).notifyPublishFailed, true);
+  await mount();
+  assert.equal(await failureToggle.isChecked(), true);
+  await failureToggle.uncheck();
+  await save();
+  assert.equal(patches.at(-1).notifyPublishFailed, false);
 
   await signatureToggle.check();
   assert.equal(await secretInput.isEnabled(), true);
@@ -219,7 +231,7 @@ try {
   await signatureToggle.check();
   await secretInput.fill('fake-new-signed-secret');
   await save();
-  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false, signingSecret: 'fake-new-signed-secret' });
+  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false, signingSecret: 'fake-new-signed-secret' });
   assert.equal(await signatureToggle.isChecked(), true);
   assert.equal(await secretInput.inputValue(), '');
   assert.equal(await secretInput.evaluate(input => input.required), false);
@@ -242,7 +254,7 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
   assert.match(await page.locator('#feishu-test-help').innerText(), /Save your changes/);
   await save();
-  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false });
+  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false });
   console.log('PASS: administrator-only real component; password fields never prefilled; blank values preserve saved credentials; dirty saved-only test gate.');
 
   await page.getByLabel('Webhook URL', { exact: true }).fill('https://open.feishu.cn/open-apis/bot/v2/hook/fake-ui-only');
@@ -254,7 +266,7 @@ try {
   assert.equal(await page.evaluate(() => location.search + localStorage.length + sessionStorage.length), '00');
   await signatureToggle.uncheck();
   await save();
-  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false, clearSigningSecret: true });
+  assert.deepEqual(patches.at(-1), { enabled: true, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false, clearSigningSecret: true });
   assert.equal(settings.signingConfigured, false);
   assert.equal(await signatureToggle.isChecked(), false);
   assert.equal(await secretInput.isDisabled(), true);
@@ -266,7 +278,7 @@ try {
   assert.equal(settings.webhookConfigured, true, 'An enabled configuration cannot clear its webhook');
   await notificationsToggle.uncheck();
   await save();
-  assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, notifyRejected: false, clearWebhook: true, clearSigningSecret: true });
+  assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false, clearWebhook: true, clearSigningSecret: true });
   assert.equal(await page.getByRole('button', { name: 'Send test message', exact: true }).isDisabled(), true);
   console.log('PASS: strict PATCH allowlist; signature-off save clears saved secret; independent webhook clear; no URL or browser-storage persistence.');
 
@@ -279,7 +291,7 @@ try {
   assert.equal(await secretInput.isDisabled(), true);
   assert.equal(await secretInput.evaluate(input => input.required), false);
   await save();
-  assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, notifyRejected: false, clearWebhook: true });
+  assert.deepEqual(patches.at(-1), { enabled: false, notifyDrafts: true, notifyPublished: false, notifyRejected: false, notifyPublishFailed: false, clearWebhook: true });
   assert.equal(settings.webhookConfigured, false);
   assert.equal(settings.signingConfigured, false);
   assert.equal(await signatureToggle.isChecked(), false);
@@ -384,7 +396,7 @@ try {
     };
   });
   assert.equal(desktopLayout.columnsAligned, true, 'Desktop events and connection must share a row');
-  assert.ok(desktopLayout.height >= 450 && desktopLayout.height <= 720, `Desktop panel with three event cards must remain compact: ${desktopLayout.height}px`);
+  assert.ok(desktopLayout.height >= 450 && desktopLayout.height <= 720, `Desktop panel with four event cards must remain compact: ${desktopLayout.height}px`);
   assert.equal(desktopLayout.paragraphsReset, true, 'Shared card paragraph minimum height must not leak in');
   assert.ok(desktopLayout.inputHeight >= 40);
   assert.equal(desktopLayout.inlineStyles, 0);
@@ -415,6 +427,7 @@ try {
     page.getByRole('checkbox', { name: /Draft review/ }),
     page.getByRole('checkbox', { name: /Post published/ }),
     page.getByRole('checkbox', { name: /Draft rejected/ }),
+    failureToggle,
     page.getByRole('checkbox', { name: 'Remove connection', exact: true }),
     signatureToggle,
     page.getByLabel('Webhook URL', { exact: true }),
@@ -458,42 +471,67 @@ const handlers = studioFunction.body.statements.filter(statement => ts.isFunctio
 assert.equal(handlers.length, 2);
 const printer = ts.createPrinter();
 const handlerSource = handlers.map(handler => printer.printNode(ts.EmitHint.Unspecified, handler, studioSource)).join('\n');
-const submissionStatusModule = { exports: {} };
-new Function('module', 'exports', transpile(readFileSync(resolve(repository, 'src/lib/submission-status.ts'), 'utf8')))(submissionStatusModule, submissionStatusModule.exports);
+const loadFixtureModule = (name, dependencies = {}) => {
+  const compiled = { exports: {} };
+  new Function('module', 'exports', 'require', transpile(readFileSync(resolve(repository, `src/lib/${name}.ts`), 'utf8')))(
+    compiled, compiled.exports, specifier => {
+      assert.ok(Object.hasOwn(dependencies, specifier), `Unexpected fixture dependency: ${specifier}`);
+      return dependencies[specifier];
+    }
+  );
+  return compiled.exports;
+};
+const taskTypes = loadFixtureModule('draft-submission-types');
+const { mergeDraftTask } = loadFixtureModule('draft-submission-client', {
+  './draft-submission-types': taskTypes, './submission-status': loadFixtureModule('submission-status')
+});
+const { getMatchingSocialAccounts } = loadFixtureModule('social-account-platform');
+const { imageSelectionError } = loadFixtureModule('image-types');
 const createHandlers = new Function('dependencies', `${transpile(`
-  const { assets, socialAccounts, config, selectedAsset, currentProjectId, fetch, readJson, notify, t,
-    currentProjectRef, packSequence, submissionAttempts, markSubmissionSucceeded,
-    setPublishing, setAssets, setSelectedAsset, setPublishModalAsset, setLoading, setSubmissionNotice } = dependencies;
+  const { assets, socialAccounts, config, fetch, readJson, notify, t, createClientId,
+    currentProjectRef, packSequence, submissionAttempts, acceptanceFlights, imageUploadingRef,
+    channelsLoading, channelsError, getMatchingSocialAccounts, imageSelectionError, isDraftSubmissionTask, mergeDraftTask,
+    setAcceptingAssetIds, setAssets, setSelectedAsset, setPublishModalAsset, setLoading, setSubmissionNotice } = dependencies;
   ${handlerSource}
   return { submitDraft, batchSubmitDrafts };
 `)}`);
-const assets = ['one', 'two'].map(id => ({ id, platform: 'x', content: 'Fictional draft', publishStatus: 'unpublished' }));
-let currentAssets = assets;
+const singleAsset = { id: 'one', platform: 'x', content: 'Fictional draft', publishStatus: 'unpublished' };
+const assets = ['two', 'three'].map(id => ({ ...singleAsset, id }));
+let currentAssets = [singleAsset, ...assets];
 const notices = [];
 let persistentNotice = '';
 let publishCalls = 0;
 const handlersUnderTest = createHandlers({
-  assets, socialAccounts: [{ id: 'fake-account', name: 'Fake account', identifier: 'x' }], config: {}, selectedAsset: null, currentProjectId: '',
-  currentProjectRef: { current: '' }, packSequence: { current: 0 }, submissionAttempts: { current: new Map() },
-  markSubmissionSucceeded: submissionStatusModule.exports.markSubmissionSucceeded,
-  fetch: async () => { publishCalls += 1; return { ok: true }; },
-  readJson: async () => ({ success: true, auditId: null, publishedAt: '2026-10-15T00:00:00Z', warning: 'notification_enqueue_failed' }),
-  notify: message => notices.push(message), t: message => message,
-  setPublishing: () => {}, setAssets: update => { currentAssets = update(currentAssets); },
+  assets, socialAccounts: [{ id: 'fake-account', name: 'Fake account', identifier: 'x' }], config: {},
+  currentProjectRef: { current: 'fake-project' }, packSequence: { current: 0 }, submissionAttempts: { current: new Map() },
+  acceptanceFlights: { current: new Set() }, imageUploadingRef: { current: false }, channelsLoading: false, channelsError: '',
+  getMatchingSocialAccounts, imageSelectionError, isDraftSubmissionTask: taskTypes.isDraftSubmissionTask, mergeDraftTask,
+  createClientId: () => `fake-request-${publishCalls + 1}`,
+  fetch: async (_url, options) => {
+    const { assetId, projectId, integrationId } = JSON.parse(options.body);
+    publishCalls += 1;
+    return Response.json({ accepted: true, task: {
+      id: `fake-task-${publishCalls}`, kind: 'asset', sourceId: assetId, projectId, integrationId,
+      state: 'queued', auditId: null, postId: null, warning: 'Synthetic tracking warning', error: null,
+      createdAt: '2026-11-10T00:00:00Z', updatedAt: '2026-11-10T00:00:00Z', finishedAt: null
+    } }, { status: 202 });
+  },
+  readJson: response => response.json(), notify: message => notices.push(message), t: message => message,
+  setAcceptingAssetIds: () => {}, setAssets: update => { currentAssets = update(currentAssets); },
   setSelectedAsset: () => {}, setPublishModalAsset: () => {}, setLoading: () => {},
   setSubmissionNotice: message => { persistentNotice = message; }
 });
-assert.deepEqual(await handlersUnderTest.submitDraft(assets[0], 'fake-account'), { success: true, warning: true });
-assert.equal(currentAssets[0].publishStatus, 'drafted');
-assert.match(notices.at(-1), /Draft submitted, but notifications or status tracking need attention/);
-assert.match(persistentNotice, /Do not submit it again/);
-assert.equal(publishCalls, 1, 'A warning must not retry a successful submission');
+assert.deepEqual(await handlersUnderTest.submitDraft(singleAsset, 'fake-account'), { success: true, warning: true });
+assert.equal(currentAssets[0].publishStatus, 'publishing', 'Acceptance must not fabricate completed submission');
+assert.equal(notices.at(-1), 'Draft queued.');
+assert.equal(persistentNotice, 'Synthetic tracking warning');
+assert.equal(publishCalls, 1, 'A warning must not retry an accepted submission');
 notices.length = 0;
 await handlersUnderTest.batchSubmitDrafts();
 assert.equal(publishCalls, 3);
 assert.equal(notices.length, 1, 'Batch results must be aggregated, not overwritten by per-draft success toasts');
-assert.match(notices[0], /Drafts submitted: 2/);
+assert.match(notices[0], /Submissions accepted: 2/);
 assert.match(notices[0], /Notifications or status tracking need attention: 2/);
 assert.match(persistentNotice, /Do not resubmit successful drafts/);
-assert.ok(currentAssets.every(asset => asset.publishStatus === 'drafted'));
-console.log('PASS: real single/modal and batch handlers retain successful drafted status on warning, never retry, and aggregate warning count.');
+assert.ok(currentAssets.every(asset => asset.publishStatus === 'publishing'));
+console.log('PASS: real single and batch handlers respect asynchronous acceptance, do not retry warnings, and aggregate warning count.');

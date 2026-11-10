@@ -13,11 +13,79 @@ const submission = {
   postizPostId: "real-post-one", status: "drafted"
 };
 
+test("Postiz failures notify once, safely report the reason, and still allow later publication", async () => {
+  const { service, state } = setup();
+  state.config.notifyDrafts = false;
+  state.config.notifyPublishFailed = true;
+  const { auditId } = await service.recordSocialSubmission(submission);
+  const row = state.tracking.get(auditId);
+  state.postizError = new Error("request failed");
+  await service.processSocialNotifications();
+  assert.equal(state.outbox.size, 0, "transport errors are not publish failures");
+  state.postizError = null;
+  const privateMarker = ["synthetic", "private", "value"].join("-");
+  state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "ERROR",
+    error: `Aspect ratio not supported; private data: ${privateMarker}` });
+  state.now += 3_600_000;
+  await service.processSocialNotifications();
+  assert.equal(row.state, "ERROR");
+  assert.match(state.messages[0].text, /内容发布失败[\s\S]*视频宽高比不符合平台要求/);
+  assert.match(state.messages[0].text, /Postiz 帖子 ID：real-post-one/);
+  assert.match(state.messages[0].text, /处理入口：https:\/\/postiz\.example\.test/);
+  assert.doesNotMatch(row.last_error, /synthetic-private-value/);
+  assert.doesNotMatch(JSON.stringify([...state.outbox.values()]), /synthetic-private-value/);
+  assert.doesNotMatch(state.messages[0].text, /synthetic-private-value/);
+  await service.recordSocialSubmission({ ...submission, assetId: "another-audit-for-the-same-post" });
+  state.now += 3_600_000;
+  await service.processSocialNotifications();
+  assert.equal(state.outbox.size, 1, "a duplicate audit for the same Postiz ID must not create another failure event");
+  assert.equal(state.messages.length, 1);
+  state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "PUBLISHED", releaseUrl: "https://social.example.test/1" });
+  state.now += 3_600_000;
+  await service.processSocialNotifications();
+  assert.match(state.messages[1].text, /内容已发布[\s\S]*https:\/\/social\.example\.test\/1/);
+  assert.ok(row.confirmed_at);
+});
+
+test("failure preference applies only to new submissions; missing reasons still notify", async () => {
+  const { service, state } = setup();
+  state.config.notifyDrafts = false;
+  const { auditId: oldId } = await service.recordSocialSubmission(submission);
+  state.config.notifyPublishFailed = true;
+  const newPost = { ...submission, postizPostId: "new-failed-post" };
+  const { auditId: newId } = await service.recordSocialSubmission(newPost);
+  for (const id of [submission.postizPostId, newPost.postizPostId]) state.details.set(id, { id, state: "ERROR" });
+  await service.processSocialNotifications();
+  assert.equal(state.tracking.get(oldId).state, "ERROR");
+  assert.equal(state.outbox.size, 1);
+  assert.equal([...state.outbox.values()][0].publish_audit_id, newId);
+  assert.match(state.messages[0].text, /Postiz 未返回具体原因/);
+});
+
+test("only a confirmed matching ERROR triggers the failure-only subscription, and unknown reasons stay private", async () => {
+  const { service, state, advance } = setup();
+  Object.assign(state.config, { notifyDrafts: false, notifyPublished: false, notifyRejected: false, notifyPublishFailed: true });
+  await service.recordSocialSubmission({ ...submission, status: "queued" });
+  const unknownReason = "synthetic-provider-diagnostic";
+  for (const details of [undefined,
+    { id: "another-post", state: "ERROR", error: unknownReason },
+    { id: submission.postizPostId, state: "QUEUE", error: unknownReason }]) {
+    if (details) state.details.set(submission.postizPostId, details);
+    await service.processSocialNotifications();
+    assert.equal(state.outbox.size, 0);
+    advance(3_600_000);
+  }
+  state.details.set(submission.postizPostId, { id: submission.postizPostId, state: "ERROR", error: unknownReason });
+  assert.equal((await service.processSocialNotifications()).sent, 1);
+  assert.match(state.messages[0].text, /未识别的错误，请前往 Postiz 查看详情/);
+  assert.ok(!state.messages[0].text.includes(unknownReason));
+});
+
 function setup() {
   const state = {
     audits: new Map(), tracking: new Map(), outbox: new Map(), health: {}, failure: null,
     now: Date.parse("2026-10-14T12:00:00.000Z"), transactions: 0, queries: [],
-    config: { enabled: true, notifyDrafts: true, notifyPublished: true, notifyRejected: true, version: 1, webhookUrl: "https://synthetic.invalid/hook" },
+    config: { enabled: true, notifyDrafts: true, notifyPublished: true, notifyRejected: true, notifyPublishFailed: false, version: 1, webhookUrl: "https://synthetic.invalid/hook" },
     configError: null, deliveryError: null, postizError: null, details: new Map(),
     messages: [], ranges: [], spacing: [], lock: null, lockAllowed: true, beforeSend: null, beforeReadConfig: null,
     beforeQuery: null, beforeFetchDetails: null
@@ -47,11 +115,12 @@ function setup() {
         if (state.beforeQuery) await state.beforeQuery(statement);
         if (state.failure && statement.includes(state.failure)) throw new Error("secret=https://hook.invalid/token credentials");
         if (statement === "SELECT DATABASE() AS database_name") return [[{ database_name: "synthetic_polaris" }]];
-        if (statement.startsWith("SELECT enabled, notify_rejected, version FROM workspace_feishu_config")) {
+        if (statement.startsWith("SELECT enabled, notify_rejected, notify_publish_failed, version FROM workspace_feishu_config")) {
           assert.ok(state.transactions > 0, "Eligibility lock must run inside the submission transaction");
           assert.match(statement, /FOR (SHARE|UPDATE)$/);
           return [state.config ? [{ enabled: state.config.enabled ? 1 : 0,
-            notify_rejected: state.config.notifyRejected ? 1 : 0, version: state.config.version }] : []];
+            notify_rejected: state.config.notifyRejected ? 1 : 0, notify_publish_failed: state.config.notifyPublishFailed ? 1 : 0,
+            version: state.config.version }] : []];
         }
         if (statement.includes("GET_LOCK")) {
           const acquired = state.lockAllowed && (!state.lock || state.lock === owner);
@@ -67,18 +136,21 @@ function setup() {
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("INSERT INTO social_post_tracking")) {
-          const [auditId, postId, submittedAt, nextCheckAt, notifyPublished, version, notifyRejected] = parameters;
+          const [auditId, postId, submittedAt, nextCheckAt, notifyPublished, version, notifyRejected, notifyPublishFailed] = parameters;
           state.tracking.set(auditId, { publish_audit_id: auditId, postiz_post_id: postId, submitted_at: submittedAt,
             next_check_at: nextCheckAt, notify_published: notifyPublished, config_version: version, notify_rejected: notifyRejected,
+            notify_publish_failed: notifyPublishFailed,
             review_status: "pending", save_action: null, rejected_detected_at: null, state: "DRAFT", check_attempts: 0, confirmed_at: null });
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("INSERT INTO social_notification_outbox")) {
-          const [notificationId, auditId, eventType, eventTime, nextAttemptAt, version, payload] = parameters;
-          const existing = [...state.outbox.values()].find(row => row.publish_audit_id === auditId && row.event_type === eventType);
+          const [notificationId, auditId, eventType, eventTime, nextAttemptAt, version, payload, failurePostId] = parameters;
+          const existing = [...state.outbox.values()].find(row => (row.publish_audit_id === auditId && row.event_type === eventType) ||
+            (failurePostId !== null && row.failure_postiz_post_id === failurePostId));
           if (existing) return [{ affectedRows: 0 }];
           state.outbox.set(notificationId, { id: notificationId, publish_audit_id: auditId, event_type: eventType, event_time: eventTime,
-            next_attempt_at: nextAttemptAt, config_version: version, payload: JSON.parse(payload), status: "pending", attempts: 0 });
+            next_attempt_at: nextAttemptAt, config_version: version, payload: JSON.parse(payload), failure_postiz_post_id: failurePostId,
+            status: "pending", attempts: 0 });
           return [{ affectedRows: 1 }];
         }
         if (statement.startsWith("SELECT") && statement.includes("FROM social_notification_outbox AS notification")) {
@@ -144,6 +216,9 @@ function setup() {
             for (const row of state.tracking.values()) {
               if (row.config_version !== version || !state.config?.enabled || !state.config.notifyRejected) row.notify_rejected = 0;
             }
+          }
+          for (const row of state.tracking.values()) {
+            if (row.config_version !== version || !state.config?.enabled || !state.config.notifyPublishFailed) row.notify_publish_failed = 0;
           }
           return [{ affectedRows: 1 }];
         }

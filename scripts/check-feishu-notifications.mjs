@@ -5,16 +5,16 @@ import { openDatabase } from "./_login.mjs";
 import { readWorkerConfiguration } from "./run-social-notifications.mjs";
 
 const requiredColumns = {
-  workspace_feishu_config: ["id", "enabled", "notify_drafts", "notify_published", "notify_rejected", "encrypted_credentials", "version", "updated_by", "updated_at", "last_test_at", "last_test_ok", "last_test_error", "last_worker_at", "last_delivery_error"],
-  social_post_tracking: ["publish_audit_id", "postiz_post_id", "state", "review_status", "save_action", "rejected_detected_at", "notify_rejected", "release_url", "postiz_publish_date", "confirmed_at", "submitted_at", "next_check_at", "last_checked_at", "check_attempts", "last_error", "notify_published", "config_version"],
-  social_notification_outbox: ["id", "publish_audit_id", "event_type", "event_time", "status", "attempts", "next_attempt_at", "lease_token", "lease_expires_at", "sent_at", "last_error", "config_version", "payload"]
+  workspace_feishu_config: ["id", "enabled", "notify_drafts", "notify_published", "notify_rejected", "notify_publish_failed", "encrypted_credentials", "version", "updated_by", "updated_at", "last_test_at", "last_test_ok", "last_test_error", "last_worker_at", "last_delivery_error"],
+  social_post_tracking: ["publish_audit_id", "postiz_post_id", "state", "review_status", "save_action", "rejected_detected_at", "notify_rejected", "notify_publish_failed", "release_url", "postiz_publish_date", "confirmed_at", "submitted_at", "next_check_at", "last_checked_at", "check_attempts", "last_error", "notify_published", "config_version"],
+  social_notification_outbox: ["id", "publish_audit_id", "event_type", "event_time", "status", "attempts", "next_attempt_at", "lease_token", "lease_expires_at", "sent_at", "last_error", "config_version", "payload", "failure_postiz_post_id"]
 };
 
 const requiredEnums = {
   social_post_tracking: { review_status: ["unknown", "pending", "rejected"], save_action: ["pass", "update", "draft", "schedule", "now"] },
-  social_notification_outbox: { event_type: ["draft_submitted", "published", "draft_rejected"] }
+  social_notification_outbox: { event_type: ["draft_submitted", "published", "draft_rejected", "publish_failed"] }
 };
-const migrationGuidance = "Apply deploy/mysql/migrations/2026-10-14-feishu-notifications.sql and deploy/mysql/migrations/2026-10-15-draft-rejection.sql.";
+const migrationGuidance = "Apply deploy/mysql/migrations/2026-10-14-feishu-notifications.sql, deploy/mysql/migrations/2026-10-15-draft-rejection.sql and deploy/mysql/migrations/2026-11-10-publish-failure-notification.sql.";
 
 function verifyGrants(grantRows, schemaName) {
   const grantedPrivileges = new Map(Object.keys(requiredColumns).map((tableName) => [tableName, new Set()]));
@@ -78,10 +78,10 @@ export async function checkFeishuNotifications(connection, { environment = proce
     indexColumns.push(indexRow);
     uniqueIndexes.set(indexRow.INDEX_NAME, indexColumns);
   }
-  const hasEventUniqueKey = [...uniqueIndexes.values()].some((indexColumns) => indexColumns.length === 2
-    && indexColumns.every((column) => column.SUB_PART == null)
-    && indexColumns[0].COLUMN_NAME === "publish_audit_id" && indexColumns[1].COLUMN_NAME === "event_type");
-  if (!hasEventUniqueKey) throw new Error(`Notification schema is missing the audit/event unique index. ${migrationGuidance}`);
+  const hasUniqueKey = (...columns) => [...uniqueIndexes.values()].some((indexColumns) => indexColumns.length === columns.length
+    && indexColumns.every((column, position) => column.SUB_PART == null && column.COLUMN_NAME === columns[position]));
+  if (!hasUniqueKey("publish_audit_id", "event_type")) throw new Error(`Notification schema is missing the audit/event unique index. ${migrationGuidance}`);
+  if (!hasUniqueKey("failure_postiz_post_id")) throw new Error(`Notification schema is missing the failure/post unique index. ${migrationGuidance}`);
   const [grantRows] = await connection.query("SHOW GRANTS FOR CURRENT_USER()");
   verifyGrants(grantRows, schemaName);
   // Never retrieve or print encrypted webhook credentials during deployment preflight.

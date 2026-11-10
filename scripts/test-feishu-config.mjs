@@ -44,28 +44,28 @@ const execute = async (sql, parameters = []) => {
   statements.push({ sql, parameters });
   if (databaseFailure) throw new Error(`ER_BAD_FIELD_ERROR ${webhookUrl} ${signingSecret}`);
   if (sql.startsWith("INSERT")) {
-    row ??= { enabled: 0, notify_drafts: 0, notify_published: 0, notify_rejected: 0, encrypted_credentials: null, version: 1, updated_at: timestamp(), last_test_at: null, last_test_ok: null, last_test_error: null, last_worker_at: null, last_delivery_error: null };
+    row ??= { enabled: 0, notify_drafts: 0, notify_published: 0, notify_rejected: 0, notify_publish_failed: 0, encrypted_credentials: null, version: 1, updated_at: timestamp(), last_test_at: null, last_test_ok: null, last_test_error: null, last_worker_at: null, last_delivery_error: null };
     return [{ affectedRows: 1 }];
   }
   if (sql.startsWith("SELECT")) return [row ? [{ ...row }] : []];
   if (sql.includes("SET enabled=?")) {
     assert.match(sql, /version=version\+\?/);
-    const [enabled, notifyDrafts, notifyPublished, notifyRejected, encryptedCredentials, incrementVersion, updatedBy, configurationId] = parameters;
+    const [enabled, notifyDrafts, notifyPublished, notifyRejected, notifyPublishFailed, encryptedCredentials, incrementVersion, updatedBy, configurationId] = parameters;
     assert.ok(incrementVersion === 0 || incrementVersion === 1);
     assert.equal(configurationId, 1);
-    Object.assign(row, { enabled, notify_drafts: notifyDrafts, notify_published: notifyPublished, notify_rejected: notifyRejected, encrypted_credentials: encryptedCredentials, updated_by: updatedBy, updated_at: timestamp(), version: row.version + incrementVersion });
+    Object.assign(row, { enabled, notify_drafts: notifyDrafts, notify_published: notifyPublished, notify_rejected: notifyRejected, notify_publish_failed: notifyPublishFailed, encrypted_credentials: encryptedCredentials, updated_by: updatedBy, updated_at: timestamp(), version: row.version + incrementVersion });
     return [{ affectedRows: 1 }];
   }
   if (sql.startsWith("UPDATE social_post_tracking")) {
-    assert.equal(sql, "UPDATE social_post_tracking SET notify_rejected=0 WHERE notify_rejected=1");
-    trackingRows.forEach(tracking => { tracking.notify_rejected = 0; });
+    const [, flag] = /^UPDATE social_post_tracking SET (notify_rejected|notify_publish_failed)=0 WHERE \1=1$/.exec(sql);
+    trackingRows.forEach(tracking => { if (tracking[flag] === 1) tracking[flag] = 0; });
     return [{ affectedRows: trackingRows.length }];
   }
   if (sql.startsWith("UPDATE social_notification_outbox")) {
     if (cancellationFailure) throw new Error("Synthetic cancellation failure");
-    assert.equal(sql, "UPDATE social_notification_outbox SET status='cancelled', lease_token=NULL, lease_expires_at=NULL WHERE event_type='draft_rejected' AND status IN ('pending','sending')");
+    const [, eventType] = /^UPDATE social_notification_outbox SET status='cancelled', lease_token=NULL, lease_expires_at=NULL WHERE event_type='(draft_rejected|publish_failed)' AND status IN \('pending','sending'\)$/.exec(sql);
     outboxRows.forEach(event => {
-      if (event.event_type === "draft_rejected" && ["pending", "sending"].includes(event.status)) Object.assign(event, { status: "cancelled", lease_token: null, lease_expires_at: null });
+      if (event.event_type === eventType && ["pending", "sending"].includes(event.status)) Object.assign(event, { status: "cancelled", lease_token: null, lease_expires_at: null });
     });
     return [{ affectedRows: 1 }];
   }
@@ -112,7 +112,7 @@ const sameOrigin = loadModule("src/lib/same-origin.ts");
 const mocks = { "@/lib/auth": { currentUser: async () => auth }, "@/lib/feishu": feishu, "@/lib/same-origin": sameOrigin };
 const settingsRoute = loadModule("src/app/api/admin/feishu/route.ts", mocks);
 const testRoute = loadModule("src/app/api/admin/feishu/test/route.ts", mocks);
-const flags = { enabled: false, notifyDrafts: true, notifyPublished: true, notifyRejected: false };
+const flags = { enabled: false, notifyDrafts: true, notifyPublished: true, notifyRejected: false, notifyPublishFailed: false };
 const request = (method, body = {}, origin = "https://studio.example", headers = {}) => new NextRequest(`https://studio.example/api/admin/feishu${method === "POST" ? "/test" : ""}`, {
   method, headers: { origin, "content-type": "application/json", ...headers },
   ...(method === "GET" ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) })
@@ -345,6 +345,7 @@ assert.equal(defaults.enabled, false);
 assert.equal(defaults.notifyDrafts, false);
 assert.equal(defaults.notifyPublished, false);
 assert.equal(defaults.notifyRejected, false);
+assert.equal(defaults.notifyPublishFailed, false);
 assert.equal(feishu.feishuUpdateSchema.parse({ enabled: false, notifyDrafts: true, notifyPublished: true }).notifyRejected, undefined, "Missing PATCH field must not default to false");
 assert.equal(defaults.version, 1);
 assertNoSecrets(defaults);
@@ -484,6 +485,28 @@ assertNoSecrets(await unavailable.json());
 databaseFailure = false;
 console.log("PASS: real admin GET/PATCH/test routes; 401/403 and shared same-origin CSRF; strict Zod/8 KB bodies; secret-free GET/errors; saved-config tests; database-atomic 30-second limit; sanitized schema 503.");
 await runReviewRegressions();
+
+row = undefined;
+{
+  const initial = await feishu.updateFeishuSettings({ ...flags, webhookUrl, enabled: true, notifyPublishFailed: true }, administratorId);
+  const preserved = await feishu.updateFeishuSettings({ enabled: true, notifyDrafts: true, notifyPublished: true }, administratorId);
+  assert.equal(preserved.notifyPublishFailed, true);
+  assert.equal(preserved.version, initial.version);
+  trackingRows = [{ notify_publish_failed: 1, notify_published: 1 }];
+  outboxRows = [
+    { event_type: "publish_failed", status: "sending", lease_token: "test-lease" },
+    { event_type: "published", status: "pending" }
+  ];
+  const disabled = await feishu.updateFeishuSettings({ ...flags, enabled: true }, administratorId);
+  assert.equal(disabled.notifyPublishFailed, false);
+  assert.equal(disabled.version, initial.version);
+  assert.deepEqual(trackingRows, [{ notify_publish_failed: 0, notify_published: 1 }]);
+  assert.equal(outboxRows[0].status, "cancelled");
+  assert.equal(outboxRows[0].lease_token, null);
+  assert.equal(outboxRows[1].status, "pending");
+  trackingRows = [];
+  outboxRows = [];
+}
 
 row = undefined;
 auth = { user: { id: administratorId, role: "admin", displayName: "Unsigned administrator" } };

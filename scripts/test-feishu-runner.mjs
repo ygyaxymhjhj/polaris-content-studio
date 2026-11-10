@@ -90,16 +90,18 @@ test("runner timeout also covers a stalled response body", async () => {
   }), /Worker request timed out/);
 });
 
+const failurePostIndex = { INDEX_NAME: "social_notification_failure_post", NON_UNIQUE: 0, SEQ_IN_INDEX: 1, COLUMN_NAME: "failure_postiz_post_id", SUB_PART: null };
+
 function createPreflightConnection({ enabled = false, missingColumn = false, missingGrant = false, enumOverrides = {}, indexRows } = {}) {
   const columnsByTable = {
-    workspace_feishu_config: "id enabled notify_drafts notify_published notify_rejected encrypted_credentials version updated_by updated_at last_test_at last_test_ok last_test_error last_worker_at last_delivery_error",
-    social_post_tracking: "publish_audit_id postiz_post_id state review_status save_action rejected_detected_at notify_rejected release_url postiz_publish_date confirmed_at submitted_at next_check_at last_checked_at check_attempts last_error notify_published config_version",
-    social_notification_outbox: "id publish_audit_id event_type event_time status attempts next_attempt_at lease_token lease_expires_at sent_at last_error config_version payload"
+    workspace_feishu_config: "id enabled notify_drafts notify_published notify_rejected notify_publish_failed encrypted_credentials version updated_by updated_at last_test_at last_test_ok last_test_error last_worker_at last_delivery_error",
+    social_post_tracking: "publish_audit_id postiz_post_id state review_status save_action rejected_detected_at notify_rejected notify_publish_failed release_url postiz_publish_date confirmed_at submitted_at next_check_at last_checked_at check_attempts last_error notify_published config_version",
+    social_notification_outbox: "id publish_audit_id event_type event_time status attempts next_attempt_at lease_token lease_expires_at sent_at last_error config_version payload failure_postiz_post_id"
   };
   const enumTypes = {
     review_status: "enum('unknown','pending','rejected')",
     save_action: "enum('pass','update','draft','schedule','now')",
-    event_type: "enum('draft_submitted','published','draft_rejected')",
+    event_type: "enum('draft_submitted','published','draft_rejected','publish_failed')",
     ...enumOverrides
   };
   return {
@@ -114,9 +116,9 @@ function createPreflightConnection({ enabled = false, missingColumn = false, mis
       }
       if (sql.includes("INFORMATION_SCHEMA.STATISTICS")) {
         assert.deepEqual(parameters, ["polaris_content_studio", "social_notification_outbox"]);
-        return [indexRows ?? ["publish_audit_id", "event_type"].map((columnName, index) => ({
+        return [indexRows ?? [...["publish_audit_id", "event_type"].map((columnName, index) => ({
           INDEX_NAME: "social_notification_event", NON_UNIQUE: 0, SEQ_IN_INDEX: index + 1, COLUMN_NAME: columnName, SUB_PART: null
-        }))];
+        })), failurePostIndex]];
       }
       assert.equal(sql, "SELECT enabled FROM workspace_feishu_config WHERE id=?");
       return [[{ enabled: Number(enabled) }]];
@@ -134,12 +136,13 @@ test("disabled notification preflight works without secrets but external worker 
   assert.deepEqual(await checkFeishuNotifications(createPreflightConnection(), { environment, requireWorker: true }), { enabled: false, workerReady: true });
 });
 
-test("preflight rejects every unmigrated rejection column and enum without retrieving secrets", async () => {
-  for (const missingColumn of ["notify_rejected", "review_status", "save_action", "rejected_detected_at"]) {
-    await assert.rejects(checkFeishuNotifications(createPreflightConnection({ missingColumn }), { environment: {} }), /schema is incomplete.*2026-10-15-draft-rejection\.sql/);
+test("preflight rejects unmigrated notification columns and enums without retrieving secrets", async () => {
+  for (const missingColumn of ["notify_rejected", "notify_publish_failed", "failure_postiz_post_id", "review_status", "save_action", "rejected_detected_at"]) {
+    await assert.rejects(checkFeishuNotifications(createPreflightConnection({ missingColumn }), { environment: {} }), /schema is incomplete.*2026-11-10-publish-failure-notification\.sql/);
   }
   for (const enumOverrides of [
     { event_type: "enum('draft_submitted','published')" },
+    { event_type: "enum('draft_submitted','published','draft_rejected')" },
     { review_status: "enum('unknown','pending')" },
     { save_action: "enum('pass','draft','schedule','now')" },
     { review_status: "varchar(30)" }
@@ -155,6 +158,9 @@ test("preflight requires the complete audit/event unique key, not a nonunique or
   for (const indexRows of [[], uniqueIndex.slice(0, 1), uniqueIndex.map(column => ({ ...column, NON_UNIQUE: 1 })),
     uniqueIndex.map(column => ({ ...column, SUB_PART: 5 })), [...uniqueIndex, { ...uniqueIndex[0], COLUMN_NAME: "status", SEQ_IN_INDEX: 3 }]]) {
     await assert.rejects(checkFeishuNotifications(createPreflightConnection({ indexRows }), { environment: {} }), /audit\/event unique index/);
+  }
+  for (const indexRows of [uniqueIndex, [...uniqueIndex, { ...failurePostIndex, SUB_PART: 5 }], [...uniqueIndex, { ...failurePostIndex, NON_UNIQUE: 1 }]]) {
+    await assert.rejects(checkFeishuNotifications(createPreflightConnection({ indexRows }), { environment: {} }), /failure\/post unique index/);
   }
 });
 

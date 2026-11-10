@@ -27,6 +27,7 @@ const feishuChineseMessages: Record<string, string> = {
   "Draft review": "草稿待审核",
   "Draft rejected": "草稿不通过",
   "When a draft is not approved": "审核不通过时",
+  "When the publishing service confirms a failure": "发布服务确认失败时",
   "When someone submits a draft": "有人提交草稿时",
   "Post published": "正式发布",
   "After publication is confirmed": "确认发布成功后",

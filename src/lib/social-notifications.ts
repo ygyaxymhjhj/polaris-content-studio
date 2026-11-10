@@ -4,7 +4,7 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { database } from "@/lib/project-db";
 import { readFeishuConfig, sendFeishuMessage } from "@/lib/feishu";
-import { fetchPostizPostDetails, getPostizUiUrl } from "@/lib/postiz";
+import { fetchPostizPostDetails, getPostizUiUrl, type PostizPostDetails as PostDetails } from "@/lib/postiz";
 
 export type SocialSubmissionEntry = {
   projectId?: string;
@@ -32,10 +32,9 @@ export type SocialWorkerSummary = SocialDeliverySummary & {
 };
 
 type FeishuConfig = NonNullable<Awaited<ReturnType<typeof readFeishuConfig>>>;
-type NotificationEvent = "draft_submitted" | "draft_rejected" | "published";
+type NotificationEvent = "draft_submitted" | "draft_rejected" | "published" | "publish_failed";
 type PostState = "DRAFT" | "QUEUE" | "PUBLISHED" | "ERROR";
 type SaveAction = "pass" | "update" | "draft" | "schedule" | "now";
-type PostDetails = { id: string; state: PostState; releaseUrl?: string; publishDate?: string; saveAction?: SaveAction | null };
 type NotificationPayload = {
   applicantId: string;
   applicantName: string;
@@ -49,6 +48,7 @@ type NotificationPayload = {
   occurredAt: string;
   timeKind: "submission" | "publication" | "confirmation" | "detection";
   releaseUrl?: string;
+  failureReason?: string;
 };
 
 const MAX_DELIVERY_ATTEMPTS = 5;
@@ -86,6 +86,18 @@ function parseSaveAction(value: unknown): SaveAction | null {
 
 function shortenText(value: string, maximum: number): string {
   return Array.from(value).slice(0, maximum).join("");
+}
+
+function describePublishFailure(value: string | null | undefined): string {
+  if (!value?.trim()) return "Postiz 未返回具体原因。";
+  // Only send fixed descriptions; provider errors may embed secrets, URLs or private account details.
+  if (/aspect ratio/i.test(value)) return "视频宽高比不符合平台要求。";
+  if (/(?:user|account) is restricted|restricted from posting|banned from posting/i.test(value)) return "社交账号受到平台发布限制。";
+  if (/\breconnect\b|refresh channel needed|re-?authoriz|(?:access token|authorization).{0,40}expir/i.test(value)) return "社交账号需要重新授权。";
+  if (/too large|file size.{0,30}(?:limit|exceed)/i.test(value)) return "媒体文件大小超过平台限制。";
+  if (/unsupported (?:media|video|file) (?:format|type)|unsupported codec/i.test(value)) return "平台不支持该媒体格式或编码。";
+  if (/rate limit|too many requests/i.test(value)) return "平台限制了发布请求频率。";
+  return "Postiz 返回了未识别的错误，请前往 Postiz 查看详情。";
 }
 
 function validateHttpUrl(value: unknown): string | null {
@@ -129,11 +141,14 @@ async function insertNotification(
   connection: PoolConnection, auditId: string, eventType: NotificationEvent,
   eventTime: Date, version: number, payload: NotificationPayload
 ): Promise<void> {
+  const failurePostId = eventType === "publish_failed" ? payload.postizPostId ?? null : null;
+  if (eventType === "publish_failed" && !failurePostId) throw new Error("Missing failed Postiz post ID");
+  // Only failures use the per-Postiz-ID key; NULL leaves other events on their audit/event key.
   await connection.execute(
     `INSERT INTO social_notification_outbox
-      (id, publish_audit_id, event_type, event_time, next_attempt_at, config_version, payload)
-     VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id`,
-    [randomUUID(), auditId, eventType, formatUtc(eventTime), formatUtc(new Date()), version, JSON.stringify(payload)]
+      (id, publish_audit_id, event_type, event_time, next_attempt_at, config_version, payload, failure_postiz_post_id)
+     VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id`,
+    [randomUUID(), auditId, eventType, formatUtc(eventTime), formatUtc(new Date()), version, JSON.stringify(payload), failurePostId]
   );
 }
 
@@ -170,20 +185,21 @@ export async function recordSocialSubmission(entry: SocialSubmissionEntry): Prom
       if (realPostId) {
         // Serialize insertion with configuration disable/cleanup without decrypting or doing network I/O.
         const [currentConfigs] = await connection.execute<RowDataPacket[]>(
-          "SELECT enabled, notify_rejected, version FROM workspace_feishu_config WHERE id=1 FOR SHARE"
+          "SELECT enabled, notify_rejected, notify_publish_failed, version FROM workspace_feishu_config WHERE id=1 FOR SHARE"
         );
         const currentConfig = currentConfigs[0];
-        const rejectionEligible = config?.enabled && config.notifyRejected && currentConfig &&
-          Number(currentConfig.enabled) === 1 && Number(currentConfig.notify_rejected) === 1 &&
+        const eligible = config?.enabled && currentConfig && Number(currentConfig.enabled) === 1 &&
           Number(currentConfig.version) === config.version;
+        const rejectionEligible = eligible && config?.notifyRejected && Number(currentConfig.notify_rejected) === 1;
+        const failureEligible = eligible && config?.notifyPublishFailed && Number(currentConfig.notify_publish_failed) === 1;
         await connection.execute(
           `INSERT INTO social_post_tracking
             (publish_audit_id, postiz_post_id, submitted_at, next_check_at, notify_published, config_version,
-             notify_rejected, review_status)
-           VALUES (?,?,?,?,?,?,?,'pending')`,
+             notify_rejected, notify_publish_failed, review_status)
+           VALUES (?,?,?,?,?,?,?,?,'pending')`,
           [auditId, realPostId, formatUtc(submittedAt), formatUtc(submittedAt),
             config?.enabled && config.notifyPublished ? 1 : 0, config?.version ?? 1,
-            rejectionEligible ? 1 : 0]
+            rejectionEligible ? 1 : 0, failureEligible ? 1 : 0]
         );
       }
       if (entry.status === "drafted" && config?.enabled && config.notifyDrafts) {
@@ -269,6 +285,7 @@ function formatMessage(notification: RowDataPacket): string {
   switch (notification.event_type as NotificationEvent) {
     case "draft_submitted": title = "[Polaris] 新草稿待审核"; timeLabel = "提交时间"; break;
     case "draft_rejected": title = "[Polaris] 草稿审核不通过"; timeLabel = "首次检测时间"; break;
+    case "publish_failed": title = "[Polaris] 内容发布失败"; timeLabel = "检测时间"; break;
     case "published": title = "[Polaris] 内容已发布"; timeLabel = payload.timeKind === "publication" ? "发布时间" : "确认时间"; break;
     default: throw new Error("Unknown notification event");
   }
@@ -277,10 +294,14 @@ function formatMessage(notification: RowDataPacket): string {
     `平台 / 账号：${singleLine(payload.platform)} / ${singleLine(payload.accountName)}`,
     `摘要：${singleLine(shortenText(payload.summary, 200))}`,
     `${timeLabel}：${occurredAt.toISOString().replace("T", " ").replace("Z", " UTC")}`];
+  if (notification.event_type === "publish_failed") {
+    if (typeof payload.postizPostId === "string") lines.push(`Postiz 帖子 ID：${singleLine(payload.postizPostId)}`);
+    lines.push(`失败原因：${singleLine(payload.failureReason ?? describePublishFailure(null))}`);
+  }
   if (notification.event_type !== "published") {
     const reviewUrl = validateHttpUrl(getPostizUiUrl());
     // The configured Postiz origin is a known entry point; never invent a post deep-link.
-    if (reviewUrl) lines.push(`${notification.event_type === "draft_rejected" ? "处理入口" : "审核入口"}：${new URL(reviewUrl).origin}`);
+    if (reviewUrl) lines.push(`${notification.event_type === "draft_submitted" ? "审核入口" : "处理入口"}：${new URL(reviewUrl).origin}`);
   } else {
     const releaseUrl = validateHttpUrl(payload.releaseUrl);
     if (releaseUrl) lines.push(`发布链接：${releaseUrl}`);
@@ -341,6 +362,7 @@ async function deliverWithinBudget(
         switch (notification.event_type as NotificationEvent) {
           case "draft_submitted": eventEnabled = config?.notifyDrafts === true; break;
           case "draft_rejected": eventEnabled = config?.notifyRejected === true; break;
+          case "publish_failed": eventEnabled = config?.notifyPublishFailed === true; break;
           case "published": eventEnabled = config?.notifyPublished === true; break;
         }
         if (!config?.enabled || !eventEnabled || config.version !== Number(notification.config_version)) {
@@ -430,7 +452,14 @@ async function recordObservedPost(row: RowDataPacket, details: PostDetails): Pro
         Number(current.config_version), payload);
     }
     const publishDate = parsePublishDate(details.publishDate);
-    const error = details.state === "ERROR" ? "Postiz 报告帖子发布失败。" : null;
+    const error = details.state === "ERROR" ? describePublishFailure(details.error) : null;
+    if (error && current.state !== "ERROR" && Number(current.notify_publish_failed) === 1) {
+      const payload = createTrackingPayload(row, observedAt);
+      payload.timeKind = "detection";
+      payload.failureReason = error;
+      await insertNotification(connection, String(row.publish_audit_id), "publish_failed", observedAt,
+        Number(current.config_version), payload);
+    }
     await connection.execute(
       `UPDATE social_post_tracking SET state=?, save_action=?, review_status=?,
          rejected_detected_at=COALESCE(rejected_detected_at,?), postiz_publish_date=COALESCE(?,postiz_publish_date),
@@ -481,8 +510,10 @@ async function pollTrackedPosts(deadline: number): Promise<{ checked: number; co
        SET tracking.notify_published=IF(tracking.config_version<>COALESCE(config.version,0)
              OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_published,0)=0,0,tracking.notify_published),
            tracking.notify_rejected=IF(tracking.config_version<>COALESCE(config.version,0)
-             OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_rejected,0)=0,0,tracking.notify_rejected)
-       WHERE tracking.notify_published=1 OR tracking.notify_rejected=1`
+             OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_rejected,0)=0,0,tracking.notify_rejected),
+           tracking.notify_publish_failed=IF(tracking.config_version<>COALESCE(config.version,0)
+             OR COALESCE(config.enabled,0)=0 OR COALESCE(config.notify_publish_failed,0)=0,0,tracking.notify_publish_failed)
+       WHERE tracking.notify_published=1 OR tracking.notify_rejected=1 OR tracking.notify_publish_failed=1`
   );
   if (!hasTaskBudget(deadline)) return { checked: 0, confirmed: 0 };
   const now = new Date();

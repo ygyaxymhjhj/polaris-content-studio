@@ -124,6 +124,24 @@ test("details expose all documented states and published metadata, not inferred 
   assert.equal(details.has("not-requested"), false);
 });
 
+test("only matching failed posts expose bounded error text to the server", async () => {
+  const posts = [
+    { id: "failed-known", state: "ERROR", error: "Aspect ratio not supported" },
+    { id: "failed-empty", state: "ERROR", error: null },
+    { id: "failed-malformed", state: "ERROR", error: { message: "unexpected" } },
+    { id: "failed-oversized", state: "ERROR", error: "x".repeat(4097) },
+    { id: "successful", state: "PUBLISHED", error: "old error" },
+    { id: "other", state: "ERROR", error: "not requested" }
+  ];
+  createResponse = () => Response.json({ posts });
+  const details = await postiz.fetchPostizPostDetails(posts.slice(0, -1).map(post => post.id), customRange);
+  assert.equal(details.get("failed-known").error, "Aspect ratio not supported");
+  for (const id of ["failed-empty", "failed-malformed", "failed-oversized", "successful"]) {
+    assert.equal(details.get(id).error, undefined);
+  }
+  assert.equal(details.has("other"), false);
+});
+
 test("unknown states and malformed post entries are ignored", async () => {
   const unknownStates = ["SCHEDULED", "published", "UNKNOWN", "", null, 1, { state: "PUBLISHED" }];
   createResponse = () => Response.json({ posts: [

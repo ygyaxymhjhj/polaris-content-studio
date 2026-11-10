@@ -356,6 +356,7 @@ export interface PostizPostDetails {
   group?: string;
   releaseUrl?: string;
   publishDate?: string;
+  error?: string;
 }
 
 const MAX_POSTIZ_POST_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -478,6 +479,9 @@ export async function fetchPostizPostDetails(
       if (post.saveAction === null || post.saveAction === "pass" || post.saveAction === "update"
         || post.saveAction === "draft" || post.saveAction === "schedule" || post.saveAction === "now") {
         details.saveAction = post.saveAction;
+      }
+      if (post.state === "ERROR" && typeof post.error === "string" && post.error.length <= 4096) {
+        details.error = post.error;
       }
       if (typeof post.group === "string") details.group = post.group;
       const releaseUrl = validatePostizReleaseUrl(post.releaseURL);
