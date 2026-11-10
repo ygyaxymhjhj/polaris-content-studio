@@ -63,10 +63,15 @@ export async function GET(request: NextRequest) {
   if (!auth) return unauthorized();
   if (!databaseConfigured()) return json({ enabled: false, posts: [], total: 0, page: 1, perPage: 20, counts: { all: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 } });
   try {
-    // A list read is also where stale in-flight submissions surface as needs-review.
-    await sweepStaleSubmissions(auth.user.id);
-
     const parameters = request.nextUrl.searchParams;
+    const scope = parameters.get("scope") ?? "mine";
+    if (scope !== "mine" && scope !== "submitted") return failure("Invalid post scope.", 400);
+    const submitted = scope === "submitted";
+    if (submitted && auth.user.role !== "admin") return failure("Only administrators can view team submissions.", 403);
+    const submitter = parameters.get("submitter") || "";
+    if (submitted && submitter && !z.string().uuid().safeParse(submitter).success) return failure("Invalid submitter.", 400);
+    // The team view only reads data; background processing handles submission recovery.
+    if (!submitted) await sweepStaleSubmissions(auth.user.id);
     const status = parameters.get("status") || "all";
     if (!["all", "draft", "pushing", "pushed", "attention"].includes(status)) {
       return failure("Unknown post status filter.", 400);
@@ -83,7 +88,8 @@ export async function GET(request: NextRequest) {
       integrationId: (parameters.get("account") || "").slice(0, 64),
       updatedSince: within === "all" ? 0 : Date.now() - updatedWithinValues[within as keyof typeof updatedWithinValues],
       page,
-      perPage
+      perPage,
+      ...(submitted ? { submitted, submitter } : {})
     });
     return json({ enabled: true, posts: result.items, total: result.total, page, perPage, counts: result.counts });
   } catch (error) {

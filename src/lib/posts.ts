@@ -20,10 +20,14 @@ import { getVideoUpload } from "@/lib/video-uploads";
 import { getImageUploads } from "@/lib/image-uploads";
 import { areImageMediaIds, getImagePreviewUrl } from "./image-types";
 
-/**
- * Storage for manual posts. Every query is scoped by owner_user_id: unlike AI projects there is no
- * administrator bypass, because a manual post is a private draft until someone publishes it.
- */
+// Authorization depends on the current version, not whether any older revision was submitted.
+const CURRENT_SUBMISSION = `EXISTS (SELECT 1 FROM post_targets submitted
+  WHERE submitted.post_id=p.id AND submitted.snapshot_version=p.version
+    AND submitted.status IN ('submitting','accepted','failed','pending_unknown'))`;
+
+function attachmentUrl(postId: string, version: number, attachment: string): string {
+  return `/api/posts/${postId}/image?v=${version}&attachment=${attachment}`;
+}
 
 const utc = (date: Date) => date.toISOString().slice(0, 23).replace("T", " ");
 
@@ -84,6 +88,10 @@ interface ListedPostRow extends RowDataPacket {
   unknown_count: number;
   platforms: string | null;
   status: ManualPostStatus;
+  version: number;
+  owner_name?: string;
+  published_count?: number;
+  publish_failed_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -105,15 +113,19 @@ export const POST_TARGET_STATUS_SQL = `CASE
   ELSE t.status END`;
 
 /** Shared classification for list results, filtered counts and overview counts. */
-const POST_STATUS_CTE = `
-  WITH owner_posts AS (SELECT * FROM posts WHERE owner_user_id = ?),
+function postStatusCte(submitted = false) {
+  return `
+  WITH owner_posts AS (SELECT * FROM posts p WHERE ${submitted ? CURRENT_SUBMISSION : "owner_user_id = ?"}),
   target_rows AS (
-    SELECT t.*, ${POST_TARGET_STATUS_SQL} AS effective_status
+    SELECT t.*, ${POST_TARGET_STATUS_SQL} AS effective_status,
+      CASE WHEN t.snapshot_version=p.version THEN tracking.state END AS publication_state
     FROM post_targets t JOIN owner_posts p ON p.id = t.post_id
     ${POST_TARGET_REVIEW_JOINS}
   ), post_rows AS (
     SELECT
-      p.id, p.title, p.created_at, p.updated_at,
+      p.id, p.title, p.created_at, p.updated_at, p.owner_user_id, p.version,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id=p.id AND t.publication_state='PUBLISHED') AS published_count,
+      (SELECT COUNT(*) FROM target_rows t WHERE t.post_id=p.id AND t.publication_state='ERROR') AS publish_failed_count,
       LEFT(p.content, 400) AS excerpt,
       p.image_media_ids,
       (CASE WHEN p.image_media_ids IS NULL THEN p.image_thumb IS NOT NULL ELSE JSON_LENGTH(p.image_media_ids) > 0 END) AS has_image,
@@ -131,7 +143,7 @@ const POST_STATUS_CTE = `
     SELECT r.*,
       CASE
         WHEN r.submitting_count > 0 THEN 'pushing'
-        WHEN r.unsettled_count > 0 THEN 'attention'
+        WHEN r.unsettled_count > 0${submitted ? " OR r.publish_failed_count > 0" : ""} THEN 'attention'
         WHEN r.accepted_count > 0 AND r.accepted_count = r.target_count THEN 'pushed'
         WHEN r.accepted_count > 0 THEN 'attention'
         ELSE 'draft'
@@ -139,12 +151,13 @@ const POST_STATUS_CTE = `
     FROM post_rows r
   )
 `;
+}
 
 function emptyCounts(): PostsCounts {
   return { all: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 };
 }
 
-function toListItem(row: ListedPostRow): ManualPostListItem {
+function toListItem(row: ListedPostRow, submitted: boolean): ManualPostListItem {
   // Editing and deleting follow the same rule: nothing may have reached Postiz, and nothing may
   // still be in flight or unconfirmed, or the frozen copy would stop matching the database.
   const editable = listItemEditable(row);
@@ -164,8 +177,13 @@ function toListItem(row: ListedPostRow): ManualPostListItem {
     acceptedCount: Number(row.accepted_count),
     rejectedCount: Number(row.rejected_count || 0),
     platforms: row.platforms ? String(row.platforms).split(",").filter(Boolean) : [],
-    editable,
-    deletable: editable,
+    editable: !submitted && editable,
+    deletable: !submitted && editable,
+    ...(submitted ? {
+      ownerName: String(row.owner_name || ""), publishedCount: Number(row.published_count),
+      publishFailedCount: Number(row.publish_failed_count),
+      imageUrl: Number(row.has_image) === 1 ? `${attachmentUrl(row.id, row.version, imageMediaIds ? "0" : "inline")}&size=thumb` : null
+    } : {}),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)
   };
@@ -273,6 +291,74 @@ export async function getManualPost(ownerUserId: string, postId: string): Promis
   return toPostDetail(row, await listTargetRows(database(), postId));
 }
 
+export async function getSubmittedManualPost(postId: string): Promise<ManualPostDetail | null> {
+  const [rows] = await database().execute<(PostRow & { owner_name: string })[]>(
+    `SELECT p.*, u.display_name AS owner_name FROM posts p JOIN users u ON u.id=p.owner_user_id
+      WHERE p.id=? AND ${CURRENT_SUBMISSION}`, [postId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const [targets] = await database().execute<(TargetRow & {
+    publication_state: PostTarget["publicationState"]; published_at: string | null;
+    release_url: string | null; publication_error: string | null;
+  })[]>(
+    `SELECT t.integration_id, t.platform, t.account_name, t.snapshot_version,
+            CASE WHEN t.snapshot_version=p.version THEN ${POST_TARGET_STATUS_SQL} ELSE 'not_started' END AS status,
+            CASE WHEN t.snapshot_version=p.version THEN t.postiz_post_id END AS postiz_post_id,
+            CASE WHEN t.snapshot_version=p.version THEN t.submitted_at END AS submitted_at,
+            CASE WHEN t.snapshot_version=p.version THEN t.warning END AS warning,
+            CASE WHEN t.snapshot_version=p.version THEN t.error END AS error,
+            CASE WHEN tracking.last_checked_at IS NOT NULL THEN tracking.state END AS publication_state,
+            COALESCE(tracking.postiz_publish_date, tracking.confirmed_at) AS published_at,
+            tracking.release_url, tracking.last_error AS publication_error
+       FROM post_targets t JOIN posts p ON p.id=t.post_id ${POST_TARGET_REVIEW_JOINS}
+      WHERE t.post_id=? AND p.version=? AND ${CURRENT_SUBMISSION} ORDER BY t.created_at`, [postId, row.version]
+  );
+  const detail = toPostDetail(row, targets.map(target => {
+    const result = toTarget(target);
+    if (result.snapshotVersion !== Number(row.version)) return result;
+    const state = target.publication_state;
+    let publishedUrl: string | null = null;
+    if (state === "PUBLISHED" && target.release_url) {
+      try {
+        const url = new URL(target.release_url);
+        if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) publishedUrl = url.href;
+      } catch { /* Malformed release URL is not useful to the reader. */ }
+    }
+    return { ...result, publicationState: state, publishedUrl,
+      publishedAt: state === "PUBLISHED" ? parsePostTimestamp(target.published_at)?.toISOString() ?? null : null,
+      publicationError: state === "ERROR" && !/^Postiz (?:状态查询失败|尚未确认)/.test(target.publication_error ?? "")
+        ? target.publication_error : null };
+  }));
+  const { imageMediaIds, videoMediaId, ...safeDetail } = detail;
+  const attachmentUrls = imageMediaIds?.map((_, index) => attachmentUrl(postId, detail.version, String(index)))
+    ?? (detail.imageUrl ? [attachmentUrl(postId, detail.version, "inline")] : []);
+  return { ...safeDetail, editable: false, ownerName: String(row.owner_name),
+    imageUrl: attachmentUrls[0] ?? null, attachmentUrls,
+    ...(videoMediaId ? { videoUrl: attachmentUrl(postId, detail.version, "video") } : {}) };
+}
+
+export async function getSubmittedAttachment(postId: string, version: number, attachment: string, thumb: boolean) {
+  const [rows] = await database().execute<(RowDataPacket & {
+    owner_user_id: string; image_media_ids: PostRow["image_media_ids"]; video_media_id: string | null; image: string | null;
+  })[]>(
+    `SELECT p.owner_user_id, p.image_media_ids, p.video_media_id,
+            ${attachment === "inline" ? (thumb ? "p.image_thumb" : "p.image_data") : "NULL"} AS image
+       FROM posts p WHERE p.id=? AND p.version=? AND ${CURRENT_SUBMISSION}`, [postId, version]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  if (attachment === "inline") return row.image_media_ids == null && row.image ? { dataUrl: row.image } : null;
+  if (attachment === "video") {
+    const video = row.video_media_id ? await getVideoUpload(row.owner_user_id, row.video_media_id) : null;
+    return video ? { path: video.postizPath } : null;
+  }
+  const id = readPostImageMediaIds(row.image_media_ids)?.[Number(attachment)];
+  if (!id) return null;
+  const [image] = await getImageUploads(row.owner_user_id, [id]);
+  return image ? (thumb ? { dataUrl: image.thumbnailDataUrl } : { path: image.postizPath }) : null;
+}
+
 export interface PostListFilters {
   status: "all" | ManualPostStatus;
   search: string;
@@ -282,6 +368,8 @@ export interface PostListFilters {
   updatedSince: number;
   page: number;
   perPage: number;
+  submitted?: boolean;
+  submitter?: string;
 }
 
 /** mysql2 only accepts these scalar types, so filter builders stay on this union. */
@@ -305,6 +393,10 @@ function filterArguments(filters: PostListFilters): [string, ...SqlValue[]] {
     conditions.push("EXISTS (SELECT 1 FROM post_targets ti WHERE ti.post_id = r.id AND ti.integration_id = ?)");
     databaseFilters.push(filters.integrationId);
   }
+  if (filters.submitted && filters.submitter) {
+    conditions.push("r.owner_user_id = ?");
+    databaseFilters.push(filters.submitter);
+  }
   if (filters.updatedSince > 0) {
     conditions.push("r.updated_at >= ?");
     databaseFilters.push(utc(new Date(filters.updatedSince)));
@@ -314,14 +406,16 @@ function filterArguments(filters: PostListFilters): [string, ...SqlValue[]] {
 
 export async function listManualPosts(ownerUserId: string, filters: PostListFilters): Promise<{ items: ManualPostListItem[]; total: number; counts: PostsCounts }> {
   const counts: PostsCounts = emptyCounts();
+  const cte = postStatusCte(filters.submitted);
+  const scope = filters.submitted ? [] : [ownerUserId];
   {
     const [conditions, ...values] = filterArguments(filters);
     const [rows] = await database().execute<(RowDataPacket & { status: ManualPostStatus; total: number })[]>(
-      `${POST_STATUS_CTE}
+      `${cte}
        SELECT status, COUNT(*) AS total FROM post_status r
        ${conditions ? `WHERE ${conditions}` : ""}
        GROUP BY status`,
-      [ownerUserId, ...values]
+      [...scope, ...values]
     );
     for (const row of rows) {
       const status = row.status as ManualPostStatus;
@@ -333,16 +427,17 @@ export async function listManualPosts(ownerUserId: string, filters: PostListFilt
   const offset = (filters.page - 1) * filters.perPage;
   const [conditions, ...values] = filterArguments(filters);
   const [rows] = await database().execute<ListedPostRow[]>(
-    `${POST_STATUS_CTE}
+    `${cte}
      SELECT r.id, r.title, r.updated_at, r.created_at, r.excerpt, r.has_image, r.image_media_ids, r.has_video, r.target_count,
             r.accepted_count, r.rejected_count, r.submitting_count, r.unsettled_count, r.unknown_count, r.platforms, r.status
-       FROM post_status r
+            ${filters.submitted ? ", r.version, r.published_count, r.publish_failed_count, u.display_name AS owner_name" : ""}
+       FROM post_status r${filters.submitted ? " JOIN users u ON u.id=r.owner_user_id" : ""}
       WHERE ${conditions ? `(${conditions}) AND ` : ""}(? = 'all' OR r.status = ?)
-      ORDER BY r.updated_at DESC
+      ORDER BY r.updated_at DESC, r.id DESC
       LIMIT ? OFFSET ?`,
-    [ownerUserId, ...values, filters.status, filters.status, filters.perPage, offset]
+    [...scope, ...values, filters.status, filters.status, filters.perPage, offset]
   );
-  const items = rows.map(toListItem);
+  const items = rows.map(row => toListItem(row, filters.submitted === true));
   const total = filters.status === "all" ? counts.all : counts[filters.status];
   return { items, total, counts };
 }
@@ -641,7 +736,7 @@ export async function overviewSnapshot(ownerUserId: string, withinMs: number): P
   const counts: Omit<PostsCounts, "all"> & { total: number } = { total: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 };
   {
     const [rows] = await database().execute<(RowDataPacket & { status: ManualPostStatus; total: number })[]>(
-      `${POST_STATUS_CTE} SELECT status, COUNT(*) AS total FROM post_status GROUP BY status`,
+      `${postStatusCte()} SELECT status, COUNT(*) AS total FROM post_status GROUP BY status`,
       [ownerUserId]
     );
     for (const row of rows) {

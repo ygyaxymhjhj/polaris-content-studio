@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, UserPlus, Users } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 
-type Member = { id: string; username: string; displayName: string; disabled: boolean; createdAt: string };
+type Member = { id: string; username: string; displayName: string; role: "admin" | "member"; disabled: boolean; createdAt: string };
 
 export default function MembersPanel({ canManageMembers }: { canManageMembers: boolean }) {
   const t = useTranslation();
@@ -97,6 +97,16 @@ export default function MembersPanel({ canManageMembers }: { canManageMembers: b
     }
   }
 
+  async function changeRole(member: Member) {
+    if (!window.confirm(t("Change this member's role? They will need to sign in again."))) return;
+    const role = member.role === "admin" ? "member" : "admin";
+    if (await send("PATCH", { id: member.id, action: "set-role", role })) {
+      setResetFor("");
+      setNewPassword("");
+      setNotice("Member role saved.");
+    }
+  }
+
   if (!hasPermission) return null;
 
   return (
@@ -105,29 +115,38 @@ export default function MembersPanel({ canManageMembers }: { canManageMembers: b
       <h2>{t("Members")}</h2>
 
       <div className="member-list">
-        {members.map((member) => (
-          <div key={member.id}>
-            <div className="member-row">
-              <span className="member-identity">
-                <strong>{member.displayName}</strong>
-                <small>{member.username}{member.id === currentUserId && ` · ${t("You")}`}</small>
-              </span>
-              <span className={`member-status ${member.disabled ? "off" : "on"}`}>{member.disabled ? t("Disabled") : t("Active")}</span>
-              <span className="member-actions">
-                <button type="button" className="small-button" onClick={() => { setResetFor(resetFor === member.id ? "" : member.id); setNewPassword(""); }}>{t("Reset password")}</button>
-                <button type="button" className="small-button" disabled={busy || member.id === currentUserId} onClick={() => void update(member, member.disabled ? "enable" : "disable")}>
-                  {member.disabled ? t("Enable") : t("Disable")}
-                </button>
-              </span>
-            </div>
-            {resetFor === member.id && (
-              <div className="member-reset">
-                <input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder={t("New password (at least 8 characters)")} />
-                <button type="button" className="small-button" disabled={busy || newPassword.length < 8} onClick={() => void update(member, "password", newPassword)}>{t("Save password")}</button>
+        {members.map((member) => {
+          const isSelf = member.id === currentUserId;
+          const isBootstrap = member.username === "admin";
+          return (
+            <div key={member.id}>
+              <div className="member-row">
+                <span className="member-identity">
+                  <strong>{member.displayName}</strong>
+                  <small>{member.username} · {t(member.role === "admin" ? "Administrator" : "Member")}{isSelf && ` · ${t("You")}`}</small>
+                </span>
+                <span className={`member-status ${member.disabled ? "off" : "on"}`}>{member.disabled ? t("Disabled") : t("Active")}</span>
+                <span className="member-actions">
+                  <button type="button" className="small-button" onClick={() => { setResetFor(resetFor === member.id ? "" : member.id); setNewPassword(""); }}>{t("Reset password")}</button>
+                  <button type="button" className="small-button" disabled={busy || (!member.disabled && (isSelf || isBootstrap))} onClick={() => void update(member, member.disabled ? "enable" : "disable")}>
+                    {member.disabled ? t("Enable") : t("Disable")}
+                  </button>
+                  {!isSelf && !(isBootstrap && member.role === "admin") && (
+                    <button type="button" className="small-button" disabled={busy} onClick={() => void changeRole(member)}>
+                      {t(member.role === "admin" ? "Make member" : "Make administrator")}
+                    </button>
+                  )}
+                </span>
               </div>
-            )}
-          </div>
-        ))}
+              {resetFor === member.id && (
+                <div className="member-reset">
+                  <input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder={t("New password (at least 8 characters)")} />
+                  <button type="button" className="small-button" disabled={busy || newPassword.length < 8} onClick={() => void update(member, "password", newPassword)}>{t("Save password")}</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <form className="member-create" onSubmit={create}>

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { databaseConfigured } from "@/lib/project-db";
 import { isSameOrigin } from "@/lib/same-origin";
-import { deleteManualPost, getManualPost, PostMediaValidationError, PostScheduleValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
+import { deleteManualPost, getManualPost, getSubmittedManualPost, PostMediaValidationError, PostScheduleValidationError, sweepStaleSubmissions, updateManualPost } from "@/lib/posts";
 import { validatePostImage } from "@/lib/post-media";
 import { areImageMediaIds } from "@/lib/image-types";
 import { isAccountAssignedTo, listSocialAccounts } from "@/lib/social-accounts";
@@ -40,15 +40,17 @@ async function readPostId(context: { params: Promise<{ postId: string }> }): Pro
   return postIdPattern.test(postId) ? postId : null;
 }
 
-export async function GET(_request: NextRequest, context: { params: Promise<{ postId: string }> }) {
+export async function GET(request: NextRequest, context: { params: Promise<{ postId: string }> }) {
   const auth = await currentUser();
   if (!auth) return unauthorized();
   if (!databaseConfigured()) return failure("Posts storage is unavailable.", 503, "STORAGE_UNAVAILABLE");
   const postId = await readPostId(context);
   if (!postId) return failure("Invalid post identifier.", 400, "INVALID");
   try {
-    await sweepStaleSubmissions(auth.user.id);
-    const post = await getManualPost(auth.user.id, postId);
+    const submitted = new URL(request.url).searchParams.get("scope") === "submitted";
+    if (submitted && auth.user.role !== "admin") return failure("Only administrators can view team submissions.", 403);
+    if (!submitted) await sweepStaleSubmissions(auth.user.id);
+    const post = submitted ? await getSubmittedManualPost(postId) : await getManualPost(auth.user.id, postId);
     if (!post) return failure("Post not found.", 404, "NOT_FOUND");
     return json({ post });
   } catch (error) {

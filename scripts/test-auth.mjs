@@ -27,9 +27,10 @@ async function addUser(label, displayName, role = "member") {
 
 const login = (context, username, candidate = password) =>
   context.request.post(`${base}/api/auth/login`, { headers: { Origin: base }, data: { username, password: candidate } });
-const update = (context, id, action, newPassword) => context.request.patch(`${base}/api/auth/users`, {
-  headers: { Origin: base }, data: { id, action, ...(newPassword ? { password: newPassword } : {}) }
+const update = (context, id, change) => context.request.patch(`${base}/api/auth/users`, {
+  headers: { Origin: base }, data: { id, ...change }
 });
+const roleChange = (role) => ({ action: "set-role", role });
 async function accountState(id) {
   const [users] = await db.execute("SELECT id, password_hash, role, disabled FROM users WHERE id=?", [id]);
   const [sessions] = await db.execute("SELECT id FROM sessions WHERE user_id=? ORDER BY id", [id]);
@@ -96,7 +97,29 @@ try {
   assert.equal(carolSignIn.status(), 200);
   assert.equal((await carolSignIn.json()).user.role, "member");
   assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 403);
-  await carolRow.locator(".small-button").nth(1).click();
+  const aliceRow = alicePage.locator(".member-row", { hasText: alice.username });
+  assert.equal(await aliceRow.getByRole("button", { name: "Make member", exact: true }).count(), 0);
+  assert.equal(await aliceRow.getByRole("button", { name: "Disable", exact: true }).isDisabled(), true);
+  alicePage.once("dialog", dialog => dialog.accept());
+  await carolRow.getByRole("button", { name: "Make administrator", exact: true }).click();
+  await carolRow.getByRole("button", { name: "Make member", exact: true }).waitFor();
+  assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 401, "promotion revokes prior sessions");
+  assert.equal((await accountState(carolRecord[0].id)).sessions.length, 0);
+  const promoted = await login(carolContext, carol, carolPassword);
+  assert.equal(promoted.status(), 200);
+  assert.equal((await promoted.json()).user.role, "admin");
+  assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 200);
+  const sameRole = await update(aliceContext, carolRecord[0].id, roleChange("admin"));
+  assert.deepEqual(await sameRole.json(), { ok: true, changed: false });
+  assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 200, "unchanged role keeps sessions");
+  alicePage.once("dialog", dialog => dialog.accept());
+  await carolRow.getByRole("button", { name: "Make member", exact: true }).click();
+  await carolRow.getByRole("button", { name: "Make administrator", exact: true }).waitFor();
+  assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 401, "demotion revokes prior sessions");
+  assert.equal((await accountState(carolRecord[0].id)).sessions.length, 0);
+  assert.equal((await login(carolContext, carol, carolPassword)).status(), 200);
+  assert.equal((await carolContext.request.get(`${base}/api/auth/users`)).status(), 403, "demoted user is no longer an administrator");
+  await carolRow.getByRole("button", { name: "Disable", exact: true }).click();
   await carolRow.locator(".member-status.off").waitFor({ timeout: 15000 });
   assert.equal((await carolContext.request.get(`${base}/api/projects`)).status(), 401);
   await carolContext.close();
@@ -132,12 +155,12 @@ try {
   })).status(), 403);
   const [notCreated] = await db.execute("SELECT id FROM users WHERE username=?", [forbiddenUsername]);
   assert.equal(notCreated.length, 0);
-  for (const action of ["disable", "enable", "password"]) {
-    assert.equal((await update(bobContext, alice.id, action, "forbidden-password")).status(), 403);
+  for (const change of [{ action: "disable" }, { action: "enable" }, { action: "password", password: "forbidden-password" }, roleChange("member")]) {
+    assert.equal((await update(bobContext, alice.id, change)).status(), 403);
     assert.deepEqual(await accountState(alice.id), before);
     assert.equal((await aliceContext.request.get(`${base}/api/projects`)).status(), 200);
   }
-  assert.equal((await update(bobContext, bob.id, "disable")).status(), 403);
+  assert.equal((await update(bobContext, bob.id, { action: "disable" })).status(), 403);
 
   const bobPage = await bobContext.newPage();
   let bobMemberCalls = 0;
@@ -158,20 +181,44 @@ try {
   assert.equal((await bobContext.request.get(`${base}/api/social/channels`)).status(), 200);
 
   // Only an administrator can disable, enable, and reset another account's password.
-  assert.equal((await update(aliceContext, bob.id, "disable")).status(), 200);
+  assert.equal((await update(aliceContext, bob.id, { action: "disable" })).status(), 200);
   assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401);
-  assert.equal((await update(aliceContext, bob.id, "enable")).status(), 200);
+  assert.equal((await update(aliceContext, bob.id, { action: "enable" })).status(), 200);
   assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401, "enable must not resurrect an old session");
   assert.equal((await login(bobContext, bob.username)).status(), 200);
   const newPassword = "bob-replacement-password";
-  assert.equal((await update(aliceContext, bob.id, "password", newPassword)).status(), 200);
+  assert.equal((await update(aliceContext, bob.id, { action: "password", password: newPassword })).status(), 200);
   assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401);
   assert.equal((await login(bobContext, bob.username)).status(), 401);
   assert.equal((await login(bobContext, bob.username, newPassword)).status(), 200);
-  assert.equal((await update(aliceContext, alice.id, "disable")).status(), 400);
+  assert.equal((await update(aliceContext, alice.id, { action: "disable" })).status(), 400);
+  assert.equal((await update(aliceContext, alice.id, roleChange("member"))).status(), 400);
   assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 200);
   assert.equal((await bobContext.request.post(`${base}/api/auth/logout`, { headers: { Origin: base } })).status(), 200);
   assert.equal((await bobContext.request.get(`${base}/api/projects`)).status(), 401);
+
+  // Opposing administrators lock the same rows in the same order: only one mutation can win.
+  const raceA = await addUser("race-a", "Race A", "admin");
+  const raceB = await addUser("race-b", "Race B", "admin");
+  const raceAContext = await browser.newContext();
+  const raceBContext = await browser.newContext();
+  assert.equal((await login(raceAContext, raceA.username)).status(), 200);
+  assert.equal((await login(raceBContext, raceB.username)).status(), 200);
+  const [demotion, disable] = await Promise.all([
+    update(raceAContext, raceB.id, roleChange("member")),
+    update(raceBContext, raceA.id, { action: "disable" })
+  ]);
+  assert.equal([demotion, disable].filter(response => response.status() === 200).length, 1);
+  assert.ok([demotion, disable].every(response => [200, 401, 403].includes(response.status())));
+  const stateA = await accountState(raceA.id);
+  const stateB = await accountState(raceB.id);
+  const demotionWon = demotion.status() === 200;
+  assert.equal(Number(stateA.users[0].disabled), demotionWon ? 0 : 1);
+  assert.equal(stateB.users[0].role, demotionWon ? "member" : "admin");
+  assert.equal(stateA.sessions.length, demotionWon ? 1 : 0);
+  assert.equal(stateB.sessions.length, demotionWon ? 0 : 1);
+  await raceAContext.close();
+  await raceBContext.close();
 
   const throttled = await browser.newContext();
   let lastStatus = 0;

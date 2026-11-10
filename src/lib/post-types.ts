@@ -38,6 +38,21 @@ export interface PostTarget {
   warning: string | null;
   error: string | null;
   submittedAt: string | null;
+  publicationState?: "DRAFT" | "QUEUE" | "PUBLISHED" | "ERROR" | null;
+  publishedAt?: string | null;
+  publishedUrl?: string | null;
+  publicationError?: string | null;
+}
+
+export function postPublicationLabel(target: PostTarget): string {
+  if (target.status !== "accepted") return POST_TARGET_STATUS_LABEL[target.status];
+  switch (target.publicationState) {
+    case "DRAFT": return "Pending review";
+    case "QUEUE": return "Scheduled";
+    case "PUBLISHED": return "Published";
+    case "ERROR": return "Publish failed";
+    default: return "Pending confirmation";
+  }
 }
 
 export interface ManualPostListItem {
@@ -58,6 +73,9 @@ export interface ManualPostListItem {
   /** False once any target reached Postiz (or its result is unknown): the frozen snapshot is no longer editable. */
   editable: boolean;
   deletable: boolean;
+  ownerName?: string;
+  publishedCount?: number;
+  publishFailedCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +98,9 @@ export interface ManualPostDetail {
   imageHeight: number | null;
   version: number;
   editable: boolean;
+  ownerName?: string;
+  attachmentUrls?: string[];
+  videoUrl?: string;
   /** Why the post is read-only, when it is. */
   frozenReason: "accepted" | "rejected" | "submitting" | "pending_unknown" | null;
   createdAt: string;

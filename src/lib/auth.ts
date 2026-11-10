@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import type { ResultSetHeader, RowDataPacket } from "mysql2";
+import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { database, databaseConfigured } from "@/lib/project-db";
 
 export const sessionCookie = "polaris-session";
@@ -15,7 +15,11 @@ const scryptParams = { N: 16384, r: 8, p: 1 };
 export type User = { id: string; username: string; displayName: string; role: "admin" | "member" };
 export type Member = User & { disabled: boolean; createdAt: string };
 export type Account = User & { passwordHash: string; disabled: boolean };
-export type Auth = { user: User; ownerHash: string };
+export type Auth = { user: User; ownerHash: string; sessionHash: string };
+export type MemberUpdate =
+  | { action: "password"; password: string }
+  | { action: "disable" | "enable" }
+  | { action: "set-role"; role: User["role"] };
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
@@ -72,14 +76,15 @@ export async function currentUser(): Promise<Auth | null> {
   if (!databaseConfigured()) return null;
   const token = (await cookies()).get(sessionCookie)?.value;
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
+  const sessionHash = hashToken(token);
   const [rows] = await database().execute<RowDataPacket[]>(
     "SELECT u.id, u.username, u.display_name AS displayName, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires_at>? AND u.disabled=0",
-    [hashToken(token), utc(new Date())]
+    [sessionHash, utc(new Date())]
   );
   if (!rows.length) return null;
   const row = rows[0];
   const user: User = { id: String(row.id), username: String(row.username), displayName: String(row.displayName), role: row.role === "admin" ? "admin" : "member" };
-  return { user, ownerHash: ownerHashFor(user.id) };
+  return { user, ownerHash: ownerHashFor(user.id), sessionHash };
 }
 
 export const unauthorized = () =>
@@ -134,26 +139,72 @@ export async function findUserById(userId: string): Promise<Member | undefined> 
   };
 }
 
-export async function createUser(username: string, displayName: string, password: string) {
+async function withAdminUsers<T>(
+  auth: Auth,
+  targetId: string,
+  mutate: (connection: PoolConnection, target: RowDataPacket | undefined) => Promise<T>
+) {
+  const actorId = auth.user.id;
+  const connection = await database().getConnection();
+  try {
+    await connection.beginTransaction();
+    const users = new Map<string, RowDataPacket>();
+    // Point reads in primary-key order keep two administrators editing each other from deadlocking.
+    for (const id of [...new Set([actorId, targetId])].sort()) {
+      const [rows] = await connection.execute<RowDataPacket[]>(
+        "SELECT username, role, disabled FROM users WHERE id=? FOR UPDATE", [id]
+      );
+      if (rows[0]) users.set(id, rows[0]);
+    }
+    const actor = users.get(actorId);
+    let result: T | undefined;
+    if (actor?.role === "admin" && Number(actor.disabled) === 0) {
+      // A stale request cannot regain authorization if its account is later re-enabled or promoted.
+      const [sessions] = await connection.execute<RowDataPacket[]>(
+        "SELECT id FROM sessions WHERE id=? AND user_id=? AND expires_at>? FOR UPDATE",
+        [auth.sessionHash, actorId, utc(new Date())]
+      );
+      if (sessions.length) result = await mutate(connection, users.get(targetId));
+    }
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function createUser(auth: Auth, username: string, displayName: string, password: string) {
   const id = randomUUID();
-  await database().execute("INSERT INTO users (id, username, display_name, password_hash, role) VALUES (?,?,?,?,'member')", [
-    id,
-    username,
-    displayName,
-    hashPassword(password)
-  ]);
-  return id;
+  const passwordHash = hashPassword(password);
+  return withAdminUsers(auth, auth.user.id, async (connection) => {
+    await connection.execute("INSERT INTO users (id, username, display_name, password_hash, role) VALUES (?,?,?,?,'member')", [id, username, displayName, passwordHash]);
+    return id;
+  });
 }
 
-/** Changing a password ends every existing session for that account, so a stale or shared login cannot survive it. */
-export async function setPassword(userId: string, password: string) {
-  await database().execute("UPDATE users SET password_hash=? WHERE id=?", [hashPassword(password), userId]);
-  await database().execute("DELETE FROM sessions WHERE user_id=?", [userId]);
-}
-
-export async function setDisabled(userId: string, disabled: boolean) {
-  await database().execute("UPDATE users SET disabled=? WHERE id=?", [disabled ? 1 : 0, userId]);
-  if (disabled) await database().execute("DELETE FROM sessions WHERE user_id=?", [userId]);
+export async function updateMember(auth: Auth, userId: string, update: MemberUpdate) {
+  const { action } = update;
+  if (auth.user.id === userId && (action === "disable" || action === "set-role")) return "self";
+  const passwordHash = action === "password" ? hashPassword(update.password) : null;
+  const result = await withAdminUsers(auth, userId, async (connection, target) => {
+    if (!target) return "missing";
+    if (target.username === "admin" && (action === "disable" || (action === "set-role" && update.role === "member"))) return "protected";
+    if (action === "set-role") {
+      if (target.role === update.role) return "unchanged";
+      await connection.execute("UPDATE users SET role=? WHERE id=?", [update.role, userId]);
+    } else if (action === "password") {
+      await connection.execute("UPDATE users SET password_hash=? WHERE id=?", [passwordHash, userId]);
+    } else {
+      if (action === "enable" && Number(target.disabled) === 0) return "unchanged";
+      await connection.execute("UPDATE users SET disabled=? WHERE id=?", [action === "disable" ? 1 : 0, userId]);
+    }
+    await connection.execute("DELETE FROM sessions WHERE user_id=?", [userId]);
+    return "updated";
+  });
+  return result ?? "forbidden";
 }
 
 /**
