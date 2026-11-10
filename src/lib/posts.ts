@@ -308,7 +308,10 @@ export async function getSubmittedManualPost(postId: string): Promise<ManualPost
             CASE WHEN t.snapshot_version=p.version THEN t.submitted_at END AS submitted_at,
             CASE WHEN t.snapshot_version=p.version THEN t.warning END AS warning,
             CASE WHEN t.snapshot_version=p.version THEN t.error END AS error,
-            CASE WHEN tracking.last_checked_at IS NOT NULL THEN tracking.state END AS publication_state,
+            CASE WHEN tracking.last_checked_at IS NOT NULL AND (
+              tracking.state <> 'DRAFT' OR tracking.last_error IS NULL OR tracking.save_action IS NOT NULL
+              OR tracking.postiz_publish_date IS NOT NULL
+            ) THEN tracking.state END AS publication_state,
             COALESCE(tracking.postiz_publish_date, tracking.confirmed_at) AS published_at,
             tracking.release_url, tracking.last_error AS publication_error
        FROM post_targets t JOIN posts p ON p.id=t.post_id ${POST_TARGET_REVIEW_JOINS}

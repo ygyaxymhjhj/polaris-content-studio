@@ -16,6 +16,8 @@ import {
   Video
 } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
+import AdminPublishHistory from "@/components/AdminPublishHistory";
+import SubmittedPostView from "@/components/SubmittedPostView";
 import { SOCIAL_PLATFORM_META as PLATFORM_META, type SocialPlatform as Platform, type SocialAccount } from "@/lib/types";
 import {
   POST_STATUS_LABEL,
@@ -64,16 +66,7 @@ function PlatformMarks({ platforms }: { platforms: string[] }) {
   );
 }
 
-export default function PostsView({
-  accounts,
-  accountsLoading,
-  accountsError,
-  onOpenPost,
-  onNewPost,
-  onOpenAccounts,
-  initialStatus,
-  refreshToken
-}: {
+type PostsViewProps = {
   accounts: SocialAccount[];
   accountsLoading: boolean;
   accountsError: string;
@@ -83,7 +76,37 @@ export default function PostsView({
   /** Set when the overview cards open the list on a specific tab. */
   initialStatus: "all" | ManualPostStatus;
   refreshToken: number;
-}) {
+  isAdmin?: boolean;
+};
+
+const adminViews = [
+  { id: "submitted", label: "Team submissions" },
+  { id: "mine", label: "My posts" },
+  { id: "history", label: "AI publish history" }
+] as const;
+
+export default function PostsView(props: PostsViewProps) {
+  const t = useTranslation();
+  const [view, setView] = useState<typeof adminViews[number]["id"]>(props.initialStatus === "all" ? "submitted" : "mine");
+  const [submittedId, setSubmittedId] = useState<string | null>(null);
+  if (!props.isAdmin) return <PostsList {...props} />;
+
+  return <>
+    <nav className="posts-status-tabs posts-scope-nav" aria-label={t("Post visibility")}>
+      {adminViews.map(item => <button key={item.id} type="button"
+        className={`posts-status-tab${view === item.id ? " active" : ""}`} aria-pressed={view === item.id}
+        onClick={() => { setView(item.id); setSubmittedId(null); }}>{t(item.label)}</button>)}
+    </nav>
+    {view === "history" ? <AdminPublishHistory />
+      : view === "submitted" && submittedId ? <SubmittedPostView key={submittedId} postId={submittedId} onBack={() => setSubmittedId(null)} />
+        : <PostsList key={view} {...props} submitted={view === "submitted"}
+            initialStatus={view === "submitted" ? "all" : props.initialStatus}
+            onOpenPost={view === "submitted" ? setSubmittedId : props.onOpenPost} />}
+  </>;
+}
+
+function PostsList({ accounts, accountsLoading, accountsError, onOpenPost, onNewPost, onOpenAccounts,
+  initialStatus, refreshToken, submitted = false }: PostsViewProps & { submitted?: boolean }) {
   const t = useTranslation();
   const [posts, setPosts] = useState<ManualPostListItem[]>([]);
   const [counts, setCounts] = useState<PostsCounts>({ all: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 });
@@ -93,6 +116,20 @@ export default function PostsView({
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [platform, setPlatform] = useState("");
   const [account, setAccount] = useState("");
+  const [submitter, setSubmitter] = useState("");
+  const [submitters, setSubmitters] = useState<{ id: string; displayName: string; username: string }[]>([]);
+
+  useEffect(() => {
+    if (!submitted) return;
+    const controller = new AbortController();
+    void fetch("/api/auth/users", { cache: "no-store", signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) return;
+        const { users } = await response.json();
+        if (!controller.signal.aborted && Array.isArray(users)) setSubmitters(users);
+      }).catch(() => { /* Other filters remain available when member names cannot load. */ });
+    return () => controller.abort();
+  }, [submitted]);
   const [within, setWithin] = useState("all");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -119,10 +156,22 @@ export default function PostsView({
       if (platform) parameters.set("platform", platform);
       if (account) parameters.set("account", account);
       if (within !== "all") parameters.set("updatedWithin", within);
+      if (submitted) {
+        parameters.set("scope", "submitted");
+        if (submitter) parameters.set("submitter", submitter);
+      }
       const response = await fetch(`/api/posts?${parameters}`, { cache: "no-store" });
       const data = (await response.json().catch(() => ({}))) as Partial<PostsListResponse> & { error?: string };
       if (sequence !== requestSequence.current) return;
-      if (!response.ok) throw new Error(data.error || "The posts list could not be loaded.");
+      if (!response.ok) {
+        if (submitted && (response.status === 401 || response.status === 403)) {
+          setPosts([]);
+          setCounts({ all: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 });
+          setTotal(0);
+          setSubmitters([]);
+        }
+        throw new Error(data.error || "The posts list could not be loaded.");
+      }
       setPosts(Array.isArray(data.posts) ? data.posts : []);
       setCounts(data.counts || { all: 0, draft: 0, pushing: 0, pushed: 0, attention: 0 });
       setTotal(Number(data.total) || 0);
@@ -134,7 +183,7 @@ export default function PostsView({
       if (activeRequest.current === sequence) activeRequest.current = null;
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [status, page, debouncedSearch, platform, account, within]);
+  }, [status, page, debouncedSearch, platform, account, within, submitted, submitter]);
 
   useEffect(() => {
     void loadPosts();
@@ -154,16 +203,17 @@ export default function PostsView({
   // Filters are a fresh query, not a deeper page of the previous one.
   useEffect(() => {
     setPage(1);
-  }, [status, debouncedSearch, platform, account, within]);
+  }, [status, debouncedSearch, platform, account, within, submitter]);
 
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
-  const filtersActive = Boolean(debouncedSearch || platform || account || within !== "all");
+  const filtersActive = Boolean(debouncedSearch || platform || account || submitter || within !== "all");
   const hasAnyPost = counts.all > 0 || filtersActive;
 
   function clearFilters() {
     setSearch("");
     setPlatform("");
     setAccount("");
+    setSubmitter("");
     setWithin("all");
     setStatus("all");
   }
@@ -216,7 +266,7 @@ export default function PostsView({
         <div>
           <div className="eyebrow">{t("MANUAL POSTS")}</div>
           <h1 id="posts-title">{t("Posts")}</h1>
-          <p>{t("Write and manage your social drafts.")}</p>
+          <p>{t(submitted ? "View submitted posts and their publishing results. Local drafts stay private." : "Write and manage your social drafts.")}</p>
         </div>
         <div className="posts-heading-actions">
           <button type="button" className="secondary-button" onClick={() => void loadPosts()} disabled={loading}>
@@ -230,7 +280,7 @@ export default function PostsView({
 
       <div className="posts-toolbar">
         <div className="posts-status-tabs" role="tablist" aria-label={t("Post status")}>
-          {statusTabs.map((tab) => (
+          {statusTabs.filter(tab => !submitted || tab.id !== "draft").map((tab) => (
             <button
               key={tab.id}
               type="button"
@@ -273,6 +323,15 @@ export default function PostsView({
               ))}
             </select>
           </label>
+          {submitted && submitters.length > 0 && (
+            <label className="posts-select">
+              <span className="sr-only">{t("Submitted by")}</span>
+              <select value={submitter} onChange={event => setSubmitter(event.target.value)}>
+                <option value="">{t("All submitters")}</option>
+                {submitters.map(user => <option key={user.id} value={user.id}>{user.displayName} ({user.username})</option>)}
+              </select>
+            </label>
+          )}
           <label className="posts-select">
             <span className="sr-only">{t("Updated")}</span>
             <select value={within} onChange={(event) => setWithin(event.target.value)} aria-label={t("Updated")}>
@@ -329,11 +388,16 @@ export default function PostsView({
                       <Send size={12} aria-hidden="true" />
                       {post.targetCount ? `${t("Pushed")} ${post.acceptedCount} / ${post.targetCount} ${t("accounts")}` : t("No accounts selected")}
                     </span>
+                    {submitted && <>
+                      <span>{t("Submitted by")}: {post.ownerName || "—"}</span>
+                      <span>{t("Published")}: {post.publishedCount ?? 0}</span>
+                      <span>{t("Publish failed")}: {post.publishFailedCount ?? 0}</span>
+                    </>}
                     <span className="posts-row-time">{t("Updated")} {formatPostTimestamp(post.updatedAt)}</span>
                   </span>
                 </span>
               </button>
-              <div className="posts-row-actions">
+              {!submitted && <div className="posts-row-actions">
                 <button type="button" className="icon-button" title={t("Copy as a new draft")} aria-label={t("Copy as a new draft")} disabled={busyPostId === post.id} onClick={() => void duplicatePost(post)}>
                   {busyPostId === post.id ? <Loader2 className="spin" size={15} /> : <Copy size={15} />}
                 </button>
@@ -342,7 +406,7 @@ export default function PostsView({
                     <Trash2 size={15} aria-hidden="true" /> {t("Delete local draft")}
                   </button>
                 )}
-              </div>
+              </div>}
             </article>
           ))}
         </div>
@@ -362,6 +426,8 @@ export default function PostsView({
               <p>{t("Clear the filters to see every post, or write a new one.")}</p>
               <button type="button" className="secondary-button" onClick={clearFilters}>{t("Clear filters")}</button>
             </>
+          ) : submitted ? (
+            <h3>{t("No team submissions yet.")}</h3>
           ) : (
             <>
               <span className="posts-empty-icon"><Send size={24} aria-hidden="true" /></span>

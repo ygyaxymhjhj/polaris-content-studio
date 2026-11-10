@@ -14,6 +14,12 @@ and their export flow are unchanged.
 - **Posts** (`/?view=posts`) is the list: status tabs with live counts, search over the title and
   body, platform/account/edited-within filters, and paging. A row opens the editor; the row actions
   copy the post as a new draft or delete a purely local one with a visible text button.
+  Administrators also have **Team submissions** (the default on the Posts page) and **AI publish history**.
+  Team submissions shows the current submitted version and each account's latest known result; its
+  detail and attachments are read-only. A member's unsubmitted draft, including a revision saved
+  after a failed submission and not yet submitted again, remains visible only to that member.
+  **My posts** keeps the existing editor and draft controls. AI publish history shows submission
+  and publication status without exposing private project content or importing posts created directly in Postiz.
 - **Editor** (`/?view=posts&compose=new`, then `/?view=posts&postId=…`): body and an ordered media collection share a
   compact composer; **Platforms > Add platform** opens a compact account popover with platform names,
   usernames and multi-selection, without avatars or search/filter controls. **When to post?** offers

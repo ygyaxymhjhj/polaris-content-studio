@@ -48,7 +48,7 @@ export function postPublicationLabel(target: PostTarget): string {
   if (target.status !== "accepted") return POST_TARGET_STATUS_LABEL[target.status];
   switch (target.publicationState) {
     case "DRAFT": return "Pending review";
-    case "QUEUE": return "Scheduled";
+    case "QUEUE": return "Queued";
     case "PUBLISHED": return "Published";
     case "ERROR": return "Publish failed";
     default: return "Pending confirmation";

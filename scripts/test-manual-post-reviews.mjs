@@ -26,6 +26,7 @@ const filters = { status: "all", search: "", platform: "", integrationId: "", up
 
 function createHarness() {
   const sql = new DatabaseSync(":memory:");
+  sql.function("LOCATE", (needle, text) => String(text).indexOf(String(needle)) + 1);
   sql.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY, role TEXT, disabled INTEGER, display_name TEXT);
     CREATE TABLE posts (id TEXT PRIMARY KEY, owner_user_id TEXT, title TEXT, content TEXT, image_data TEXT,
@@ -37,7 +38,8 @@ function createHarness() {
     CREATE TABLE social_publishes (id TEXT PRIMARY KEY, project_id TEXT, asset_id TEXT, integration_id TEXT,
       published_by TEXT, postiz_post_id TEXT);
     CREATE TABLE social_post_tracking (publish_audit_id TEXT PRIMARY KEY, postiz_post_id TEXT, review_status TEXT,
-      state TEXT, save_action TEXT, postiz_publish_date TEXT, rejected_detected_at TEXT);
+      state TEXT, save_action TEXT, postiz_publish_date TEXT, rejected_detected_at TEXT,
+      last_checked_at TEXT, confirmed_at TEXT, release_url TEXT, last_error TEXT);
     CREATE TABLE draft_submissions (id TEXT PRIMARY KEY, owner_user_id TEXT, kind TEXT, source_id TEXT,
       project_id TEXT, integration_id TEXT, attempt_id TEXT, request_key TEXT UNIQUE, fingerprint TEXT,
       active_key TEXT UNIQUE, snapshot TEXT, state TEXT, lease_token TEXT, lease_expires_at TEXT,
@@ -49,7 +51,7 @@ function createHarness() {
       'old-upstream', '${auditId}', NULL, NULL, '${submittedAt}', '${submittedAt}', '${submittedAt}', NULL, NULL);
     INSERT INTO social_publishes VALUES ('${auditId}', NULL, '${postId}', 'account', 'owner', 'old-upstream');
     INSERT INTO social_post_tracking VALUES ('${auditId}', 'old-upstream', 'rejected', 'DRAFT', 'pass',
-      '2030-03-01 00:00:00.000', '${new Date().toISOString().slice(0, 23).replace("T", " ")}');
+      '2030-03-01 00:00:00.000', '${new Date().toISOString().slice(0, 23).replace("T", " ")}', '${submittedAt}', NULL, NULL, NULL);
   `);
   const statements = [];
   let transactionOpen = false;
@@ -135,7 +137,7 @@ function createHarness() {
         sql.prepare("INSERT INTO social_publishes VALUES (?, NULL, ?, ?, ?, ?)")
           .run(newAuditId, entry.assetId, entry.integrationId, entry.publishedBy, entry.postizPostId ?? null);
         if (entry.status === "drafted") {
-          sql.prepare("INSERT INTO social_post_tracking VALUES (?, ?, 'pending', 'DRAFT', NULL, NULL, NULL)")
+          sql.prepare("INSERT INTO social_post_tracking (publish_audit_id, postiz_post_id, review_status, state) VALUES (?, ?, 'pending', 'DRAFT')")
             .run(newAuditId, entry.postizPostId);
         }
         return { auditId: newAuditId };
@@ -194,6 +196,48 @@ test("strict current binding projects rejection consistently in details, list, c
   assert.equal(overview.counts.attention, 1);
   assert.equal(overview.activity[0].kind, "rejected");
   assert.equal(harness.requests.length, 0, "storage must not perform network I/O");
+}));
+
+test("team reads expose only the submitted version, with per-account publication and version-bound media", () => withHarness(async ({ sql, storage }) => {
+  const team = { ...filters, submitted: true };
+  sql.exec("UPDATE post_targets SET status='not_started', snapshot_version=0; UPDATE posts SET image_data='submitted-image';");
+  assert.equal((await storage.listManualPosts("admin", team)).total, 0);
+  assert.equal(await storage.getSubmittedManualPost(postId), null);
+  assert.equal(await storage.getSubmittedAttachment(postId, 4, "inline", false), null);
+  assert.equal((await storage.listManualPosts("owner", filters)).total, 1);
+  assert.equal(await storage.getManualPost("admin", postId), null);
+
+  sql.exec(`UPDATE post_targets SET status='accepted', snapshot_version=4;
+    UPDATE social_post_tracking SET state='PUBLISHED', review_status='unknown', release_url='https://example.invalid/published';
+    INSERT INTO post_targets VALUES ('failed', '${postId}', 'other-account', 'linkedin', 'Other', 'accepted', 4,
+      'other-upstream', 'other-audit', NULL, NULL, '${submittedAt}', '${submittedAt}', '${submittedAt}', NULL, NULL);
+    INSERT INTO social_publishes VALUES ('other-audit', NULL, '${postId}', 'other-account', 'owner', 'other-upstream');
+    INSERT INTO social_post_tracking (publish_audit_id, postiz_post_id, state, last_checked_at, last_error)
+      VALUES ('other-audit', 'other-upstream', 'ERROR', '${submittedAt}', '平台拒绝发布。');`);
+  const listed = await storage.listManualPosts("admin", { ...team, submitter: "owner" });
+  assert.equal(listed.total, 1);
+  assert.deepEqual([listed.items[0].ownerName, listed.items[0].publishedCount, listed.items[0].publishFailedCount], ["Owner", 1, 1]);
+  const detail = await storage.getSubmittedManualPost(postId);
+  assert.equal(detail.editable, false);
+  const targets = Object.fromEntries(detail.targets.map(target => [target.integrationId, target]));
+  assert.equal(targets.account.publicationState, "PUBLISHED");
+  assert.equal(targets.account.publishedUrl, "https://example.invalid/published");
+  assert.equal(targets["other-account"].publicationState, "ERROR");
+  assert.equal(targets["other-account"].publicationError, "平台拒绝发布。");
+  assert.deepEqual(await storage.getSubmittedAttachment(postId, 4, "inline", false), { dataUrl: "submitted-image" });
+
+  sql.exec("UPDATE social_post_tracking SET state='DRAFT', save_action=NULL, postiz_publish_date=NULL, last_error='Postiz 状态查询失败，稍后重试。' WHERE publish_audit_id='other-audit'");
+  const unconfirmed = (await storage.getSubmittedManualPost(postId)).targets.find(target => target.integrationId === "other-account");
+  assert.equal(unconfirmed.publicationState, null);
+  assert.equal(postTypes.postPublicationLabel(unconfirmed), "Pending confirmation");
+
+  sql.exec("UPDATE post_targets SET status='failed'; UPDATE posts SET version=5, content='private rewrite', image_data='private-image';");
+  assert.equal((await storage.listManualPosts("admin", { ...team, search: "private" })).counts.all, 0);
+  assert.equal((await storage.listManualPosts("admin", team)).total, 0);
+  assert.equal(await storage.getSubmittedManualPost(postId), null);
+  assert.equal(await storage.getSubmittedAttachment(postId, 4, "inline", false), null);
+  assert.equal(await storage.getSubmittedAttachment(postId, 5, "inline", false), null);
+  assert.equal((await storage.getManualPost("owner", postId)).content, "private rewrite");
 }));
 
 test("all rejected targets are frozen and cannot be edited or deleted", () => withHarness(async harness => {

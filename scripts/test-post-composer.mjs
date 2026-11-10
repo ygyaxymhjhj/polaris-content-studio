@@ -47,7 +47,7 @@ const virtualSources = new Map([
       }, []);
       return <LocaleContext.Provider value="en"><main className="content-wrap">
         <button data-testid="outer-navigation" disabled={navigationLocked} onClick={() => setShowList(true)}>Outer navigation</button>
-        {showList ? <PostsView accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
+        {showList ? <PostsView isAdmin={new URLSearchParams(location.search).has('admin')} accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
           onOpenPost={setPostId} onNewPost={() => {}} onOpenAccounts={() => {}} initialStatus="all" refreshToken={0} />
           : <PostEditorView key={editorSession} postId={postId} accounts={${JSON.stringify(accounts)}} accountsLoading={false} accountsError=""
           postizUiUrl="" isAdmin={false} onBack={() => setShowList(true)} onOpened={(identifier, newSession) => {
@@ -1351,6 +1351,60 @@ try {
   assert.equal(storedPost.scheduledAt, expectedIso, 'the API receives the device-local time as a UTC instant');
   assert.equal(await page.getByRole('button', { name: 'Schedule posts', exact: true }).count(), 1, 'the hand-off action reflects the mode');
   assert.deepEqual(errors, []);
+
+  const teamId = '55555555-5555-4555-8555-555555555555';
+  const memberId = '66666666-6666-4666-8666-666666666666';
+  const teamRequests = [];
+  await page.route('**/api/auth/users', route => route.fulfill({ json: { users: [{ id: memberId, displayName: 'Team member', username: 'member' }] } }));
+  await page.route('**/api/admin/publishes?*', route => route.fulfill({ json: {
+    publishes: [{ id: 'ai-audit', platform: 'x', accountName: 'AI desk', submitter: 'Team member', status: 'published' }], hasNext: false
+  } }));
+  await page.route('**/api/posts**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.searchParams.get('scope') !== 'submitted') return route.fallback();
+    teamRequests.push({ method: request.method(), submitter: url.searchParams.get('submitter') });
+    if (url.pathname === `/api/posts/${teamId}`) return route.fulfill({ json: { post: {
+      id: teamId, title: 'Team submission', content: 'Submitted version', ownerName: 'Team member', editable: false,
+      targets: [
+        { integrationId: 'channel-x', platform: 'x', accountName: 'News desk', status: 'accepted', publicationState: 'PUBLISHED', publishedUrl: 'https://example.invalid/published' },
+        { integrationId: 'channel-linkedin', platform: 'linkedin', accountName: 'Company page', status: 'accepted', publicationState: 'ERROR', publicationError: 'Platform rejected the post' }
+      ]
+    } } });
+    return route.fulfill({ json: {
+      posts: [{ id: teamId, title: 'Team submission', excerpt: 'Submitted version', ownerName: 'Team member', status: 'attention',
+        platforms: ['x', 'linkedin'], targetCount: 2, acceptedCount: 2, publishedCount: 1, publishFailedCount: 1, updatedAt: new Date().toISOString() }],
+      total: 1, counts: { all: 1, draft: 0, pushing: 0, pushed: 0, attention: 1 }
+    } });
+  });
+  await page.goto(`${origin}/?list=1&admin=1`);
+  const teamRow = page.getByRole('button', { name: 'Open post: Team submission', exact: true });
+  await teamRow.waitFor();
+  assert.match(await teamRow.innerText(), /Submitted by: Team member[\s\S]*Published: 1[\s\S]*Publish failed: 1/);
+  assert.equal(await page.getByRole('tab', { name: /Local drafts/ }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Copy as a new draft' }).count(), 0);
+  const filtered = page.waitForRequest(request => new URL(request.url()).searchParams.get('submitter') === memberId);
+  await page.getByRole('combobox', { name: 'Submitted by' }).selectOption(memberId);
+  await filtered;
+  await teamRow.click();
+  await page.getByText('Read only', { exact: true }).waitFor();
+  await page.getByText('Platform rejected the post', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: 'View published post' }).getAttribute('href'), 'https://example.invalid/published');
+  assert.equal(await page.getByRole('textbox').count(), 0);
+  assert.ok(teamRequests.length >= 3 && teamRequests.every(request => request.method === 'GET'));
+  await page.getByRole('button', { name: 'Back to posts' }).click();
+  await teamRow.waitFor();
+  await page.getByRole('button', { name: 'AI publish history' }).click();
+  await page.getByText('AI desk', { exact: true }).waitFor();
+  assert.equal(await teamRow.count(), 0);
+  await page.getByRole('button', { name: 'My posts' }).click();
+  await page.getByRole('tab', { name: /Local drafts/ }).waitFor();
+  assert.equal(await teamRow.count(), 0);
+  await page.goto(`${origin}/?list=1`);
+  await page.getByRole('heading', { name: 'Posts', exact: true }).waitFor();
+  assert.equal(await page.getByRole('navigation', { name: 'Post visibility' }).count(), 0);
+  assert.deepEqual(errors, []);
+  console.log('PASS: administrators can open team submissions, read-only per-account results, and AI publish history; members have no team controls.');
   console.log('PASS: async video phases and early 202, queue/running locks, safe failed/malformed jobs, same-job status recovery without POST/request ID, cancelled recovery fencing and unmount isolation.');
   console.log('PASS: original composer safeguards; raw MP4 upload, 500 MiB boundary, local playback, validation-stage busy/navigation guards, failure/cancel recovery, stale completion fencing, save/reopen/copy, image/video exclusion, Instagram and async 202 navigation.');
 } finally {

@@ -45,7 +45,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ pos
       headers: {
         "Content-Type": decoded.contentType,
         "Content-Length": String(decoded.buffer.byteLength),
-        "Cache-Control": "private, max-age=120",
+        "Cache-Control": attachment === null ? "private, max-age=120" : "private, no-store",
         "X-Content-Type-Options": "nosniff"
       }
     });

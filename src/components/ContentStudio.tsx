@@ -1391,6 +1391,7 @@ export default function ContentStudio({ user, claimedProjects }: { user: User; c
             />
           ) : (
             <PostsView
+              isAdmin={user.role === "admin"}
               accounts={socialAccounts}
               accountsLoading={channelsLoading}
               accountsError={channelsError}
